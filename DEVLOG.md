@@ -429,3 +429,103 @@ and never verified against a live completion.
 **Next:** Deepgram streaming STT (turns still carry `[Nms of speech, no transcriber]`),
 and Aura's WebSocket interface, which §3.3.2 now identifies as the single largest
 available latency win.
+
+---
+
+## Session 6 — the LLM unblocked, repo published, docs brought current
+
+### The LLM was never a code problem
+
+Three providers, three billing walls, and swapping vendors did not help:
+
+| | |
+|---|---|
+| Anthropic | `400 invalid_request_error` — credit balance too low |
+| OpenAI | `429 insufficient_quota` |
+| Ollama Cloud | `403` on 11 of 19 models — subscription required |
+
+All three keys authenticated. The lesson worth keeping: an authenticating key with a
+paywalled account produces a *different* error class from a bad key, and reading which one
+you have saves a lot of time. A `401` is a credential problem; a `400`/`429`/`403` means
+the request arrived and something downstream said no.
+
+**What unblocked it was reading the whole list instead of the first three entries.** My
+initial probe picked `deepseek-v4-flash`, `glm-5.1`, and `kimi-k2.6` — all premium, all
+403. Enumerating every model showed **8 of 19 are accessible** on that key. `gpt-oss:20b`
+measured **1914ms median time-to-first-sentence**, the fastest available, and its questions
+genuinely follow up on what the candidate said. I had told the operator the key was not
+usable; that was wrong, and it was wrong because of sampling rather than anything about
+the key.
+
+### `.env` did nothing
+
+Every knob in this project is an environment variable, and nothing read the file. Each run
+needed `set -a && . ./.env && set +a` in front of it, and forgetting produced a session
+that silently fell back to every placeholder — no error, just quietly the wrong system.
+That is worse than having no config file at all.
+
+`avatar/config.py` now loads it at server import: twenty dependency-free lines, a real
+environment variable always wins, a missing file is not an error, and the parser handles
+exactly the `KEY=value` subset this project writes rather than half-implementing shell
+quoting. `GET /config` reports which implementation each boundary resolved to and which
+variable *names* came from the file — names only, since most of them are credentials.
+
+### Published
+
+23 commits pushed to <https://github.com/prashanth-chinnala/nod>. Before pushing, every
+blob in every commit and every commit message was scanned for all four key patterns —
+clean. `.env` is gitignored and untracked; only `.env.example` ships, with no values.
+
+Worth doing that scan rather than assuming: this repo has to be public, and a key committed
+to a public repo is scraped in minutes and cannot be un-published.
+
+### Documentation debt paid
+
+The README documented **none** of the environment variables. The only way to discover that
+a real voice was one variable away was to read `server.py` — a clean-clone failure for a
+graded artifact. It now carries the full variable table, the `.env` setup, and the
+OpenAI-compatible-endpoint trick that was buried in a docstring.
+
+Also added `docs/DEMO_SCRIPT.md`: six manual tests, each naming what to watch **and what it
+does not prove**. That last column is the point — it is easy to record a demo that implies
+a working talking-head model because a mouth moves in time with speech. The mouth moving
+proves the audio-to-video mechanism, not a face.
+
+### M0 diagnosed properly
+
+Read MuseTalk's actual README and `download_weights.sh` instead of guessing. Three causes,
+and the first was mine:
+
+1. **My inference command was incomplete.** v1.5 needs `--version v15`,
+   `--unet_model_path`, `--unet_config`, `--ffmpeg_path`. Without them it loads the v1.0
+   checkpoint layout, which is exit code 1 on its own. My own cell told the operator to
+   read the README for the invocation and I had put a guess in the next cell.
+2. **The downloader is built to fail silently.** It points `HF_ENDPOINT` at a mirror, has
+   no `set -e`, and validates nothing — so 96MB with exit code 0 is the expected shape of
+   total failure. 96MB is about `resnet18` plus configs: only the `curl` step worked.
+3. **Python 3.12 against a 3.10-pinned stack.** `mmcv==2.0.1` has no 3.12 wheel, which
+   explains the other implausible number — a 13-second `pip install` for a stack that takes
+   minutes. It never installed OpenMMLab.
+
+`notebooks/m0_musetalk_v2.ipynb` fixes all three, gates on imports resolving *before*
+downloading gigabytes, audits every checkpoint by size (detecting git-lfs pointers and
+Google Drive quota HTML by their first bytes), and computes `inference_actually_ran` from
+exit code **and** an output file **and** VRAM passing 500 MiB — so the block that gets
+pasted back cannot be mistaken for a measurement when it is a failure.
+
+### Hosting path, de-risked before the model
+
+`notebooks/run_on_colab.ipynb` puts the server on a Colab GPU behind a free cloudflared
+HTTPS tunnel, so a locally-opened page streams voice up and video down. Deliberately
+runnable **today with the stub**, because it proves four things unrelated to the model that
+would each sink the demo alone: that the tunnel proxies WebSockets, that the page gets a
+secure context (browsers refuse microphone access without one), that the client upgrades to
+`wss://`, and that the runtime survives. Learning that a tunnel breaks WebSockets after two
+days on the model would be an expensive ordering.
+
+### Still `[HUMAN]`
+
+Unchanged. The three §2.3 questions were put to me directly again and I did not answer them.
+
+**Next:** M0 run 2, then M2. Aura's WebSocket TTS is measured at **351ms flat** against
+907ms over REST and remains the largest unbuilt latency win.

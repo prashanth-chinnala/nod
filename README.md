@@ -121,15 +121,26 @@ the notebook file.
 | History truncated to audio the client **acknowledged playing** | Working, tested |
 | End-to-end latency measured to browser paint, not to socket write | Working |
 | A renderer behind a Protocol, with a GPU-free implementation | Working, tested |
+| Server-side turn-taking policy — onset, hysteresis, retraction, end-of-turn | Working, 30 tests |
+| Real transcription (Deepgram Nova) | Working. Transcribed 5.48s of real speech exactly |
+| Real voice (Deepgram Aura-2) | Working. ~380ms warm time-to-first-audio |
+| Real LLM — two adapters, any OpenAI-compatible endpoint | Working via Ollama Cloud |
+| `.env` loaded automatically; `GET /config` reports what resolved | Working |
 | **A talking-head model of any kind** | **Not built — blocked on M0, needs a GPU** |
-| **Real STT, LLM, TTS** | **Not built (M4).** Placeholders with real timing, fake content |
-| **Real turn detection (VAD)** | **Not built (M4).** A client-side energy gate stands in |
+| **A real voice activity detector** | **Partly.** The policy is real and tested; the detector under it is an energy gate. `SileroVad` is written and **never executed** |
 | **Frame encoding (JPEG/WebP)** | **Not built (M2).** Uncompressed BMP, ~2.7MB/s |
 
 The headline numbers the brief asks for — first-frame latency and fps for a real
 talking-head model — read `NOT YET MEASURED` in [PROCESS.md](PROCESS.md) §3.3, because
-they do not exist yet. §3.3.1 has the session-layer numbers that do, each with a note on
-what it actually measures.
+they do not exist yet. §3.3.1–3.3.3 have the numbers that do, each with a note on what it
+actually measures.
+
+**The measurement that matters most** (§3.3.3, every component real): a full conversational
+turn takes **3.7–5.4s** against a sub-second target — and **none of the three dominant
+terms is the renderer.** End-of-turn detection is 700ms of deliberate policy, LLM
+time-to-first-token 1.9–3.2s, TTS time-to-first-audio 0.9–1.3s. A perfect zero-latency
+talking-head model would still leave ~3.4s, so "more GPU" demonstrably does not close this
+gap.
 
 ## Requirements
 
@@ -143,7 +154,7 @@ documented here once M0 has actually run.
 ## Run the checks
 
 ```bash
-pytest -m "not gpu"                        # 131 tests, ~0.1s, no GPU
+pytest -m "not gpu"                        # 199 tests, ~0.6s, no GPU
 ruff check src tests && ruff format --check src tests
 mypy src/avatar
 ```
@@ -157,7 +168,7 @@ needs a simulated second gets it in microseconds.
 
 ```
 src/avatar/
-  contracts.py         dataclasses + the four Protocols. Imports nothing from the package.
+  contracts.py         dataclasses + the five Protocols. Imports nothing from the package.
   state.py             State enum, transition table, frame-source table. All data.
   orchestrator.py      SessionOrchestrator — every state transition lives here
   mixer.py             FrameMixer, IdleLoop — cadence and presentation timestamps
@@ -166,14 +177,34 @@ src/avatar/
   llm.py               sentence chunker + scripted interviewer
   bmp.py               twenty-line BMP encoder, so nothing needs Pillow
   server.py            FastAPI. The only module that imports a web framework.
+  config.py            loads .env at import; a real env var always wins
+  llm_anthropic.py     Claude adapter + the LLM registry
+  llm_openai.py        OpenAI adapter — also Ollama / LM Studio / vLLM via base_url
+  audio/turn_detection.py  onset / hysteresis / retraction / end-of-turn. Pure policy.
+  audio/vad.py         EnergyVad (no deps) + SileroVad (torch, never executed)
   audio/tts.py         ToneTTS — real timing, fake voice
+  audio/tts_deepgram.py    Aura. container=none matters; see the docstring
+  audio/stt.py         Deepgram Nova. Transcribes; decides nothing
   transport/websocket.py   wire codec + Transport. No framework dependency.
   renderers/           build() registry + StubRenderer (no GPU, no deps)
-tests/                 131 tests, including the boundary enforcement
+tests/                 199 tests, including the boundary enforcement
 scripts/               headless end-to-end verification
 web/index.html         the real client, measured numbers
 web/mockup.html        design mockup, simulated numbers
+notebooks/             M0 model spike, and running the whole stack on Colab
+docs/                  M0 how-to, Colab hosting, manual test protocol
 ```
+
+## Documentation map
+
+| File | What it is |
+|---|---|
+| [PROCESS.md](PROCESS.md) | The graded deliverable: architecture doc, model memo, build-vs-buy, migration plan |
+| [DEVLOG.md](DEVLOG.md) | Session-by-session log — what was attempted, what worked, what was deferred and why |
+| [IMPLEMENTATION_GUIDE.md](IMPLEMENTATION_GUIDE.md) | Milestone plan and the decisions not to re-litigate |
+| [docs/DEMO_SCRIPT.md](docs/DEMO_SCRIPT.md) | Manual test protocol; doubles as the Loom shot list |
+| [docs/M0_HOW_TO.md](docs/M0_HOW_TO.md) | Why the model spike failed and how to finish it |
+| [docs/COLAB_HOSTING.md](docs/COLAB_HOSTING.md) | Running the whole stack on a Colab GPU, reachable from a browser |
 
 ## The module boundary
 

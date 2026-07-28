@@ -5,9 +5,10 @@ Real-time conversational avatar — architecture research, prototype, and build-
 | | |
 |---|---|
 | Author | *your name* |
+| Repository | <https://github.com/prashanth-chinnala/nod> |
 | Time spent | *actual hours, honestly* |
 | Hardware used | *e.g. Colab T4 16GB / RTX 3090 / CPU-only M2* |
-| Prototype status | *what works, what doesn't* |
+| Prototype status | Real spoken conversation working end to end. No talking-head model — see §3.1 |
 
 > **Delete every blockquote like this one before submitting.** They are drafting prompts, not content.
 
@@ -237,7 +238,10 @@ transport all live outside it — see §3.2.
 | End-to-end latency to browser paint | **Built** (M3) | Client reports first paint; the server cannot measure this for itself |
 | **Audio in → lip-synced video out** | **Not built** | Blocked on M0. Needs a GPU, and Rule 1 forbids estimating what it would do |
 | **A talking-head model of any kind** | **Not built** | Same. `StubRenderer` proves the interface, not the capability |
-| **Real STT** | **Not built** | The mic streams to the server and drives turn-taking, but nothing transcribes it. A turn carries its duration instead of words, which the orchestrator accepts unchanged — that is what makes STT a drop-in |
+| Real STT | **Built** | Deepgram Nova over a persistent WebSocket. Transcribes continuously; the local turn policy decides when the turn ends, not the vendor's endpointing — see the `Transcriber` docstring |
+| Real TTS | **Built** | Deepgram Aura-2. `container=none` is load-bearing: the default response carries a 44-byte RIFF header that would be played as PCM |
+| Real LLM | **Built** | Two adapters (Anthropic, OpenAI) behind one `SentenceStream`. `OPENAI_BASE_URL` also reaches Ollama / LM Studio / vLLM, so a local model needs no new adapter |
+| Configuration | **Built** | `.env` loaded at import; `GET /config` reports what each boundary resolved to. Every default is a working no-credential one |
 | Turn-taking policy | **Built** (M4) | Server-side. Onset, hysteresis, retraction, and end-of-turn as separately tuned decisions; 30 tests over probability sequences |
 | **A real voice activity detector** | **Partly** (M4) | The policy is real and tested. The default detector under it is an energy gate that cannot tell speech from a door. `SileroVad` is written, wired, and **has never been executed** — no torch in the dev environment |
 | **Real LLM** | **Not built** (M4) | `ScriptedInterviewer` asks canned questions. The sentence chunker it feeds is real and survives the swap |

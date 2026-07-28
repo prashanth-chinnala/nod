@@ -51,25 +51,25 @@ python scripts/measure_latency.py    # produces numbers for PROCESS.md
 > Update this section at the end of each session.
 
 - Milestones done: **M1** (contracts, state machine, stub renderer, CI), **M3**
-  (WebSocket streaming, browser client), and the turn-taking half of **M4**
-  (server-side VAD, onset/end-of-turn policy). 172 tests, all GPU-free.
-- Active milestone: **M0 — model spike**, the last hard blocker. See
-  `docs/M0_FOR_BEGINNERS.md`.
-- Still open in M4: real STT, a real LLM adapter, real TTS (all need API keys), and
-  `scripts/prepare_idle_loop.py` (needs ffmpeg and a real reference clip, which
-  arrives with M0/M2).
-- Hardware: **Colab / Kaggle free tier (T4 16GB)**. This makes MuseTalk the
-  lower-risk candidate: Ditto wants TensorRT 8.6.1 with GPU-specific prebuilt
-  engines, which fights an ephemeral runtime and the clean-clone requirement.
-  **The pick itself is `[HUMAN]`** — see `IMPLEMENTATION_GUIDE.md` §2 and Rule 2.
-- Model chosen: *not yet. Nothing downstream of it may be assumed.*
-- Blocked on: *M0. M2 cannot start until it resolves; M4 (VAD, real STT/LLM/TTS)
-  is not blocked and could go first if the GPU is unavailable.*
+  (WebSocket streaming, browser client), **M4's turn-taking** (server-side VAD, onset /
+  hysteresis / retraction / end-of-turn policy), and the real STT, TTS, and LLM adapters.
+  **199 tests, all GPU-free. 17/17 end-to-end with every real component live.**
+- Repo is public: <https://github.com/prashanth-chinnala/nod>
+- Active milestone: **M0 — model spike.** Run 1 failed in setup; see `docs/M0_HOW_TO.md`
+  and `notebooks/m0_musetalk_v2.ipynb`.
+- Hardware: **Colab / Kaggle free tier (T4 16GB)**, confirmed available. **The pick itself
+  is `[HUMAN]`** — see `IMPLEMENTATION_GUIDE.md` §2 and Rule 2.
+- Blocked on: *M0 only.* M2 waits on it. Nothing else does.
 
 ## Running it
 
 ```bash
-pip install -e ".[dev,server]"
+pip install -e ".[dev,server,tts,llm]"
+cp .env.example .env                      # loaded automatically; see src/avatar/config.py
 uvicorn avatar.server:app                 # then open http://127.0.0.1:8000
-python scripts/smoke_session.py           # headless end-to-end check, 15 assertions
+curl -s localhost:8000/config             # which implementation each boundary resolved to
+python scripts/smoke_session.py           # headless end-to-end check, 17 assertions
 ```
+
+Every default is a working no-credential one. `docs/DEMO_SCRIPT.md` is the manual test
+protocol and doubles as the Loom shot list.
