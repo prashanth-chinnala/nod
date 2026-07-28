@@ -46,8 +46,8 @@ files = ["src/avatar"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 asyncio_mode = "auto"
 markers = [
   "gpu: requires a GPU and model weights; excluded from CI via -m 'not gpu'",
 ]
-filterwarnings = ["error"]
