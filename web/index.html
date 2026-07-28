@@ -330,6 +330,7 @@
         <div class="row"><span class="k">Turn epoch</span><span class="v" id="ep">0</span></div>
         <div class="row"><span class="k">Buffer depth</span><span class="v" id="buf">0 fr</span></div>
         <div class="row"><span class="k">Audio acked</span><span class="v" id="acked">0 ms</span></div>
+        <div class="row"><span class="k">Audio underruns</span><span class="v" id="under">0</span></div>
         <div class="row"><span class="k">Speech probability</span><span class="v" id="prob">—</span></div>
         <div class="row"><span class="k">Mic uploaded</span><span class="v" id="mic-sent">0 KB</span></div>
         <div class="row"><span class="k">Received</span><span class="v" id="bytes">0 KB</span></div>
@@ -414,6 +415,27 @@ let framesDropped = 0;
 
 let pendingSources = [];      // scheduled audio, so a flush can stop it
 let nextAudioTime = 0;
+let audioUnderruns = 0;       // times playback fell behind arrival. 0 on localhost
+
+// How far ahead of the playhead to schedule the first chunk of a run -- the jitter
+// buffer. It is latency paid deliberately: it is added to what you hear, so a demo
+// recorded through a tunnel with a 150ms cushion is not comparable to a local one, and
+// the honest thing is to say which is which rather than quietly compare them.
+//
+// 150ms is enough for a Cloudflare tunnel to a Colab runtime in another region and small
+// enough to stay under the ~200ms where a reply starts to feel delayed. Localhost never
+// needs it but pays it anyway, which is why it is overridable: `?audioLead=0` to hear the
+// raw path, `?audioLead=300` if a link is worse than this. Tune it from the URL rather
+// than by editing a file mid-demo.
+const AUDIO_LEAD_MS_DEFAULT = 150;
+const audioLeadMs = (() => {
+  const raw = new URLSearchParams(location.search).get("audioLead");
+  if (raw === null) return AUDIO_LEAD_MS_DEFAULT;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 && parsed <= 2000
+    ? parsed
+    : AUDIO_LEAD_MS_DEFAULT;
+})();
 let lastTurnStages = {};
 let paintedEpoch = 0;         // highest turn epoch whose first frame we have painted
 
@@ -515,9 +537,34 @@ function playAudio(payload, epoch) {
   source.buffer = buffer;
   source.connect(audioCtx.destination);
 
-  // Schedule against a running cursor rather than "now", or successive chunks
-  // overlap and the tone gains a stutter that is easy to mistake for a render bug.
-  const startAt = Math.max(audioCtx.currentTime, nextAudioTime);
+  // Schedule against a running cursor rather than "now", or successive chunks overlap
+  // and the audio gains a stutter that is easy to mistake for a render bug.
+  //
+  // The cursor alone is not enough, which only shows up off-localhost. Locally chunks
+  // arrive far faster than real time, so the cursor always sits in the future and every
+  // chunk is scheduled comfortably ahead. Through a tunnel, a chunk can arrive *after*
+  // its slot has already passed -- and then scheduling it at `currentTime` has already
+  // produced an audible gap, and worse, pins the cursor to packet-arrival time so every
+  // subsequent late packet gaps again. That is the "it breaks up on Colab, fine locally"
+  // symptom: not a codec or renderer fault, an absent jitter buffer.
+  //
+  // So start each run of audio AUDIO_LEAD_MS in the future. Late arrivals inside that
+  // cushion still land ahead of the playhead and are inaudible.
+  const now = audioCtx.currentTime;
+  let startAt;
+  if (nextAudioTime > now) {
+    startAt = nextAudioTime;                  // continuing an unbroken run
+  } else {
+    // Either the first chunk of a turn, or we fell behind. Both need the cushion
+    // re-armed; only the second is a fault, and it is counted rather than hidden.
+    startAt = now + audioLeadMs / 1000;
+    if (nextAudioTime > 0) {
+      audioUnderruns++;
+      el("under").textContent = String(audioUnderruns);
+      log("audio-underrun", `late by ${Math.round((now - nextAudioTime) * 1000)}ms, ` +
+        `re-armed ${audioLeadMs}ms lead`, "drop");
+    }
+  }
   const durationSec = buffer.duration;
   nextAudioTime = startAt + durationSec;
 
@@ -551,7 +598,9 @@ function flushAudio() {
   for (const record of pendingSources.slice()) {
     try { record.source.stop(); } catch (_) { /* already finished */ }
   }
-  nextAudioTime = audioCtx ? audioCtx.currentTime : 0;
+  // 0, not currentTime: a barge-in abandons the run deliberately, so the next chunk is
+  // the start of a new one and must re-arm the lead *without* being counted an underrun.
+  nextAudioTime = 0;
   log("flush-audio", `stopped ${stopped} scheduled buffer(s)`, "drop");
 }
 
@@ -711,7 +760,9 @@ async function connect() {
   const Ctx = window.AudioContext || window.webkitAudioContext;
   audioCtx = audioCtx || new Ctx({ sampleRate: 16000 });
   await audioCtx.resume();
-  nextAudioTime = audioCtx.currentTime;
+  nextAudioTime = 0;            // no run in progress; the first chunk arms the lead
+  audioUnderruns = 0;
+  el("under").textContent = "0";
 
   const url = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/session";
   socket = new WebSocket(url);
