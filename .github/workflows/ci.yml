@@ -1,0 +1,22 @@
+name: ci
+
+on: [push, pull_request]
+
+# The whole point of this workflow is that it needs no GPU, no model weights, and
+# no network at test time. If a change makes CI want a CUDA package in order to
+# import, a module boundary has been broken -- fix the boundary, do not add the
+# dependency. tests/test_boundaries.py fails first when that happens.
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -e ".[dev]"
+      - run: ruff check src tests
+      - run: ruff format --check src tests
+      - run: mypy src/avatar
+      - run: pytest -m "not gpu" --tb=short
