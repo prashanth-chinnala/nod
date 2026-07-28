@@ -474,7 +474,8 @@ variable *names* came from the file — names only, since most of them are crede
 
 23 commits pushed to <https://github.com/prashanth-chinnala/nod>. Before pushing, every
 blob in every commit and every commit message was scanned for all four key patterns —
-clean. `.env` is gitignored and untracked; only `.env.example` ships, with no values.
+clean. `.env` is gitignored and untracked. (Session 7 removed the `.env.example` exemption
+that this session added; see below.)
 
 Worth doing that scan rather than assuming: this repo has to be public, and a key committed
 to a public repo is scraped in minutes and cannot be un-published.
@@ -529,3 +530,58 @@ Unchanged. The three §2.3 questions were put to me directly again and I did not
 
 **Next:** M0 run 2, then M2. Aura's WebSocket TTS is measured at **351ms flat** against
 907ms over REST and remains the largest unbuilt latency win.
+
+## Session 7 — env files layered, and the template deleted
+
+### `.env.development`, and why it is three files rather than a rename
+
+The obvious move was `mv .env .env.development` and a one-word change in the loader. What
+went in instead reads three candidates in descending precedence — `.env.development`,
+`.env.local`, `.env` — because a bare rename gives up the thing the name implies. Naming a
+file after an environment is only useful if a *different* environment can have its own,
+and that only works if shared settings can stay in one file while the handful that differ
+live in another. A rename would have forced every value to be duplicated per environment.
+
+`load_env` only fills variables that are *unset*, so precedence falls out of load order for
+free. Four rules, each with a test that names what it prevents:
+
+- **A real environment variable beats every file.** `AVATAR_TTS=tone uvicorn ...` still
+  overrides, and CI cannot be clobbered by a stray file.
+- **The search stops at the first directory containing any candidate.** Without the stop, a
+  `.env` two levels up layers under the repo's own `.env.development` and contributes a
+  value that cannot be accounted for from inside the project — the phantom-setting bug.
+- **`AVATAR_ENV_FILE`** names one file and skips the search, for a mounted secret or a path
+  outside the repo. A caller who names a file does not want a merge with its neighbour.
+- **An unreadable file degrades to defaults** rather than refusing to boot.
+
+`GET /config` now reports `env_files_read`. That field exists for one specific failure:
+`/config` showing `scripted` when you expected `openai` is either a wrong value or a file
+that was never opened, and those have completely different fixes. Names only, never
+contents — most of what is in there is a credential.
+
+`tests/test_config.py` covers all of it, 12 tests. Precedence deserves tests more than
+parsing does: a mis-parsed line is a visible error, while wrong precedence presents as *"the
+setting had no effect"* with nothing to grep for.
+
+### `.env.example` deleted
+
+It was the one tracked env file, kept as a fill-in-the-blanks template. Removed at the
+user's request, and the reasoning holds up: a tracked `.env*` path is one `git add -f`
+away from a tracked key, and the exemption line in `.gitignore` was the only thing standing
+between the two. `.gitignore` now covers `.env` and `.env.*` with **no exemption**, so the
+verification is a single command with no special case to remember:
+
+```bash
+git ls-files | grep -E '^\.env'      # must print nothing
+```
+
+The template did do a real job, though — it was the only place a clean clone learned the
+variable *names*. That job moved to README's Configuration table, which already listed
+every variable with its default and options, so nothing was lost but the trap.
+
+### Still `[HUMAN]`
+
+Unchanged. The three §2.3 questions and all of §4 remain unanswered by me.
+
+**Next:** unmoved — M0 run 2, then M2. Aura's WebSocket TTS is still the largest unbuilt
+latency win at **351ms flat** against 907ms over REST.

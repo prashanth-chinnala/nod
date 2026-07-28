@@ -121,6 +121,10 @@ class Observed:
     frame_pts: list[int] = field(default_factory=list)
     stale_kinds: Counter[str] = field(default_factory=Counter)
     latencies: dict[str, float] = field(default_factory=dict)
+    # Also keyed by turn, because `latencies` is last-write-wins across the whole session
+    # and some invariants only hold *within* one turn. Comparing a paint from turn 1
+    # against a first frame from turn 3 measures LLM variance, not correctness.
+    per_turn: dict[int, dict[str, float]] = field(default_factory=dict)
     flushes: int = 0
     hello: dict[str, object] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
@@ -188,7 +192,10 @@ async def observe(socket: object, seen: Observed, stop: asyncio.Event) -> None:
             elif event == "stale_dropped":
                 seen.stale_kinds[str(payload["kind"])] += 1
             elif event == "latency":
-                seen.latencies[str(payload["stage"])] = float(payload["ms"])
+                stage, ms = str(payload["stage"]), float(payload["ms"])
+                seen.latencies[stage] = ms
+                epoch = int(payload.get("epoch", 0))
+                seen.per_turn.setdefault(epoch, {})[stage] = ms
 
 
 def check(label: str, condition: bool, detail: object = "") -> bool:
@@ -325,11 +332,7 @@ async def main() -> int:
         ),
         check(
             "end-to-end was measured to browser paint, not to socket write",
-            "perceived_total" in seen.latencies
-            and seen.latencies["perceived_total"]
-            >= seen.latencies.get("avatar_first_frame", 0),
-            f"paint={seen.latencies.get('perceived_total', 0):.0f}ms vs "
-            f"first frame={seen.latencies.get('avatar_first_frame', 0):.0f}ms",
+            *painted_after_first_frame(seen),
         ),
         check(
             "microphone audio alone drove a turn, no buttons",
@@ -348,6 +351,43 @@ async def main() -> int:
     print(f"\n{passed}/{len(results)} assertions passed")
     print(f"(spoke for {spoke_for:.1f}s wall clock)")
     return 0 if passed == len(results) else 1
+
+
+def painted_after_first_frame(seen: Observed) -> tuple[bool, str]:
+    """
+    Was end-to-end closed at the client's paint rather than at the socket write?
+
+    The evidence is `perceived_total >= avatar_first_frame` -- paint cannot precede the
+    frame that was painted. `perceived_total` existing at all is most of the point: it is
+    reported by the client after `drawImage`, so a server that stopped its stopwatch at
+    the socket write could not produce it.
+
+    Checked **per turn**, which is the part that took a failing run to learn. The flat
+    `latencies` dict is last-write-wins across the session, so with three turns it happily
+    compared a paint from turn 1 against a first frame from turn 3 -- and when the LLM was
+    slow on the later turn, 3094ms < 5665ms and the check failed. Nothing was wrong with
+    the server; the assertion was reading across a boundary that matters. The same shape of
+    mistake as the fixed settle windows in an earlier session: an assertion that only holds
+    when the timings happen to cooperate is worse than no assertion, because it fails
+    loudly at the wrong thing.
+    """
+    turns = [
+        (epoch, stages)
+        for epoch, stages in sorted(seen.per_turn.items())
+        if "perceived_total" in stages and "avatar_first_frame" in stages
+    ]
+    if not turns:
+        return False, "no turn reported both a paint and a first frame"
+    bad = [
+        f"turn {epoch}: paint={s['perceived_total']:.0f}ms "
+        f"< frame={s['avatar_first_frame']:.0f}ms"
+        for epoch, s in turns
+        if s["perceived_total"] < s["avatar_first_frame"]
+    ]
+    if bad:
+        return False, "; ".join(bad)
+    worst = max(s["perceived_total"] for _, s in turns)
+    return True, f"{len(turns)} turn(s), paint >= first frame in each; slowest {worst:.0f}ms"
 
 
 def ered(latencies: dict[str, float]) -> str:
