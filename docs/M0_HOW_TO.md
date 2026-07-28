@@ -66,6 +66,36 @@ That mismatch is itself a §2.1 finding. A model whose documented stack no longe
 on the current free-tier runtime has a real clean-clone problem, and that belongs in the
 memo whichever model you pick.
 
+## The fastest way to run it: one command
+
+Paste this into any GPU environment — Colab in a browser, Colab through the VS Code
+extension, Kaggle, or a rented box:
+
+```
+!git clone -q https://github.com/prashanth-chinnala/nod.git \
+  && python nod/scripts/m0_spike.py
+```
+
+`scripts/m0_spike.py` is the notebook's logic as a version-controlled, `ruff`-clean script.
+It prints a JSON block; paste that back. Exit codes are meaningful: `2` no GPU, `3` Python
+mismatch (take Route A), `5` imports unresolved, `6` bad checkpoints, `1` inference did not
+actually run, `0` real numbers.
+
+It refuses to skip its three gates, and each corresponds to a way run 1 produced
+plausible-looking numbers that measured nothing:
+
+- **Imports must resolve before the download.** Run 1 fetched then discovered nothing
+  imported.
+- **Every checkpoint is audited.** Detects git-lfs pointer files and Google Drive quota
+  HTML by their first bytes, not just absence — those produce a file of the wrong *kind*,
+  which is what makes them silent.
+- **`inference_actually_ran`** is computed from exit code **and** an output file **and**
+  VRAM passing 500 MiB. Run 1 reported a 3 MiB peak beside a 15.43-second "warm inference";
+  the time was real and measured how long the process took to fail.
+
+Use `notebooks/m0_musetalk_v2.ipynb` instead if you want to step through it, or if you need
+Route A's conda install.
+
 ## The plan
 
 Two viable routes. Read both before starting — the choice depends on how much of your
