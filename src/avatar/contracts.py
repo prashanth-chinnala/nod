@@ -21,7 +21,7 @@ it is replaceable without the state machine noticing:
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from typing import Protocol, TypedDict, runtime_checkable
 
@@ -173,13 +173,23 @@ class SentenceStream(Protocol):
     sub-second turnaround is achievable.
     """
 
-    def __call__(self, history: Sequence[Message]) -> AsyncIterator[str]: ...
+    def __call__(self, history: Sequence[Message]) -> AsyncGenerator[str, None]:
+        """
+        Must return a closeable generator, not merely an iterator.
+
+        The orchestrator closes this deterministically when a turn is abandoned, and
+        for an HTTP-backed model that close is what aborts the request. An iterator
+        with no `aclose` would leave the provider generating a response nobody hears.
+        """
+        ...
 
 
 class SpeechStream(Protocol):
     """TTS, streaming audio chunks tagged with the turn that requested them."""
 
-    def __call__(self, text: str, epoch: int) -> AsyncIterator[AudioChunk]: ...
+    def __call__(self, text: str, epoch: int) -> AsyncGenerator[AudioChunk, None]:
+        """Closeable, for the same reason as `SentenceStream`."""
+        ...
 
 
 Clock = Callable[[], float]

@@ -20,6 +20,10 @@ dev = [
   "ruff>=0.6",
   "mypy>=1.11",
 ]
+# The real interviewer. Small install; needs ANTHROPIC_API_KEY at runtime.
+llm = [
+  "anthropic>=0.120",
+]
 # Silero VAD. A ~2GB install for a ~2MB model, which is why it is opt-in and why the
 # default detector needs nothing at all.
 vad = [

@@ -33,6 +33,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
+from contextlib import aclosing
 
 from avatar.contracts import (
     AudioChunk,
@@ -328,34 +329,43 @@ class SessionOrchestrator:
             llm_started = self._clock()
             saw_sentence = False
 
-            async for sentence in self._llm(list(self.history)):
-                if my_epoch != self.epoch:
-                    return
-                if not saw_sentence:
-                    saw_sentence = True
-                    self._telemetry.observe_ms(
-                        STAGE_LLM_TTFT,
-                        (self._clock() - llm_started) * 1000,
-                        epoch=my_epoch,
-                    )
-                turn.text_generated += sentence
-
-                tts_started = self._clock()
-                saw_audio = False
-                async for chunk in self._tts(sentence, my_epoch):
+            # `aclosing` is load-bearing, not tidiness. Returning out of an `async for`
+            # does not close the generator -- Python leaves that to the garbage
+            # collector, which may be seconds later or never. For a real LLM or TTS
+            # backed by an HTTP stream, that means a barge-in abandons the turn
+            # logically while the provider keeps generating, and billing, a response
+            # nobody will ever hear. Closing deterministically runs the generator's
+            # `finally`, which aborts the request.
+            async with aclosing(self._llm(list(self.history))) as sentences:
+                async for sentence in sentences:
                     if my_epoch != self.epoch:
-                        self._telemetry.stale_artifact_dropped(
-                            "audio", stale_epoch=my_epoch, current=self.epoch
-                        )
                         return
-                    if not saw_audio:
-                        saw_audio = True
+                    if not saw_sentence:
+                        saw_sentence = True
                         self._telemetry.observe_ms(
-                            STAGE_TTS_FIRST_AUDIO,
-                            (self._clock() - tts_started) * 1000,
+                            STAGE_LLM_TTFT,
+                            (self._clock() - llm_started) * 1000,
                             epoch=my_epoch,
                         )
-                    await self._speak(turn, chunk, my_epoch)
+                    turn.text_generated += sentence
+
+                    tts_started = self._clock()
+                    saw_audio = False
+                    async with aclosing(self._tts(sentence, my_epoch)) as chunks:
+                        async for chunk in chunks:
+                            if my_epoch != self.epoch:
+                                self._telemetry.stale_artifact_dropped(
+                                    "audio", stale_epoch=my_epoch, current=self.epoch
+                                )
+                                return
+                            if not saw_audio:
+                                saw_audio = True
+                                self._telemetry.observe_ms(
+                                    STAGE_TTS_FIRST_AUDIO,
+                                    (self._clock() - tts_started) * 1000,
+                                    epoch=my_epoch,
+                                )
+                            await self._speak(turn, chunk, my_epoch)
 
             if my_epoch == self.epoch:
                 await self._finish_turn(turn)

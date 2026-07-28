@@ -45,7 +45,7 @@ from avatar.audio.turn_detection import (
 from avatar.audio.vad import FRAME_MS, build_vad
 from avatar.contracts import RendererConfig
 from avatar.idle import placeholder_idle_loop
-from avatar.llm import ScriptedInterviewer
+from avatar.llm_anthropic import build_llm
 from avatar.mixer import FRAME_INTERVAL_MS, TARGET_FPS, FrameMixer
 from avatar.orchestrator import RENDER_LEAD_IN_FRAMES, SessionOrchestrator
 from avatar.renderers import build
@@ -83,6 +83,14 @@ The one-line renderer swap, as an environment variable.
 
 `AVATAR_RENDERER=musetalk uvicorn avatar.server:app` is the whole change once M2
 lands. Nothing else in this file mentions a model.
+"""
+
+LLM_NAME = os.environ.get("AVATAR_LLM", "scripted")
+"""
+Which interviewer to run. `scripted` needs nothing; `anthropic` needs a key.
+
+Defaults to `scripted` so a clean clone runs with no credentials and no network, which
+is what the README promises. `AVATAR_LLM=anthropic` is the whole switch.
 """
 
 VAD_NAME = os.environ.get("AVATAR_VAD", "energy")
@@ -129,7 +137,7 @@ async def mockup() -> FileResponse:
 
 @app.get("/healthz")
 async def healthz() -> dict[str, str]:
-    return {"status": "ok", "renderer": RENDERER_NAME}
+    return {"status": "ok", "renderer": RENDERER_NAME, "llm": LLM_NAME, "vad": VAD_NAME}
 
 
 class BrowserSession:
@@ -168,7 +176,7 @@ class BrowserSession:
             ),
             mixer=self._mixer,
             transport=self._transport,
-            llm=ScriptedInterviewer(),
+            llm=build_llm(LLM_NAME),  # type: ignore[arg-type]
             tts=ToneTTS(),
             telemetry=self._telemetry,
         )
@@ -187,6 +195,7 @@ class BrowserSession:
                 "renderer": RENDERER_NAME,
                 "frame_width": FRAME_WIDTH,
                 "frame_height": FRAME_HEIGHT,
+                "llm": LLM_NAME,
                 "vad": VAD_NAME,
                 "vad_frame_ms": FRAME_MS,
                 "end_of_turn_silence_ms": END_OF_TURN_SILENCE_MS,

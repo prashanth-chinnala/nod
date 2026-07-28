@@ -26,7 +26,7 @@ from __future__ import annotations
 import asyncio
 import math
 import struct
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 
 from avatar.contracts import AudioChunk, Sleep
 
@@ -137,10 +137,10 @@ class ToneTTS:
             return 0
         return int(len(text.split()) / self.words_per_minute * 60_000)
 
-    def __call__(self, text: str, epoch: int) -> AsyncIterator[AudioChunk]:
+    def __call__(self, text: str, epoch: int) -> AsyncGenerator[AudioChunk, None]:
         return self._generate(text, epoch)
 
-    async def _generate(self, text: str, epoch: int) -> AsyncIterator[AudioChunk]:
+    async def _generate(self, text: str, epoch: int) -> AsyncGenerator[AudioChunk, None]:
         total_ms = self.duration_ms(text)
         if total_ms <= 0:
             return
