@@ -26,6 +26,7 @@ from avatar.llm import (
     split_sentences,
 )
 from avatar.mixer import TARGET_FPS
+from avatar.png import decode as png_decode
 
 
 async def stream(*tokens: str) -> AsyncIterator[str]:
@@ -254,12 +255,21 @@ def test_placeholder_loop_is_exactly_one_breath_long() -> None:
     assert len(loop) == int(4.0 * TARGET_FPS)
 
 
-def test_placeholder_loop_frames_are_valid_bmps() -> None:
+def test_placeholder_loop_frames_are_decodable_images() -> None:
+    """
+    The idle loop shares the stub's rasteriser, so it shares its wire format.
+
+    Was asserting BMP magic bytes; the format became PNG once 108 KB frames were
+    measured at 22 Mbps. Decoding is the better assertion anyway -- it would catch a
+    truncated or mis-strided frame, which a magic-byte check happily passes.
+    """
     loop = placeholder_idle_loop(width=8, height=8)
 
     frame = loop.next_frame(0)
 
-    assert frame.data.startswith(b"BM")
+    width, height, rows = png_decode(frame.data)
+    assert (width, height) == (8, 8)
+    assert len(rows) == 8 and all(len(r) == 8 * 3 for r in rows)
 
 
 def test_placeholder_loop_declares_every_frame_a_clean_exit() -> None:

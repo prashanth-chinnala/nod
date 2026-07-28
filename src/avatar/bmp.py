@@ -58,6 +58,26 @@ class Canvas:
         for row in self._rows[y0:y1]:
             row[x0 * 3 : x1 * 3] = span
 
+    def to_png(self) -> bytes:
+        """
+        The same image, deflate-compressed and roughly 40x smaller.
+
+        This is the wire format. `to_bmp` is kept because it is what the tests were
+        written against and because it is the one encoder with no compression to be
+        wrong about -- a useful thing to compare against when a frame looks off.
+        """
+        from avatar.png import encode
+
+        rows = []
+        span = self.width * 3
+        for row in self._rows:
+            rgb = bytearray(span)
+            rgb[0::3] = row[2:span:3]  # BMP stores BGR; PNG wants RGB
+            rgb[1::3] = row[1:span:3]
+            rgb[2::3] = row[0:span:3]
+            rows.append(bytes(rgb))
+        return encode(self.width, self.height, rows)
+
     def to_bmp(self) -> bytes:
         pixels = b"".join(self._rows)
         # Negative height stores rows top-down, so row 0 is the top and callers do

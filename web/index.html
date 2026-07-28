@@ -474,6 +474,18 @@ function log(event, detail, cls) {
 const canvas = el("canvas");
 const ctx2d = canvas.getContext("2d", { alpha: false });
 
+// Read the format off the bytes rather than trusting a declaration. The renderer behind
+// the Protocol chooses its own encoding -- the stub emits PNG, and a photographic model
+// will want JPEG -- and sniffing means that swap needs no protocol change, no `hello`
+// field to keep in sync, and no coordinated deploy of page and server. Three magic
+// numbers is a smaller thing to own than a negotiated content type.
+function sniffImageType(bytes) {
+  if (bytes.length >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50) return "image/png";
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8) return "image/jpeg";
+  if (bytes.length >= 2 && bytes[0] === 0x42 && bytes[1] === 0x4d) return "image/bmp";
+  return "";   // let the browser sniff; an empty type is better than a wrong one
+}
+
 async function drawFrame(payload, ptsMs, epoch) {
   bytesReceived += payload.byteLength + HEADER_SIZE;
   // A frame arriving while the previous one is still decoding is dropped, not
@@ -482,7 +494,7 @@ async function drawFrame(payload, ptsMs, epoch) {
   if (drawing) { framesDropped += 1; return; }
   drawing = true;
   try {
-    const bitmap = await createImageBitmap(new Blob([payload], { type: "image/bmp" }));
+    const bitmap = await createImageBitmap(new Blob([payload], { type: sniffImageType(payload) }));
     if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
       canvas.width = bitmap.width;
       canvas.height = bitmap.height;

@@ -41,6 +41,21 @@ from avatar.contracts import IDLE_EPOCH, AudioChunk, Frame
 
 FRAME_INTERVAL_MS = 40  # 25fps
 
+WIRE_FORMAT = "png"
+"""
+The encoding frames go over the wire in.
+
+Was BMP, which `bmp.py` itself called "fine on localhost and absurd over a network" --
+and then it was measured: **108 KB per frame, 22.2 Mbps at 25fps.** Localhost swallows
+that without noticing, which is exactly why it survived. Through a Cloudflare tunnel to
+a Colab runtime, 0.5fps of 25 arrived and the audio broke up competing with it.
+
+PNG costs a `zlib.compress` per distinct mouth level -- twelve per session, not 25 a
+second -- and is lossless, so nothing measured downstream is measuring an artefact. The
+client sniffs the format from its magic bytes, so a renderer that prefers JPEG needs no
+protocol change.
+"""
+
 MOUTH_LEVELS = 12
 """
 Distinct mouth openings.
@@ -87,7 +102,14 @@ def mouth_level(pcm: bytes) -> int:
     return max(0, min(MOUTH_LEVELS - 1, round(scaled * (MOUTH_LEVELS - 1))))
 
 
-def draw_placeholder(width: int, height: int, level: int, *, brightness: float = 1.0) -> bytes:
+def draw_placeholder(
+    width: int,
+    height: int,
+    level: int,
+    *,
+    brightness: float = 1.0,
+    fmt: str = WIRE_FORMAT,
+) -> bytes:
     """
     Five rectangles. `level` is the mouth opening, 0 (closed) to MOUTH_LEVELS - 1.
 
@@ -98,6 +120,9 @@ def draw_placeholder(width: int, height: int, level: int, *, brightness: float =
     that is perfectly static is indistinguishable from a stalled track, which is the
     one failure the mixer exists to prevent and therefore the one a demo must be able
     to show is not happening.
+
+    `fmt` is `"png"` on the wire and `"bmp"` only where a test wants an encoder with no
+    compression to be wrong about. See WIRE_FORMAT for why the default changed.
     """
     canvas = Canvas(width, height, GROUND)
 
@@ -131,7 +156,11 @@ def draw_placeholder(width: int, height: int, level: int, *, brightness: float =
         MOUTH,
     )
 
-    return canvas.to_bmp()
+    if fmt == "bmp":
+        return canvas.to_bmp()
+    if fmt != "png":
+        raise ValueError(f"unknown frame format {fmt!r}; expected 'png' or 'bmp'")
+    return canvas.to_png()
 
 
 @dataclass(frozen=True, slots=True)

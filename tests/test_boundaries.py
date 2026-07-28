@@ -29,6 +29,7 @@ import pytest
 from avatar import contracts, mixer, orchestrator, state, telemetry
 from avatar.audio.tts import SAMPLE_RATE
 from avatar.contracts import RendererConfig, TalkingHeadRenderer
+from avatar.png import decode as png_decode
 from avatar.renderers import build
 from avatar.renderers.stub import MOUTH_LEVELS, StubRenderer, draw_placeholder, mouth_level
 
@@ -183,7 +184,13 @@ def test_stub_emits_frames_paced_off_pushed_audio() -> None:
 
     assert len(frames) == 3
     assert all(f.epoch == 7 for f in frames), "the renderer propagates the turn tag"
-    assert all(f.data.startswith(b"BM") for f in frames), "valid BMP payloads"
+    # Decodable, not merely non-empty. The wire format changed from BMP to PNG when
+    # 108 KB frames turned out to be 22 Mbps, so this asserts the payload survives a
+    # real decode rather than pinning magic bytes a future renderer may not share.
+    for frame in frames:
+        width, height, rows = png_decode(frame.data)
+        assert (width, height) == (4, 4)
+        assert len(rows) == 4
 
 
 def test_stub_withholds_frames_until_its_lookahead_window_is_filled() -> None:
