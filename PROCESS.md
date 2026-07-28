@@ -200,8 +200,9 @@ transport all live outside it — see §3.2.
 | End-to-end latency to browser paint | **Built** (M3) | Client reports first paint; the server cannot measure this for itself |
 | **Audio in → lip-synced video out** | **Not built** | Blocked on M0. Needs a GPU, and Rule 1 forbids estimating what it would do |
 | **A talking-head model of any kind** | **Not built** | Same. `StubRenderer` proves the interface, not the capability |
-| **Real STT** | **Not built** (M4) | The client sends explicit turn events instead; `web/index.html` captures the mic but does not transcribe |
-| **Real turn detection (VAD)** | **Not built** (M4) | A client-side energy gate stands in, behind a checkbox and labelled as such. Onset and end-of-turn need separately tunable thresholds; the gate conflates them |
+| **Real STT** | **Not built** | The mic streams to the server and drives turn-taking, but nothing transcribes it. A turn carries its duration instead of words, which the orchestrator accepts unchanged — that is what makes STT a drop-in |
+| Turn-taking policy | **Built** (M4) | Server-side. Onset, hysteresis, retraction, and end-of-turn as separately tuned decisions; 30 tests over probability sequences |
+| **A real voice activity detector** | **Partly** (M4) | The policy is real and tested. The default detector under it is an energy gate that cannot tell speech from a door. `SileroVad` is written, wired, and **has never been executed** — no torch in the dev environment |
 | **Real LLM** | **Not built** (M4) | `ScriptedInterviewer` asks canned questions. The sentence chunker it feeds is real and survives the swap |
 | **Real TTS** | **Not built** (M4) | `ToneTTS` emits a sine wave of the correct duration. Timing and chunking are real; the voice is not |
 | Frame encoding (JPEG/WebP) | **Not built** (M2) | Uncompressed BMP costs ~2.7MB/s at 256×144. Fine on localhost, indefensible over a network |
@@ -261,6 +262,7 @@ These are real numbers from a real run, and they say nothing about any model. Re
 | Turn start → client reports paint | **398ms** | `perceived_total`, closed by a client `first_paint` report | The 2ms delta is loopback, not a browser. See the caveat. |
 | Barge-in → server-side silence | **0.6ms** | `interrupt_to_silent` histogram | State transition, renderer reset, and flush dispatch. Excludes client-side stop. |
 | Output resolution | 256×144 | BMP, uncompressed | Chosen to keep an unencoded 25fps stream tolerable, not for quality |
+| End-of-turn detection | **700ms** | `turn_detect` histogram, driven by synthetic speech over a real socket | The configured silence window, by construction. See caveat 4 |
 
 **Host:** Apple M1 Pro, 16GB, macOS 15.1.1, Python 3.12.3. **No GPU involved.**
 Reproduce with `uvicorn avatar.server:app` then `python scripts/smoke_session.py`.
@@ -282,6 +284,12 @@ Reproduce with `uvicorn avatar.server:app` then `python scripts/smoke_session.py
    message is dispatched, not when the candidate stops hearing the avatar. The
    audible interruption latency includes the socket hop and the client stopping its
    scheduled buffers, and that number is not instrumented yet.
+4. **`turn_detect` (700ms) is a configuration value, not a measurement.** It is the
+   silence window the policy waits out before declaring a turn finished, and it appears
+   in the budget unchanged no matter what hardware runs underneath. Recorded here
+   because it occupies a real and large row in §1.5 — and worth saying plainly, because
+   it is the one term in the whole budget that a faster GPU cannot touch. If a
+   sub-second turnaround is the target, this single number is over two thirds of it.
 
 ### 3.4 Gap to production real-time
 

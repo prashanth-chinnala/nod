@@ -20,6 +20,12 @@ dev = [
   "ruff>=0.6",
   "mypy>=1.11",
 ]
+# Silero VAD. A ~2GB install for a ~2MB model, which is why it is opt-in and why the
+# default detector needs nothing at all.
+vad = [
+  "torch>=2.0",
+  "torchaudio>=2.0",
+]
 # Kept out of [dev] so CI never needs a web stack to lint the state machine. The
 # codec and the Transport implementation are tested with a list standing in for the
 # socket, so nothing in `tests/` imports these.
@@ -49,7 +55,7 @@ files = ["src/avatar"]
 # runs there. Suppressing the missing import keeps the type check on the modules
 # that matter rather than forcing a web dependency into CI to satisfy the linter.
 [[tool.mypy.overrides]]
-module = ["fastapi.*", "starlette.*", "uvicorn.*"]
+module = ["fastapi.*", "starlette.*", "uvicorn.*", "torch.*"]
 ignore_missing_imports = true
 
 # Consequence of the above: with fastapi unresolved, its decorators are Any, and

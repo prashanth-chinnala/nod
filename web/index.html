@@ -194,6 +194,14 @@
     border-radius: 7px;
   }
   .disclosure strong { color: var(--speaking); font-weight: 500; }
+  .disclosure + .disclosure { margin-top: 8px; }
+  .disclosure code {
+    font-family: var(--data);
+    font-size: 11.5px;
+    background: rgba(255,255,255,0.07);
+    padding: 1px 4px;
+    border-radius: 3px;
+  }
 
   /* ---------- readouts ---------- */
 
@@ -296,7 +304,16 @@
         the mouth height is computed from the actual amplitude of each frame's 40ms of
         audio, which is what makes audio-driven video visible. A talking-head model
         lands in M2, behind the same interface. The voice is a synthesised tone, not
-        speech; real TTS lands in M4.
+        speech.
+      </p>
+      <p class="disclosure">
+        <strong>Turn detection is real; the detector is not.</strong> Tick the mic box
+        and your speech drives the state machine — onset, retraction, and end-of-turn
+        are decided server-side by a tested policy with separately tuned thresholds.
+        The default detector underneath it is an <em>energy gate</em>, so it will
+        trigger on a door as readily as on a voice. Run with
+        <code>AVATAR_VAD=silero</code> for a real one. There is no transcriber, so a
+        turn carries its duration instead of words.
       </p>
     </div>
 
@@ -313,6 +330,8 @@
         <div class="row"><span class="k">Turn epoch</span><span class="v" id="ep">0</span></div>
         <div class="row"><span class="k">Buffer depth</span><span class="v" id="buf">0 fr</span></div>
         <div class="row"><span class="k">Audio acked</span><span class="v" id="acked">0 ms</span></div>
+        <div class="row"><span class="k">Speech probability</span><span class="v" id="prob">—</span></div>
+        <div class="row"><span class="k">Mic uploaded</span><span class="v" id="mic-sent">0 KB</span></div>
         <div class="row"><span class="k">Received</span><span class="v" id="bytes">0 KB</span></div>
       </div>
     </div>
@@ -331,11 +350,11 @@
   </div>
 
   <div class="panel controls">
-    <span class="label">candidate</span>
+    <span class="label">manual</span>
     <button type="button" id="btn-speak" disabled>Starts speaking</button>
     <button type="button" id="btn-done" disabled>Stops speaking</button>
     <button type="button" id="btn-retract" disabled>Retract (noise)</button>
-    <label class="check"><input type="checkbox" id="chk-mic"> use mic energy for barge-in</label>
+    <label class="check"><input type="checkbox" id="chk-mic"> stream mic — server detects turns</label>
   </div>
 
   <div class="panel log" id="log"></div>
@@ -400,7 +419,8 @@ let paintedEpoch = 0;         // highest turn epoch whose first frame we have pa
 
 let micStream = null;
 let micAnalyser = null;
-let micTriggered = false;
+let micTap = null;
+let micBytesSent = 0;
 
 const barEls = [];
 (function buildBars() {
@@ -601,7 +621,17 @@ function handleControl(message) {
       el("renderer").textContent = message.renderer;
       canvas.width = message.frame_width;
       canvas.height = message.frame_height;
-      log("hello", `${message.renderer} · ${message.target_fps}fps · ${message.sample_rate}Hz · lead-in ${message.render_lead_in_frames}fr`);
+      log("hello", `${message.renderer} · vad:${message.vad} · ${message.target_fps}fps · ` +
+        `${message.sample_rate}Hz · lead-in ${message.render_lead_in_frames}fr · ` +
+        `end-of-turn after ${message.end_of_turn_silence_ms}ms silence`);
+      if (audioCtx && audioCtx.sampleRate !== message.sample_rate) {
+        // Not cosmetic: the VAD is trained at a fixed rate and scores badly rather
+        // than failing when fed something else, which looks like a VAD that misses
+        // quiet speech.
+        log("rate-mismatch",
+          `browser ${audioCtx.sampleRate}Hz vs server ${message.sample_rate}Hz — ` +
+          `VAD accuracy will suffer`, "fail");
+      }
       break;
 
     case "flush_audio":
@@ -621,6 +651,12 @@ function handleControl(message) {
       break;
 
     case "stats":
+      if (message.speech_probability !== undefined) {
+        el("prob").textContent =
+          message.speech_probability.toFixed(2) + (message.in_speech ? "  speech" : "");
+        el("prob").style.color = message.in_speech ? "var(--listening)" : "";
+      }
+      el("mic-sent").textContent = (micBytesSent / 1024).toFixed(0) + " KB";
       el("rep").textContent = message.frames_repeated;
       el("disc").textContent = message.frames_discarded;
       el("ep").textContent = message.epoch;
@@ -670,7 +706,10 @@ function handleEvent(message) {
 }
 
 async function connect() {
-  audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+  // Created at the server's sample rate so neither playback nor capture needs
+  // resampling: the tone arrives at 16kHz and the VAD expects 16kHz.
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  audioCtx = audioCtx || new Ctx({ sampleRate: 16000 });
   await audioCtx.resume();
   nextAudioTime = audioCtx.currentTime;
 
@@ -680,6 +719,7 @@ async function connect() {
 
   sessionStart = performance.now();
   framesDrawn = 0; bytesReceived = 0; ackedMs = 0; framesDropped = 0; paintedEpoch = 0;
+  micBytesSent = 0;
   lastTurnStages = {}; renderWaterfall();
   el("ff").textContent = "—";
   el("acked").textContent = "0 ms";
@@ -721,35 +761,79 @@ function disconnect() {
 
 // ---------- mic ----------
 
+// The mic is captured and streamed as raw PCM; the server runs the VAD and owns the
+// turn-taking policy. That is deliberate — one implementation with one set of
+// thresholds that can be tested, rather than whatever each browser shipped. The cost
+// is that audio goes over the wire continuously while the mic is on, which is stated
+// on the page rather than hidden.
+
 async function startMic() {
+  if (!audioCtx) {
+    log("mic-blocked", "start the session first — audio needs a user gesture", "fail");
+    el("chk-mic").checked = false;
+    return;
+  }
   try {
-    // Echo cancellation matters here: without it the avatar's own tone comes back
-    // through the mic and triggers a barge-in against itself, forever.
+    // Echo cancellation matters here: without it the avatar's own voice comes back
+    // through the mic and triggers a barge-in against itself, forever. No VAD fixes
+    // that — this flag is the fix.
     micStream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+        channelCount: 1,
+      },
     });
   } catch (err) {
     log("mic-denied", String(err), "fail");
     el("chk-mic").checked = false;
     return;
   }
-  audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+
   const source = audioCtx.createMediaStreamSource(micStream);
   micAnalyser = audioCtx.createAnalyser();
   micAnalyser.fftSize = 1024;
   source.connect(micAnalyser);
-  log("mic-on", "energy threshold stands in for Silero VAD until M4");
+
+  // ScriptProcessorNode is deprecated in favour of AudioWorklet. Kept because the
+  // worklet needs a separate module file or a Blob URL, and the README promises a
+  // clean clone with no build step. Documented shortcut, same class as the WebSocket
+  // transport standing in for WebRTC.
+  micTap = audioCtx.createScriptProcessor(1024, 1, 1);
+  micTap.onaudioprocess = (event) => {
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+    const input = event.inputBuffer.getChannelData(0);
+    const pcm = new Int16Array(input.length);
+    for (let i = 0; i < input.length; i++) {
+      const clamped = Math.max(-1, Math.min(1, input[i]));
+      pcm[i] = Math.round(clamped * 32767);
+    }
+    socket.send(pcm.buffer);
+    micBytesSent += pcm.buffer.byteLength;
+  };
+  source.connect(micTap);
+  // A ScriptProcessorNode only fires while connected to a destination. Routing it
+  // through a muted gain node keeps it alive without playing the mic back into the
+  // room, which would be a feedback loop.
+  const mute = audioCtx.createGain();
+  mute.gain.value = 0;
+  micTap.connect(mute);
+  mute.connect(audioCtx.destination);
+
+  log("mic-on", `streaming ${audioCtx.sampleRate}Hz PCM; server runs the VAD`);
 }
 
 function stopMic() {
+  if (micTap) { micTap.onaudioprocess = null; micTap.disconnect(); }
   if (micStream) micStream.getTracks().forEach((t) => t.stop());
+  micTap = null;
   micStream = null;
   micAnalyser = null;
   el("db").textContent = "off";
+  el("prob").textContent = "—";
   barEls.forEach((b) => (b.style.height = "12%"));
 }
-
-const MIC_TRIGGER_DB = -34;
 
 setInterval(() => {
   if (!micAnalyser) return;
@@ -765,17 +849,6 @@ setInterval(() => {
     const envelope = Math.sin((i / barEls.length) * Math.PI);
     const height = Math.max(8, Math.min(100, (db + 60) * 1.6 * envelope));
     barEls[i].style.height = height.toFixed(0) + "%";
-  }
-
-  // A crude energy gate, and labelled as one. Real turn detection needs a VAD with
-  // separately tunable onset and end-of-turn thresholds -- they are not the same
-  // decision, and conflating them is what makes an avatar interrupt on a cough.
-  if (!el("chk-mic").checked) return;
-  if (db > MIC_TRIGGER_DB && !micTriggered) {
-    micTriggered = true;
-    send({ type: "speech_start" });
-  } else if (db <= MIC_TRIGGER_DB - 6 && micTriggered) {
-    micTriggered = false;
   }
 }, 100);
 

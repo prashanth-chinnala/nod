@@ -33,6 +33,10 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - operator error, not a code path
     sys.exit("needs the server extras: pip install -e '.[dev,server]'")
 
+import math
+import struct
+
+from avatar.audio.vad import FRAME_BYTES, FRAME_SAMPLES, SAMPLE_RATE
 from avatar.mixer import TARGET_FPS
 from avatar.transport.websocket import Kind, decode
 
@@ -42,6 +46,39 @@ SPEAK_SETTLE_SECONDS = 2.0
 """Long enough for TTFT + first audio + the lead-in buffer, with room to spare."""
 
 BARGE_IN_SETTLE_SECONDS = 1.0
+
+MIC_SPEECH_FRAMES = 20
+"""~640ms of synthetic speech: past min_speech_ms, so it is a real turn."""
+
+MIC_SILENCE_FRAMES = 28
+"""~896ms of silence: past the 700ms end-of-turn window, with margin."""
+
+
+def mic_frame(amplitude: float) -> bytes:
+    """One VAD-sized frame of a sine, as the browser would send it."""
+    peak = int(32767 * amplitude)
+    step = 2 * math.pi * 220.0 / SAMPLE_RATE
+    return struct.pack(
+        f"<{FRAME_SAMPLES}h",
+        *(int(peak * math.sin(step * n)) for n in range(FRAME_SAMPLES)),
+    )
+
+
+async def speak_into_the_mic(socket, speech_frames: int, silence_frames: int) -> None:
+    """
+    Stream synthetic audio the way the browser streams the microphone.
+
+    This is the only way to exercise the real path end to end: the unit tests prove the
+    turn policy against a list of floats, and this proves the bytes a browser sends
+    actually reach it through the socket, the buffer, and the VAD.
+    """
+    loud, quiet = mic_frame(0.3), b"\x00" * FRAME_BYTES
+    for _ in range(speech_frames):
+        await socket.send(loud)
+        await asyncio.sleep(0.005)
+    for _ in range(silence_frames):
+        await socket.send(quiet)
+        await asyncio.sleep(0.005)
 
 
 @dataclass
@@ -60,6 +97,7 @@ class Observed:
     painted_epoch: int = 0
     frames_repeated: int = 0
     frames_discarded: int = 0
+    turn_detect_ms: float | None = None
 
 
 async def observe(socket: object, seen: Observed, stop: asyncio.Event) -> None:
@@ -155,8 +193,20 @@ async def main() -> int:
         await asyncio.sleep(0.1)
         await socket.send(json.dumps({"type": "end_of_turn", "transcript": "second"}))
         await asyncio.sleep(0.8)
+        states_before_barge_in = len(seen.states)
         await socket.send(json.dumps({"type": "speech_start"}))  # <-- barge-in
         await asyncio.sleep(BARGE_IN_SETTLE_SECONDS)
+        barge_in_states = seen.states[states_before_barge_in:]
+
+        # The barge-in left the session in LISTENING, so this scenario starts there
+        # rather than from IDLE -- an already-listening session does not re-enter
+        # LISTENING, and the transition into THINKING is the proof the VAD's
+        # end-of-turn reached the orchestrator.
+        print("\nturn 3: no buttons -- synthetic speech through the VAD")
+        states_before_mic = len(seen.states)
+        await speak_into_the_mic(socket, MIC_SPEECH_FRAMES, MIC_SILENCE_FRAMES)
+        await asyncio.sleep(1.2)
+        mic_states = seen.states[states_before_mic:]
 
         elapsed = time.monotonic() - connected_at
         stop.set()
@@ -170,6 +220,7 @@ async def main() -> int:
     print(f"  mixer       {seen.frames_repeated} repeated, {seen.frames_discarded} discarded")
     print(f"  flushes     {seen.flushes}")
     print(f"  latency     {ered(seen.latencies)}")
+    print(f"  mic turn    {' -> '.join(mic_states) or 'nothing'}")
 
     print("\n--- assertions ---")
     results = [
@@ -207,7 +258,11 @@ async def main() -> int:
             "LLM and TTS stages were measured",
             {"llm_ttft", "tts_first_audio"} <= seen.latencies.keys(),
         ),
-        check("barge-in returned the session to LISTENING", seen.states[-1] == "LISTENING"),
+        check(
+            "barge-in went through CANCELLING and landed in LISTENING",
+            barge_in_states[:2] == ["CANCELLING", "LISTENING"],
+            " -> ".join(barge_in_states),
+        ),
         check("barge-in flushed the client's audio", seen.flushes >= 1, f"{seen.flushes}"),
         check(
             "stale audio was dropped at the epoch check, not merely overtaken",
@@ -231,6 +286,16 @@ async def main() -> int:
             >= seen.latencies.get("avatar_first_frame", 0),
             f"paint={seen.latencies.get('perceived_total', 0):.0f}ms vs "
             f"first frame={seen.latencies.get('avatar_first_frame', 0):.0f}ms",
+        ),
+        check(
+            "microphone audio alone drove a turn, no buttons",
+            mic_states[:2] == ["THINKING", "SPEAKING"],
+            " -> ".join(mic_states) or "nothing happened",
+        ),
+        check(
+            "end-of-turn detection latency was recorded",
+            "turn_detect" in seen.latencies,
+            f"{seen.latencies.get('turn_detect', 0):.0f}ms (the configured silence window)",
         ),
         check("no protocol errors", not seen.errors, "; ".join(seen.errors)),
     ]

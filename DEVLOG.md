@@ -209,3 +209,93 @@ been written into a judgment section. `PROCESS.md` §3.3 headline rows still rea
 
 **Next:** M0 on Colab. If the GPU is unavailable, M4 (VAD, real STT/LLM/TTS) is not
 blocked on it and can go first — the Protocols are already in place.
+
+---
+
+## Session 3 — M0 handed off, M4's turn-taking built
+
+**Attempted:** make M0 runnable by someone who has not used Colab, then build the half
+of M4 that is not blocked on hardware or API keys.
+
+**Worked.** 172 tests in 0.16s, ruff + format + mypy strict clean, and 17/17 smoke
+assertions over a real socket — including a new one that drives a whole turn with
+synthetic microphone audio and no button presses.
+
+### M0 handoff
+
+`docs/M0_SPIKE.md` is the runbook; `docs/M0_FOR_BEGINNERS.md` is the same job written
+for someone new to Colab, with a glossary and the two facts about Colab that bite you
+if nobody tells you (the runtime is wiped when you close the tab, and the free tier
+does not guarantee a GPU). `notebooks/m0_musetalk_spike.ipynb` is the timed harness.
+
+### M4, the part that could be finished
+
+Split into policy and detector, on purpose:
+
+| File | What | Verified? |
+|---|---|---|
+| `audio/turn_detection.py` | Onset, hysteresis, retraction, end-of-turn as separate decisions | Yes — 30 tests over probability sequences |
+| `audio/vad.py` — `EnergyVad` | RMS gate, zero dependencies | Yes |
+| `audio/vad.py` — `SileroVad` | Real VAD via torch.hub | **No. Never executed.** |
+| `server.py` | Mic bytes → VAD → policy → orchestrator | Yes, end-to-end |
+| `web/index.html` | Streams mic PCM; server decides turns | Yes, by the smoke script's synthetic client |
+
+The split is the point. Silero answers "is this 32ms speech?" and nothing else. Every
+decision that matters — how certain before interrupting, how long a pause is still the
+same turn, when a false onset should be retracted — is in `turn_detection.py`, which
+imports nothing and is testable as a table of floats. Thresholds are otherwise tuned by
+ear against a recording nobody else has.
+
+Two things fell out of writing the tests rather than being designed in:
+
+- **Inverted hysteresis is now rejected at construction.** A release bar above the onset
+  bar makes speech harder to sustain than to enter, which produces an end-of-turn inside
+  almost every word. That presents as a wildly over-eager avatar and is very hard to
+  trace back to two numbers in a config, so it fails loudly instead.
+- **The onset run must be unbroken.** Counting non-consecutive loud frames toward onset
+  would make the detector steadily more trigger-happy the noisier the room got.
+
+One test of mine failed legitimately and the code was right: I fed 192ms of speech into
+a detector with a 200ms floor and expected an end-of-turn. It correctly retracted.
+
+### `SileroVad` is unverified — stated plainly
+
+There is no torch in this development environment, so `SileroVad` has been written,
+wired, type-checked, and **never run**. It is excluded from CI, checked only
+structurally in the suite, and flagged in its own docstring. Treat its first execution
+as work, not a formality.
+
+Writing it anyway was deliberate: the whole claim of M4's design is that the detector is
+swappable behind a Protocol, and `AVATAR_VAD=silero` is that claim made concrete. The
+verified path — policy, server wiring, client, tests — runs on `EnergyVad`, which needs
+nothing and works on a clean clone.
+
+### The measurement worth arguing about
+
+`turn_detect = 700ms`. It is not a measurement; it is the configured silence window, and
+it appears in the latency budget unchanged no matter what hardware runs underneath.
+
+That makes it the most interesting number in the budget so far: if the target is a
+sub-second perceived turnaround, **this single configuration value is over two thirds of
+it**, and it is the one term a faster GPU cannot touch. Recorded as caveat 4 in
+`PROCESS.md` §3.3.1 rather than quietly presented as an achievement.
+
+### Deferred, and why
+
+- **Real STT, LLM, TTS.** All need API keys, which are not present. The adapters are
+  cheap once there is something to authenticate against; writing three unverified
+  network clients is not.
+- **`scripts/prepare_idle_loop.py`.** Needs ffmpeg (not installed) and a real reference
+  clip (does not exist until M0/M2). Writing a script whose inputs do not exist and
+  which cannot be run would be the same mistake as `SileroVad`, twice.
+- **Mic capture uses `ScriptProcessorNode`**, deprecated in favour of `AudioWorklet`.
+  The worklet needs a separate module file or a Blob URL, and the README promises a
+  clean clone with no build step. Documented shortcut, same class as the WebSocket
+  standing in for WebRTC.
+
+### Still `[HUMAN]`
+
+Unchanged. Nothing has been written into a judgment section.
+
+**Next:** M0 on Colab, which is with the candidate. Then M2. The LLM and TTS adapters
+land whenever keys appear — neither blocks anything else.

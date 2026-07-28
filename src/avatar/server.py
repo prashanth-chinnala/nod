@@ -36,6 +36,13 @@ from fastapi import FastAPI, WebSocket
 from fastapi.responses import FileResponse
 
 from avatar.audio.tts import SAMPLE_RATE, ToneTTS
+from avatar.audio.turn_detection import (
+    END_OF_TURN_SILENCE_MS,
+    EventKind,
+    TurnDetector,
+    TurnEvent,
+)
+from avatar.audio.vad import FRAME_MS, build_vad
 from avatar.contracts import RendererConfig
 from avatar.idle import placeholder_idle_loop
 from avatar.llm import ScriptedInterviewer
@@ -43,7 +50,7 @@ from avatar.mixer import FRAME_INTERVAL_MS, TARGET_FPS, FrameMixer
 from avatar.orchestrator import RENDER_LEAD_IN_FRAMES, SessionOrchestrator
 from avatar.renderers import build
 from avatar.state import State
-from avatar.telemetry import Telemetry
+from avatar.telemetry import STAGE_TURN_DETECT, Telemetry
 from avatar.transport.websocket import WebSocketTransport
 
 WEB_DIR = Path(__file__).resolve().parents[2] / "web"
@@ -76,6 +83,18 @@ The one-line renderer swap, as an environment variable.
 
 `AVATAR_RENDERER=musetalk uvicorn avatar.server:app` is the whole change once M2
 lands. Nothing else in this file mentions a model.
+"""
+
+VAD_NAME = os.environ.get("AVATAR_VAD", "energy")
+"""
+Which speech detector to run. `energy` needs nothing; `silero` needs torch.
+
+Turn detection happens server-side rather than in the browser. The trade-off, stated
+because it is a real one: the client streams microphone audio continuously, which costs
+bandwidth and means candidate audio reaches the server even between turns. In exchange,
+the turn-taking policy is one implementation with one set of thresholds that can be
+tested and tuned centrally, rather than whatever each browser happened to ship. For an
+interview product the second consideration wins; for a consumer toy it might not.
 """
 
 SILENCE_TICK_SECONDS = 1.0
@@ -125,6 +144,11 @@ class BrowserSession:
         self._telemetry = Telemetry()
         self._telemetry.subscribe(self._on_telemetry)
 
+        self._vad = build_vad(VAD_NAME)
+        self._detector = TurnDetector(frame_ms=FRAME_MS)
+        self._mic = bytearray()
+        self._speech_probability = 0.0
+
         self._transport = WebSocketTransport(socket.send_bytes, socket.send_text)
         self._mixer = FrameMixer(
             placeholder_idle_loop(width=FRAME_WIDTH, height=FRAME_HEIGHT),
@@ -163,6 +187,9 @@ class BrowserSession:
                 "renderer": RENDERER_NAME,
                 "frame_width": FRAME_WIDTH,
                 "frame_height": FRAME_HEIGHT,
+                "vad": VAD_NAME,
+                "vad_frame_ms": FRAME_MS,
+                "end_of_turn_silence_ms": END_OF_TURN_SILENCE_MS,
             }
         )
         await self._orchestrator.start(IDENTITY_REFERENCE)
@@ -189,10 +216,12 @@ class BrowserSession:
             message = await self._socket.receive()
             if message["type"] == "websocket.disconnect":
                 return
+            audio = message.get("bytes")
+            if audio:
+                await self._on_mic_audio(audio)
+                continue
             text = message.get("text")
             if text is None:
-                # Binary from the client is mic audio. Turn detection is M4; until
-                # then the client keeps the mic locally and sends explicit events.
                 continue
             try:
                 await self._handle(json.loads(text))
@@ -221,6 +250,54 @@ class BrowserSession:
             await self._orchestrator.close()
         else:
             await self._send({"type": "error", "detail": f"unknown message {kind!r}"})
+
+    # -- microphone ---------------------------------------------------------
+
+    async def _on_mic_audio(self, pcm: bytes) -> None:
+        """
+        Feed the candidate's microphone through the VAD and the turn policy.
+
+        Frames are fixed-size because Silero requires exactly 512 samples; the buffer
+        exists to absorb whatever chunk size the browser happens to deliver. Leftover
+        bytes stay buffered rather than being padded out, since a short frame scored as
+        a full one reads as a VAD that misses quiet speech.
+
+        Note what is *not* here: no gate on the session state. The microphone is
+        processed while the avatar is speaking, because that is precisely when barge-in
+        has to work. Keeping the avatar's own voice out of this path is the browser's
+        echo cancellation, not ours — and if that fails, the avatar interrupts itself in
+        a loop. A different VAD would not fix it.
+        """
+        self._mic.extend(pcm)
+        frame_bytes = self._vad.frame_samples * 2
+        while len(self._mic) >= frame_bytes:
+            frame = bytes(self._mic[:frame_bytes])
+            del self._mic[:frame_bytes]
+            self._speech_probability = self._vad(frame)
+            for event in self._detector.push(self._speech_probability):
+                await self._dispatch_turn_event(event)
+
+    async def _dispatch_turn_event(self, event: TurnEvent) -> None:
+        if event.kind is EventKind.SPEECH_START:
+            await self._orchestrator.on_speech_start()
+        elif event.kind is EventKind.SPEECH_RETRACT:
+            await self._orchestrator.on_speech_retract()
+        elif event.kind is EventKind.END_OF_TURN:
+            # End-of-turn detection latency is the silence threshold, by construction.
+            # Recorded as a measurement because it occupies a real row in the latency
+            # budget -- but it is configuration, not something hardware can improve,
+            # and PROCESS.md 1.5 says so.
+            self._telemetry.observe_ms(
+                STAGE_TURN_DETECT,
+                float(self._detector.end_of_turn_silence_ms),
+                epoch=self._orchestrator.epoch,
+            )
+            # No transcriber yet, so the turn carries its duration instead of words.
+            # The orchestrator does not care -- it appends whatever it is given to
+            # history -- which is what makes STT a drop-in later.
+            await self._orchestrator.on_end_of_turn(
+                f"[{event.speech_ms}ms of speech, no transcriber]"
+            )
 
     # -- background pumps ---------------------------------------------------
 
@@ -251,6 +328,12 @@ class BrowserSession:
                     **self._orchestrator.stats(),
                     "bytes_sent": self._transport.bytes_sent,
                     "latency": self._telemetry.snapshot()["latency"],
+                    # The server's own view of the microphone, so the page shows what
+                    # the turn policy is acting on rather than what the browser's
+                    # separate meter thinks.
+                    "speech_probability": round(self._speech_probability, 3),
+                    "in_speech": self._detector.in_speech,
+                    "speech_ms": self._detector.speech_ms,
                 }
             )
 

@@ -50,9 +50,14 @@ python scripts/measure_latency.py    # produces numbers for PROCESS.md
 
 > Update this section at the end of each session.
 
-- Milestones done: **M1** (skeleton, contracts, stub renderer, CI) and **M3**
-  (WebSocket streaming, browser client). 131 tests, all GPU-free.
-- Active milestone: **M0 — model spike**, the last hard blocker.
+- Milestones done: **M1** (contracts, state machine, stub renderer, CI), **M3**
+  (WebSocket streaming, browser client), and the turn-taking half of **M4**
+  (server-side VAD, onset/end-of-turn policy). 172 tests, all GPU-free.
+- Active milestone: **M0 — model spike**, the last hard blocker. See
+  `docs/M0_FOR_BEGINNERS.md`.
+- Still open in M4: real STT, a real LLM adapter, real TTS (all need API keys), and
+  `scripts/prepare_idle_loop.py` (needs ffmpeg and a real reference clip, which
+  arrives with M0/M2).
 - Hardware: **Colab / Kaggle free tier (T4 16GB)**. This makes MuseTalk the
   lower-risk candidate: Ditto wants TensorRT 8.6.1 with GPU-specific prebuilt
   engines, which fights an ephemeral runtime and the clean-clone requirement.
