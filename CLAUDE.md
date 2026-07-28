@@ -50,6 +50,21 @@ python scripts/measure_latency.py    # produces numbers for PROCESS.md
 
 > Update this section at the end of each session.
 
-- Active milestone: **M1 — skeleton, contracts, stub renderer, CI green**
-- Model chosen: *not yet decided; M0 blocked on hardware. See `DEVLOG.md`.*
-- Blocked on: *M0 model spike needs a GPU; M2 cannot start until M0 resolves.*
+- Milestones done: **M1** (skeleton, contracts, stub renderer, CI) and **M3**
+  (WebSocket streaming, browser client). 131 tests, all GPU-free.
+- Active milestone: **M0 — model spike**, the last hard blocker.
+- Hardware: **Colab / Kaggle free tier (T4 16GB)**. This makes MuseTalk the
+  lower-risk candidate: Ditto wants TensorRT 8.6.1 with GPU-specific prebuilt
+  engines, which fights an ephemeral runtime and the clean-clone requirement.
+  **The pick itself is `[HUMAN]`** — see `IMPLEMENTATION_GUIDE.md` §2 and Rule 2.
+- Model chosen: *not yet. Nothing downstream of it may be assumed.*
+- Blocked on: *M0. M2 cannot start until it resolves; M4 (VAD, real STT/LLM/TTS)
+  is not blocked and could go first if the GPU is unavailable.*
+
+## Running it
+
+```bash
+pip install -e ".[dev,server]"
+uvicorn avatar.server:app                 # then open http://127.0.0.1:8000
+python scripts/smoke_session.py           # headless end-to-end check, 15 assertions
+```

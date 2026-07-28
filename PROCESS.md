@@ -191,14 +191,23 @@ transport all live outside it — see §3.2.
 
 | Capability | Status | Rationale |
 |---|---|---|
-| Audio in → video out | Deferred to M2 | Blocked on M0 model spike; needs GPU |
-| Browser streaming transport | Deferred to M3 | |
-| Session start/stop lifecycle | Built (M1) | State machine complete and tested against the stub renderer |
-| Idle-loop fallback frame | Built (M1) | `IdleLoop` + `FrameMixer`; real frames land in M4 |
-| Interruption handling | Built (M1) | Turn-epoch cancellation, tested |
-| Warm model pooling | Deferred (M7) | Out of prototype scope; described in §1.4 |
-| Multi-session concurrency | Deferred (M7) | One orchestrator per session is wired, but only one session is exercised |
-| STT / LLM / TTS integration | Deferred to M4 | Stubbed behind async generators so the state machine is testable without them |
+| Session start/stop lifecycle | **Built** (M1) | State machine complete; 131 tests, all GPU-free |
+| Idle-loop fallback frame | **Built** (M1, M3) | `IdleLoop` + `FrameMixer`. The clip is a synthetic pulse, not a face — a real one needs M4's preparation script |
+| Interruption handling | **Built** (M1, M3) | Turn-epoch cancellation, verified end-to-end including the client-side audio flush |
+| Browser streaming transport | **Built** (M3) | WebSocket, the shortcut the brief permits. Costs stated in `transport/websocket.py` |
+| Browser client | **Built** (M3) | Canvas + Web Audio + mic, plain JS, no build step |
+| Playback acknowledgement | **Built** (M3) | Client reports how much audio actually played, including partial buffers stopped by a barge-in |
+| End-to-end latency to browser paint | **Built** (M3) | Client reports first paint; the server cannot measure this for itself |
+| **Audio in → lip-synced video out** | **Not built** | Blocked on M0. Needs a GPU, and Rule 1 forbids estimating what it would do |
+| **A talking-head model of any kind** | **Not built** | Same. `StubRenderer` proves the interface, not the capability |
+| **Real STT** | **Not built** (M4) | The client sends explicit turn events instead; `web/index.html` captures the mic but does not transcribe |
+| **Real turn detection (VAD)** | **Not built** (M4) | A client-side energy gate stands in, behind a checkbox and labelled as such. Onset and end-of-turn need separately tunable thresholds; the gate conflates them |
+| **Real LLM** | **Not built** (M4) | `ScriptedInterviewer` asks canned questions. The sentence chunker it feeds is real and survives the swap |
+| **Real TTS** | **Not built** (M4) | `ToneTTS` emits a sine wave of the correct duration. Timing and chunking are real; the voice is not |
+| Frame encoding (JPEG/WebP) | **Not built** (M2) | Uncompressed BMP costs ~2.7MB/s at 256×144. Fine on localhost, indefensible over a network |
+| Warm model pooling | Deferred (M7) | Described in §1.4. Constructing a renderer per session is exactly the cost that section argues cannot be paid at conversation start |
+| Multi-session concurrency | Deferred (M7) | One orchestrator per socket is wired and works; only one session has been exercised |
+| WebRTC transport | Deferred (M7) | Stretch goal. §1.4 states what the WebSocket shortcut gives up |
 
 > Deferring things is expected and fine. Deferring them *silently* is what costs points.
 
@@ -225,23 +234,72 @@ session state, VAD, or transport.
 
 ### 3.3 Measured results
 
+> State how you measured, not just the number. A timestamp at ingress and a timestamp at browser paint are very different measurements from two `time.time()` calls around a function.
+
+**The headline numbers the brief asks for do not exist yet.** They require a talking-head
+model, which requires M0, which requires a GPU:
+
 | Metric | Measured | Hardware | Method |
 |---|---|---|---|
-| Audio-in to first-frame-out | NOT YET MEASURED | | |
-| Steady-state fps | NOT YET MEASURED | | |
-| Output resolution | NOT YET MEASURED | | |
-| Interruption → avatar silent | NOT YET MEASURED | | |
-| Peak VRAM | NOT YET MEASURED | | |
+| Audio-in to first-frame-out, real model | NOT YET MEASURED | | Blocked on M0 |
+| Steady-state fps, real model | NOT YET MEASURED | | Blocked on M0 |
+| Output resolution, real model | NOT YET MEASURED | | Blocked on M0 |
+| Peak VRAM | NOT YET MEASURED | | No GPU used yet |
 
-> State how you measured, not just the number. A timestamp at ingress and a timestamp at browser paint are very different measurements from two `time.time()` calls around a function.
+#### 3.3.1 What M3 does measure — session layer only, no ML model
+
+These are real numbers from a real run, and they say nothing about any model. Read the
+"what this actually measures" column before quoting any of them.
+
+| Metric | Measured | Method | What this actually measures |
+|---|---|---|---|
+| Steady-state fps | **25.4** | 117 frames counted at a WebSocket client over 4.6s | The mixer's cadence under a real event loop. Target is 25. |
+| Presentation timestamps | strictly monotonic, 40ms apart | every frame checked at the client | No gaps or duplicate pts across idle→renderer switches |
+| Frames repeated | **0** | `FrameMixer.frames_repeated` | The stub never starved the mixer. A GPU renderer will. |
+| Frames discarded on barge-in | **127** | `FrameMixer.frames_discarded` | Rendered frames for the cancelled turn, dropped |
+| Turn start → first frame handed to mixer | **396ms** | `avatar_first_frame` histogram | Sum of the stubs' own configured delays plus real orchestration overhead — see below |
+| Turn start → client reports paint | **398ms** | `perceived_total`, closed by a client `first_paint` report | The 2ms delta is loopback, not a browser. See the caveat. |
+| Barge-in → server-side silence | **0.6ms** | `interrupt_to_silent` histogram | State transition, renderer reset, and flush dispatch. Excludes client-side stop. |
+| Output resolution | 256×144 | BMP, uncompressed | Chosen to keep an unencoded 25fps stream tolerable, not for quality |
+
+**Host:** Apple M1 Pro, 16GB, macOS 15.1.1, Python 3.12.3. **No GPU involved.**
+Reproduce with `uvicorn avatar.server:app` then `python scripts/smoke_session.py`.
+
+**Three caveats, each of which makes a number above less impressive than it looks:**
+
+1. **`llm_ttft` (181ms) and `tts_first_audio` (122ms) are measuring their own
+   configuration.** `ScriptedInterviewer` is told to wait 180ms before its first
+   sentence and `ToneTTS` 120ms before its first chunk. The measurements confirm the
+   instrumentation is wired to the right call sites; they are not evidence about any
+   LLM or TTS engine. The same applies to the 396ms first-frame figure, which is
+   dominated by those two delays plus the stub renderer's 200ms lookahead window.
+2. **The 398ms "to paint" figure was closed by a Python client, not a browser.** The
+   smoke script reports `first_paint` on receipt without decoding or rendering
+   anything, so its 2ms delta over the server-side number is a lower bound on the
+   real encode-decode-paint tail. `web/index.html` reports after `drawImage`, which is
+   the honest measurement, and it has not been captured into this table yet.
+3. **`interrupt_to_silent` (0.6ms) is server-side only.** It stops when the flush
+   message is dispatched, not when the candidate stops hearing the avatar. The
+   audible interruption latency includes the socket hop and the client stopping its
+   scheduled buffers, and that number is not instrumented yet.
 
 ### 3.4 Gap to production real-time
 
+> Be specific: "an L4 instead of a T4 gets us from X to Y fps" beats "more GPU."
+
+Gaps identified from the M3 run. The GPU rows cannot be quantified until M0 produces
+real throughput figures, and are marked as such rather than estimated.
+
 | Gap | Cause | What closes it | Est. cost |
 |---|---|---|---|
-| | | | |
-
-> Be specific: "an L4 instead of a T4 gets us from X to Y fps" beats "more GPU."
+| No lip-synced video at all | No model selected or integrated | M0 spike then M2 | `[HUMAN]` — depends on the model pick |
+| Uncompressed frames, ~2.7MB/s at 256×144 | No encoder; BMP was chosen to avoid an image dependency | JPEG or WebP from the renderer's own output in M2 | ~1 day; roughly a 40× bandwidth reduction |
+| Mixer queue is unbounded | The TTS runs 4× ahead of playback and nothing applies backpressure. Observed directly: 127 frames were queued and discarded on one barge-in, so a longer utterance queues proportionally more | Gate `push_audio` on `audio_sent_ms - audio_played_ms` exceeding a high-water mark, with a timeout so a silent client cannot stall the turn | ~0.5 day. Needs a fallback for clients that never acknowledge |
+| Interruption latency measured server-side only | The 0.6ms figure stops when the flush is dispatched, not when audio actually stops | Client reports flush completion the way it already reports playback | ~2 hours |
+| No jitter buffer, no congestion feedback | WebSocket over TCP. Head-of-line blocking turns one lost packet into a stall for every frame behind it | WebRTC via aiortc (M7) | ~3 days including an SFU decision |
+| Word-level truncation is estimated, not timed | `estimate_duration_ms` assumes 150wpm | Word timestamps from a real TTS engine, which most expose | Free once M4 lands; it is a smaller change than the estimator it deletes |
+| Renderer constructed per session | No pooling. Trivial for the stub; for a GPU model this is the cold-start cost §1.4 argues cannot be paid at conversation start | Warm pool with session leasing (M7) | ~2 days, plus paying for idle GPU time |
+| Turn detection is a client-side energy gate | No VAD | Silero VAD with separate onset and end-of-turn thresholds (M4) | ~1 day |
 
 ---
 

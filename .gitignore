@@ -53,6 +53,10 @@ measurements/*.json
 .env.*
 !.env.example
 
+# Personal Claude Code settings. Never committed: this repo is submitted publicly,
+# and a checked-in permission bypass would apply to everyone who clones it.
+.claude/settings.local.json
+
 # Editor / OS
 .DS_Store
 .idea/

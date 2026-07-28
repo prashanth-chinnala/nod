@@ -7,82 +7,100 @@ Built as the Exterview Head of Engineering take-home. The reasoning, the
 model-selection memo, the build-vs-buy recommendation, and the migration plan live in
 [PROCESS.md](PROCESS.md); this file is only how to run what exists.
 
-> **Status: milestone M1 of 7.** The session layer is complete and tested. There is
-> no ML model wired in yet, and therefore no video of a face. See
-> [What works today](#what-works-today) for the honest boundary, and
+> **Status: M1 and M3 complete, M0 blocked.** The session layer and the streaming path
+> work end to end. There is **no ML model wired in**, so there is no video of a face —
+> the avatar is a coloured rectangle that changes in time with the audio. See
+> [What works today](#what-works-today) for the exact boundary and
 > [DEVLOG.md](DEVLOG.md) for what was deferred and why.
+
+## Quick start
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev,server]"
+uvicorn avatar.server:app
+```
+
+Then open **<http://127.0.0.1:8000>** and press **Start session**.
+
+- **Starts speaking** → the session moves to `LISTENING`
+- **Stops speaking** → `THINKING`, then `SPEAKING` with audio and frames
+- **Starts speaking** again mid-answer → barge-in. Watch the epoch increment, the audio
+  cut off, the log fill with stale-frame drops, and the state return to `LISTENING`
+
+Every number on that page is measured. The one at `/mockup` is the design reference with
+invented values, kept for comparison.
+
+To verify the same thing headlessly:
+
+```bash
+python scripts/smoke_session.py     # 15 assertions over a real socket
+```
 
 ## What works today
 
 | | |
 |---|---|
 | Session state machine — start/stop, listening, thinking, speaking, cancelling | Working, tested |
-| Barge-in via turn-epoch invalidation, with stale artifacts provably dropped | Working, tested |
-| Constant-cadence frame mixer with idle-loop fallback and starvation handling | Working, tested |
-| History truncated to audio the client acknowledged playing | Working, tested |
-| Instrumentation call sites for every stage of the latency budget | Working, tested |
+| Barge-in via turn-epoch invalidation, stale artifacts provably dropped | Working, verified end-to-end |
+| Constant-cadence frame mixer, idle-loop fallback, starvation handling | Working, tested. Measured at 25.4fps |
+| WebSocket streaming of frames and audio to a browser | Working |
+| Browser client — canvas, Web Audio, mic capture, live telemetry | Working, no build step |
+| History truncated to audio the client **acknowledged playing** | Working, tested |
+| End-to-end latency measured to browser paint, not to socket write | Working |
 | A renderer behind a Protocol, with a GPU-free implementation | Working, tested |
-| **An actual talking-head model** | **Not yet — blocked on M0, needs a GPU** |
-| **Streaming to a browser** | **Not yet — M3** |
-| **STT / LLM / TTS** | **Not yet — M4. Injected as Protocols; no implementations** |
+| **A talking-head model of any kind** | **Not built — blocked on M0, needs a GPU** |
+| **Real STT, LLM, TTS** | **Not built (M4).** Placeholders with real timing, fake content |
+| **Real turn detection (VAD)** | **Not built (M4).** A client-side energy gate stands in |
+| **Frame encoding (JPEG/WebP)** | **Not built (M2).** Uncompressed BMP, ~2.7MB/s |
 
-No latency, fps, or VRAM number appears anywhere in this repo, because none has been
-measured yet. `PROCESS.md` says `NOT YET MEASURED` where those numbers will go.
+The headline numbers the brief asks for — first-frame latency and fps for a real
+talking-head model — read `NOT YET MEASURED` in [PROCESS.md](PROCESS.md) §3.3, because
+they do not exist yet. §3.3.1 has the session-layer numbers that do, each with a note on
+what it actually measures.
 
 ## Requirements
 
-- Python 3.11 or newer. No GPU, no model weights, and no network are needed for
-  anything currently in the repo.
+Python 3.11 or newer. **No GPU, no model weights, and no network** are needed for
+anything currently in the repo.
 
-A GPU becomes a requirement at M2, when the real renderer lands. Hardware
-requirements and the weight-download step will be documented here at that point.
-
-## Setup
-
-```bash
-git clone <this repo> && cd nod
-python3 -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
-```
-
-`[dev]` is pytest, ruff, and mypy. It contains no ML dependency, deliberately — see
-[The module boundary](#the-module-boundary).
+A GPU becomes a requirement at M2, when the real renderer lands. Target hardware is a
+Colab/Kaggle free-tier T4; the weight-download step and real hardware requirements get
+documented here once M0 has actually run.
 
 ## Run the checks
 
 ```bash
-pytest -m "not gpu"                        # 89 tests, ~0.1s, no GPU
+pytest -m "not gpu"                        # 131 tests, ~0.1s, no GPU
 ruff check src tests && ruff format --check src tests
 mypy src/avatar
 ```
 
-That is exactly what [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs. The
-suite is fast because every collaborator is injected and the clock is faked, so a test
-that needs a simulated second gets it in microseconds.
-
-## Look at the design mockup
-
-```bash
-open web/mockup.html
-```
-
-Every number in it is simulated. It fixes the layout and the state vocabulary for the
-real client, which lands in M3 as `web/index.html`. The mockup is the specification
-for what the demo instrument should surface — first-frame latency, `frames_repeated`,
-the per-stage waterfall, and the turn epoch.
+That is exactly what [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs, and it
+installs only `[dev]` — pytest, ruff, mypy, no ML dependency and no web stack. The suite
+is fast because every collaborator is injected and the clock is faked, so a test that
+needs a simulated second gets it in microseconds.
 
 ## Layout
 
 ```
 src/avatar/
-  contracts.py     dataclasses + the four Protocols. Imports nothing from the package.
-  state.py         State enum, transition table, frame-source table. All data.
-  orchestrator.py  SessionOrchestrator — every state transition lives here
-  mixer.py         FrameMixer, IdleLoop — cadence and presentation timestamps
-  telemetry.py     emit call sites; structured JSON in the prototype
-  renderers/       build() registry + StubRenderer (no GPU, no deps)
-tests/             89 tests, including the boundary enforcement
-web/mockup.html    design mockup, simulated data
+  contracts.py         dataclasses + the four Protocols. Imports nothing from the package.
+  state.py             State enum, transition table, frame-source table. All data.
+  orchestrator.py      SessionOrchestrator — every state transition lives here
+  mixer.py             FrameMixer, IdleLoop — cadence and presentation timestamps
+  telemetry.py         emit call sites; structured JSON, subscribable
+  idle.py              placeholder idle loop + loader for a real prepared clip
+  llm.py               sentence chunker + scripted interviewer
+  bmp.py               twenty-line BMP encoder, so nothing needs Pillow
+  server.py            FastAPI. The only module that imports a web framework.
+  audio/tts.py         ToneTTS — real timing, fake voice
+  transport/websocket.py   wire codec + Transport. No framework dependency.
+  renderers/           build() registry + StubRenderer (no GPU, no deps)
+tests/                 131 tests, including the boundary enforcement
+scripts/               headless end-to-end verification
+web/index.html         the real client, measured numbers
+web/mockup.html        design mockup, simulated numbers
 ```
 
 ## The module boundary

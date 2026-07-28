@@ -114,3 +114,98 @@ markers on §0 (claim tagging), §2.3 (model selection rationale), and all of §
 
 **Next:** M0, once hardware is known. Everything downstream of the model choice is
 blocked on it.
+
+---
+
+## Session 2 — hardware confirmed, M3 complete
+
+**Hardware:** Colab / Kaggle free tier, T4 16GB. Recorded here because it changes the
+model shortlist: Ditto's TensorRT 8.6.1 requirement with GPU-specific prebuilt engines
+fights an ephemeral runtime badly, which pushes MuseTalk ahead on setup risk. **The
+decision itself is `[HUMAN]`** and has not been made.
+
+**Attempted:** M3 — streaming to a browser. M0 still needs the GPU, and M3 is entirely
+GPU-free, so it went first for the same reason M1 did.
+
+**Worked.** 131 tests in 0.12s, ruff clean, ruff format clean, mypy strict clean. Then
+the part the suite cannot prove — `scripts/smoke_session.py` drives a real session over
+a real socket and checks 15 properties. All 15 pass:
+
+```
+states      IDLE -> LISTENING -> THINKING -> SPEAKING -> CANCELLING -> LISTENING
+            -> THINKING -> SPEAKING -> CANCELLING -> LISTENING
+video       117 frames, 15 before any turn      (25.4fps over 4.6s)
+audio       94 chunks, 7520ms
+stale drops {'audio': 2}
+mixer       0 repeated, 127 discarded
+flushes     2
+latency     avatar_first_frame=396ms  perceived_total=398ms  llm_ttft=181ms
+            tts_first_audio=122ms  interrupt_to_silent=0.6ms
+```
+
+Numbers and their caveats are in `PROCESS.md` §3.3.1. The short version: they measure
+the session layer and the instrumentation, not any model. `llm_ttft` and
+`tts_first_audio` are the stubs reporting their own configured delays back.
+
+Shipped:
+
+| File | What |
+|---|---|
+| `transport/websocket.py` | 13-byte header codec + `Transport`. Takes two send callables, so it needs no web framework and CI needs no web stack |
+| `server.py` | FastAPI, one orchestrator per socket, four background pumps |
+| `llm.py` | `chunk_into_sentences` (survives M4 unchanged) + `ScriptedInterviewer` |
+| `audio/tts.py` | `ToneTTS` — real duration, real chunking, real pacing, fake voice |
+| `idle.py` | Synthetic placeholder loop + the M4 loader for a real prepared clip |
+| `bmp.py` | Twenty-line BMP encoder so nothing needs Pillow |
+| `web/index.html` | The real client. Canvas, Web Audio, mic, live readouts |
+| `scripts/smoke_session.py` | Headless end-to-end verification |
+| 42 new tests | Codec round-trips, chunker flush behaviour, TTS timing, idle-loop loading |
+
+### One design change made mid-session, and why
+
+The first run reported `perceived_total` equal to `avatar_first_frame` — 398 vs 396ms.
+They were the same instant emitted under two names, because both were recorded when the
+server handed the first frame to the mixer. Reporting that as an end-to-end number would
+have silently dropped encode, socket, decode, and paint from the budget: exactly the
+distinction `PROCESS.md` §3.3 warns about between "a timestamp at ingress and a timestamp
+at browser paint."
+
+Fixed properly rather than relabelled. `Turn` gained `first_paint_at`, the orchestrator
+gained `on_first_paint`, and the client reports after `drawImage` returns. The server no
+longer emits a perceived total at all — it cannot know one.
+
+The 2ms delta above is still not a real browser figure: the smoke script reports paint on
+receipt without decoding anything, so it is a lower bound. Noted as caveat 2 in §3.3.1.
+
+### Known gap found by measuring, not fixed
+
+127 frames were discarded on a single barge-in. That is not a bug — they were correctly
+invalidated — but it revealed that the mixer's queue is unbounded and grows because
+`ToneTTS` generates 4× faster than playback. A six-second utterance queues ~150 frames;
+at 256×144 BMP that is ~16MB of buffered video per turn.
+
+The right fix is backpressure keyed on `audio_sent_ms - audio_played_ms`, which the
+`Turn` already tracks. Not done, because it needs a timeout path for clients that never
+acknowledge, and a half-implemented version that can stall a turn forever is worse than a
+documented gap. Recorded in `PROCESS.md` §3.4 with a cost estimate.
+
+### Deliberate deviations, session 2
+
+- **`scripts/smoke_session.py` is not in the guide's file list.** It is the only thing
+  that verifies the wire format matches what the client parses. Not in CI, because that
+  would mean a web stack in the CI dependency set to test a layer already covered.
+- **`bmp.py` and `idle.py` are not in the guide's layout.** Both fell out of needing
+  frames a browser can display without an image library. `PROCESS.md` §3.1 records the
+  BMP cost as an M2 gap.
+- **`web/index.html` uses system fonts, not Google Fonts.** The mockup loads webfonts;
+  the real client must not, since the README promises a clean clone with no network
+  dependency.
+
+### Still `[HUMAN]`
+
+Unchanged from session 1, plus the model pick now that hardware is known. Nothing has
+been written into a judgment section. `PROCESS.md` §3.3 headline rows still read
+`NOT YET MEASURED` because the model does not exist.
+
+**Next:** M0 on Colab. If the GPU is unavailable, M4 (VAD, real STT/LLM/TTS) is not
+blocked on it and can go first — the Protocols are already in place.
