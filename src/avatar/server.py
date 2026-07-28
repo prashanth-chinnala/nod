@@ -45,7 +45,7 @@ from avatar.audio.turn_detection import (
     TurnEvent,
 )
 from avatar.audio.vad import FRAME_MS, build_vad
-from avatar.config import load_env
+from avatar.config import load_env, loaded_files
 from avatar.contracts import RendererConfig
 from avatar.idle import placeholder_idle_loop
 from avatar.llm_anthropic import build_llm
@@ -176,6 +176,7 @@ async def config() -> dict[str, object]:
         "tts_voice": os.environ.get("AVATAR_TTS_VOICE", "(adapter default)"),
         "stt": STT_NAME,
         "vad": VAD_NAME,
+        "env_files_read": loaded_files(),
         "loaded_from_env_file": sorted(_FROM_ENV_FILE),
     }
 

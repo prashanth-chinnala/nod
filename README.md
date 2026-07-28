@@ -49,17 +49,23 @@ what it does not — is in [docs/DEMO_SCRIPT.md](docs/DEMO_SCRIPT.md).
 ## Configuration
 
 Every component is chosen by an environment variable, and **every default is a working
-no-credential one**. Copy the template and fill in whichever services you have:
+no-credential one** — a clean clone runs with no env file at all, on placeholders for the
+LLM, TTS, transcriber, and renderer. Create a file with whichever services you have:
 
 ```bash
-cp .env.example .env      # .env is gitignored; never commit it
-chmod 600 .env
+printf 'AVATAR_LLM=openai\nDEEPGRAM_API_KEY=...\n' > .env.development
+chmod 600 .env.development      # every .env* is gitignored; none may be committed
 ```
 
-`.env` is loaded automatically at server import — see
-[`src/avatar/config.py`](src/avatar/config.py). No `source` step, no `python-dotenv`. A
-real environment variable always wins over the file, so `AVATAR_TTS=tone uvicorn ...`
-still overrides it.
+It is loaded automatically at server import — see
+[`src/avatar/config.py`](src/avatar/config.py). No `source` step, no `python-dotenv`.
+Three candidates are read in descending precedence — `.env.development`, `.env.local`,
+`.env` — so shared defaults can live in one file and the handful you are changing in
+another, without duplicating the rest. `AVATAR_ENV_FILE=/path/to/file` skips the search
+entirely, for a mounted secret or a path outside the repo.
+
+**A real environment variable always wins over every file**, so
+`AVATAR_TTS=tone uvicorn ...` still overrides, and CI cannot be clobbered by a stray file.
 
 `GET /config` reports which implementation each boundary resolved to, and which variable
 *names* came from the file — never their values.
@@ -93,21 +99,33 @@ change:
 ### Running it for real
 
 ```bash
-# .env holds the keys; no prefixes needed
+# .env.development holds the keys; no prefixes needed
 uvicorn avatar.server:app
 curl -s localhost:8000/config | python3 -m json.tool   # confirm what resolved
 ```
 
-If `/config` shows `scripted`, `tone`, or `none` when you expected otherwise, `.env` was
-not picked up and you are measuring placeholders.
+If `/config` shows `scripted`, `tone`, or `none` when you expected otherwise, no env file
+was picked up and you are measuring placeholders. Its `env_files_read` field names the
+files that were actually read, which is the fastest way to tell "the value is wrong" from
+"the file was never opened".
 
 ### Secrets
 
-`.env` is gitignored and **must stay that way** — this repository is published, and a key
-committed to a public repo is scraped within minutes and cannot be un-published. Only
-[`.env.example`](.env.example) is tracked, and it contains no values. For Colab, use
-**Colab Secrets** rather than a notebook cell: anything typed into a cell is saved inside
-the notebook file.
+**No env file is tracked, and none may become one.** `.gitignore` covers `.env` and every
+`.env.*`; nothing is exempted. This repository is published, and a key committed to a
+public repo is scraped within minutes and cannot be un-published — rewriting history does
+not help, because the crawlers already have it.
+
+There is deliberately no `.env.example`: a committed template is one `git add -f` away from
+being a committed key, and the table above already documents every variable. Worth running
+yourself rather than taking on trust:
+
+```bash
+git ls-files | grep -E '^\.env'      # must print nothing
+```
+
+For Colab, use **Colab Secrets** rather than a notebook cell — anything typed into a cell
+is saved inside the notebook file.
 
 ## What works today
 

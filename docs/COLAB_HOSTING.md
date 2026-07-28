@@ -24,11 +24,12 @@ password: <https://github.com/settings/tokens> → *Generate new token (classic)
 **Before you push, sanity-check that no secret is going up.** It should print nothing:
 
 ```bash
-git ls-files | grep -E '^\.env$|secrets'
+git ls-files | grep -E '^\.env|secrets'
 ```
 
-`.env` is gitignored and I verified it is untracked, but this is the one command worth
-running yourself rather than taking my word for.
+Every `.env*` is gitignored with no exemption — there is deliberately no committed
+`.env.example` template — and I verified nothing is tracked. This is still the one command
+worth running yourself rather than taking my word for.
 
 This step is on the critical path regardless: §6 of the brief requires a **public GitHub
 repo**, so it is a deliverable, not overhead.

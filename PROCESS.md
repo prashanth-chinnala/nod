@@ -241,7 +241,7 @@ transport all live outside it — see §3.2.
 | Real STT | **Built** | Deepgram Nova over a persistent WebSocket. Transcribes continuously; the local turn policy decides when the turn ends, not the vendor's endpointing — see the `Transcriber` docstring |
 | Real TTS | **Built** | Deepgram Aura-2. `container=none` is load-bearing: the default response carries a 44-byte RIFF header that would be played as PCM |
 | Real LLM | **Built** | Two adapters (Anthropic, OpenAI) behind one `SentenceStream`. `OPENAI_BASE_URL` also reaches Ollama / LM Studio / vLLM, so a local model needs no new adapter |
-| Configuration | **Built** | `.env` loaded at import; `GET /config` reports what each boundary resolved to. Every default is a working no-credential one |
+| Configuration | **Built** | `.env.development` / `.env.local` / `.env` layered at import, real env vars winning; `GET /config` reports what each boundary resolved to and which files were read. Every default is a working no-credential one |
 | Turn-taking policy | **Built** (M4) | Server-side. Onset, hysteresis, retraction, and end-of-turn as separately tuned decisions; 30 tests over probability sequences |
 | **A real voice activity detector** | **Partly** (M4) | The policy is real and tested. The default detector under it is an energy gate that cannot tell speech from a door. `SileroVad` is written, wired, and **has never been executed** — no torch in the dev environment |
 | **Real LLM** | **Not built** (M4) | `ScriptedInterviewer` asks canned questions. The sentence chunker it feeds is real and survives the swap |

@@ -65,11 +65,14 @@ python scripts/measure_latency.py    # produces numbers for PROCESS.md
 
 ```bash
 pip install -e ".[dev,server,tts,llm]"
-cp .env.example .env                      # loaded automatically; see src/avatar/config.py
 uvicorn avatar.server:app                 # then open http://127.0.0.1:8000
 curl -s localhost:8000/config             # which implementation each boundary resolved to
 python scripts/smoke_session.py           # headless end-to-end check, 17 assertions
 ```
 
-Every default is a working no-credential one. `docs/DEMO_SCRIPT.md` is the manual test
+Every default is a working no-credential one, so that runs on a clean clone with no env
+file. Credentials go in `.env.development` (or `.env.local` / `.env`, in that descending
+precedence), loaded at server import by `src/avatar/config.py` — no `source` step. A real
+environment variable always beats every file. Every `.env*` is gitignored with no
+exemption; `/config`'s `env_files_read` names which were read, never their contents. `docs/DEMO_SCRIPT.md` is the manual test
 protocol and doubles as the Loom shot list.

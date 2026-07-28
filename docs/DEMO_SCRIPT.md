@@ -15,7 +15,8 @@ curl -s localhost:8000/config | python3 -m json.tool   # confirm what resolved
 ```
 
 `/config` must show `llm: openai`, `tts: deepgram`, `stt: deepgram`. If any says
-`scripted`, `tone`, or `none`, `.env` was not picked up and every test below is measuring
+`scripted`, `tone`, or `none`, no env file was picked up — check `env_files_read` in the
+same response to tell a wrong value from an unopened file — and every test below is measuring
 placeholders.
 
 Open **<http://127.0.0.1:8000>**. Use headphones for tests 4–6 — without them the
