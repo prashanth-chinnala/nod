@@ -158,15 +158,52 @@ verified. An agent must not assign these tags.**
 | Streaming-native vs. batch | | A batch model cannot be made streaming inside this time-box |
 | Output quality at the target resolution | | Bounded — §4 puts fidelity out of scope |
 | Maintenance health | | Commits, issue response, releases |
-| Setup fragility | | §6 requires a clean-clone build |
+| Setup fragility | | §6 requires a clean-clone build. **Evidence: MuseTalk's `download_weights.sh` and `pip install` both exited 0 without installing the model — see §2.2.1** |
 
 ### 2.2 Candidates evaluated
 
 | Model | fps / latency | License (code / weights) | Streaming? | Verdict |
 |---|---|---|---|---|
-| | | | | |
+| MuseTalk (`0a89dec`) | **NOT YET MEASURED** — spike run 1 failed in setup before touching the GPU | MIT code; weights permit commercial use | Yes, documented realtime mode | Undecided. See §2.2.1 |
+| Ditto | NOT YET MEASURED — not attempted | Apache-2.0 | Yes, streaming-native | Undecided. TensorRT 8.6.1 with GPU-specific prebuilt engines fights an ephemeral Colab runtime |
+| Wav2Lip | Published ~real-time on modest GPUs | **Licence prohibits commercial use** | No | **Rejected on licence.** Not run |
+| LatentSync | ~10x slower than real time (~100s for 10s of video on a 4090, published) | Open | No | **Rejected on latency.** Not run |
 
 > Include at least one model you rejected **on license** and one you rejected **on latency**. That demonstrates the criteria were real rather than decorative.
+
+#### 2.2.1 Spike run 1 — MuseTalk on a free-tier Colab T4
+
+**Outcome: failed in setup. No inference occurred, so nothing about this model's
+throughput has been measured.** Full triage in [`docs/M0_TRIAGE.md`](docs/M0_TRIAGE.md).
+
+Three fields establish that no inference ran, and they matter more than the timings
+alongside them:
+
+| Field | Value | Reading |
+|---|---|---|
+| `peak_vram_mib` | 3 | The GPU was never used. A T4 running this model sits in the thousands. |
+| `weights_on_disk` | 96M | The checkpoints total several GB. Almost nothing downloaded. |
+| `inference_cold/warm.exit_code` | 1 | Failed. Both realtime runs failed identically. |
+| output video | none | The harness refused to record an fps number, correctly. |
+
+**Numbers from this run that must not be quoted as measurements:**
+`cold_warm_ratio: 2.1` is the ratio between two crashes; `identity_prep_s: 0.25` is the
+difference between two identical failures; `inference_warm.seconds: 15.43` is how long
+it took to fail.
+
+**What the run does establish, and what it is evidence for:**
+
+1. **A free-tier T4 (15360 MiB, driver 580.82.07) was available on first attempt.** The
+   hardware question this spike existed to answer is resolved.
+2. **Setup fails silently.** `download_weights.sh` exited **0** having fetched 96MB, and
+   `pip install -r requirements.txt` exited **0** in **13 seconds** for a project that
+   depends on `mmcv` and `mmpose`. Both reported success without doing their job. That
+   is the §2.1 "setup fragility" row, and it is a stronger signal than a throughput
+   figure would have been: a model whose installer cannot tell you it failed is a model
+   whose clean-clone story needs testing before it is trusted.
+
+Setup timings to the point of failure, which are real: clone 1.6s, install 13.0s,
+weights 15.6s.
 
 ### 2.3 Selection and rationale
 

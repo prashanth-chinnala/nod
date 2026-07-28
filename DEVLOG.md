@@ -299,3 +299,66 @@ Unchanged. Nothing has been written into a judgment section.
 
 **Next:** M0 on Colab, which is with the candidate. Then M2. The LLM and TTS adapters
 land whenever keys appear — neither blocks anything else.
+
+---
+
+## Session 4 — Claude interviewer, and M0 run 1 failed in setup
+
+### The abort leak (the real find of this session)
+
+Adding a metered LLM exposed a bug that a local placeholder had made invisible. A
+barge-in abandoned a turn logically — the epoch check stops the orchestrator reading —
+while leaving the provider generating. **Three separate wrappers each failed to
+propagate the close**, and any one of them defeats the guarantee alone:
+
+1. `_run_turn` returned out of its `async for` without closing the stream
+2. `chunk_into_sentences` drained the token generator without closing it, so a close
+   that reached the chunker stopped there
+3. the adapter drained the SDK's token generator without closing it
+
+Root cause is the same in all three: **`async for` does not close the iterator it
+drains**, and Python defers generator finalization to the garbage collector. With
+`ToneTTS` this cost nothing — abandoning a local generator is free. With a metered API
+it is a billing leak on every interruption, which is the single action this system is
+designed to make cheap.
+
+All three now use `contextlib.aclosing`, and the contract states the requirement rather
+than relying on comments: `SentenceStream` and `SpeechStream` return `AsyncGenerator`,
+not `AsyncIterator`, because closeability is part of the interface. `mypy` caught the
+gap the moment `aclosing` was introduced, which is what prompted tightening the
+Protocol instead of casting at the call site.
+
+Worth noting what did *not* find this: 172 passing tests, all green. The bug was
+invisible to every one of them because the fake TTS and fake LLM cost nothing to
+abandon. It took wiring a real metered backend.
+
+### M0 run 1 — failed, and correctly reported as failed
+
+Tesla T4 15360 MiB on first attempt, so the hardware question is settled. Inference
+never ran: `peak_vram_mib: 3`, `weights_on_disk: 96M` against checkpoints totalling
+several GB, `exit_code: 1` on all four runs, no output video.
+
+The harness worked exactly as intended. It flagged `"no output video — nothing has been
+proven yet; do not record any fps number"` and it is the reason no fabricated figure
+entered the write-up. The timing fields it produced — `cold_warm_ratio: 2.1`,
+`identity_prep_s: 0.25` — are the ratio between two crashes and the difference between
+two identical failures respectively, and `PROCESS.md` §2.2.1 says so explicitly.
+
+**The genuine finding is a fragility one, and it is worth more than the throughput
+number would have been:** `download_weights.sh` exited **0** having fetched 96MB, and
+`pip install` exited **0** in **13 seconds** for a project depending on `mmcv` and
+`mmpose`. Both reported success without doing their job. §2.1's "setup fragility"
+criterion now has concrete evidence in it.
+
+Triage cell written to `docs/M0_TRIAGE.md` — it discriminates between the two suspects
+(LFS pointer files vs missing OpenMMLab packages) and captures the stderr the JSON
+block did not carry.
+
+### Still `[HUMAN]`
+
+The three §2.3 questions were put to me directly this session and I did not answer them.
+They are the graded honesty claim about the candidate's own reasoning, and answering
+them would defeat the point of asking. Raw material assembled; conclusions not written.
+
+**Next:** the triage cell, then Deepgram TTS/STT (key verified: Aura-2 returned 79KB of
+16kHz PCM). Anthropic completions blocked on account credit, not on code.
