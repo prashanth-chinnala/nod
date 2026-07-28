@@ -20,15 +20,17 @@ from __future__ import annotations
 
 import ast
 import inspect
+import struct
 import sys
 from pathlib import Path
 
 import pytest
 
 from avatar import contracts, mixer, orchestrator, state, telemetry
+from avatar.audio.tts import SAMPLE_RATE
 from avatar.contracts import RendererConfig, TalkingHeadRenderer
 from avatar.renderers import build
-from avatar.renderers.stub import StubRenderer
+from avatar.renderers.stub import MOUTH_LEVELS, StubRenderer, draw_placeholder, mouth_level
 
 ORCHESTRATION_MODULES = (contracts, state, telemetry, mixer, orchestrator)
 
@@ -195,6 +197,82 @@ def test_stub_withholds_frames_until_its_lookahead_window_is_filled() -> None:
 
     renderer.push_audio(session, AudioChunk(pcm=b"", epoch=1, duration_ms=80))
     assert len(list(renderer.frames(session))) == 1
+
+
+def pcm_at_rms(duration_ms: int, rms: float) -> bytes:
+    """PCM whose RMS is exactly `rms`. A constant sample value is the simplest way."""
+    count = int(SAMPLE_RATE * duration_ms / 1000)
+    value = int(32768 * rms)
+    return struct.pack(f"<{count}h", *([value] * count))
+
+
+def test_stub_mouth_tracks_the_amplitude_of_each_frames_audio() -> None:
+    """
+    The placeholder is audio-driven, not a colour cycle.
+
+    This is what makes "is audio driving video, and is it in sync?" answerable by
+    watching the demo, which is the job the browser page has to do for the Loom.
+    """
+    assert mouth_level(pcm_at_rms(40, 0.0)) == 0, "silence closes the mouth"
+    assert mouth_level(pcm_at_rms(40, 0.30)) == MOUTH_LEVELS - 1, "loud opens it fully"
+
+    quiet = mouth_level(pcm_at_rms(40, 0.05))
+    mid = mouth_level(pcm_at_rms(40, 0.15))
+    assert 0 < quiet < mid < MOUTH_LEVELS - 1, "and it is monotonic in between"
+
+
+def test_stub_frames_differ_when_the_audio_differs() -> None:
+    from avatar.contracts import AudioChunk
+
+    renderer = StubRenderer(width=32, height=32, frame_interval_ms=40)
+    session = renderer.start_session(renderer.prepare_identity("ref.mp4"))
+
+    renderer.push_audio(session, AudioChunk(pcm=pcm_at_rms(40, 0.0), epoch=1, duration_ms=40))
+    silent = next(renderer.frames(session)).data
+    renderer.push_audio(session, AudioChunk(pcm=pcm_at_rms(40, 0.28), epoch=1, duration_ms=40))
+    loud = next(renderer.frames(session)).data
+
+    assert silent != loud, "identical frames for different audio proves nothing"
+
+
+def test_stub_stretches_available_samples_across_the_declared_duration() -> None:
+    """
+    `duration_ms` is the timeline authority, not the payload length.
+
+    A chunk that declares 80ms while carrying 40ms of samples yields two frames, both
+    driven by real audio -- the renderer spreads what it has across the time it was
+    told the audio occupies. Trusting the payload instead would drift the mouth out of
+    sync with playback, since the transport schedules on duration.
+    """
+    from avatar.contracts import AudioChunk
+
+    renderer = StubRenderer(width=32, height=32, frame_interval_ms=40)
+    session = renderer.start_session(renderer.prepare_identity("ref.mp4"))
+
+    renderer.push_audio(session, AudioChunk(pcm=pcm_at_rms(40, 0.28), epoch=1, duration_ms=80))
+    frames = [f.data for f in renderer.frames(session)]
+
+    assert len(frames) == 2
+    closed = draw_placeholder(32, 32, mouth_level(b""))
+    assert all(f != closed for f in frames), "both frames had audio behind them"
+
+
+def test_stub_closes_the_mouth_when_its_audio_runs_out() -> None:
+    """A frame that is due but has no samples behind it must not hold the mouth open."""
+    from avatar.contracts import AudioChunk
+
+    renderer = StubRenderer(width=32, height=32, frame_interval_ms=40)
+    session = renderer.start_session(renderer.prepare_identity("ref.mp4"))
+
+    # First chunk establishes the bytes-per-frame ratio and is fully consumed.
+    renderer.push_audio(session, AudioChunk(pcm=pcm_at_rms(40, 0.28), epoch=1, duration_ms=40))
+    list(renderer.frames(session))
+
+    # Second advances the clock with no samples at all.
+    renderer.push_audio(session, AudioChunk(pcm=b"", epoch=1, duration_ms=40))
+    starved = [f.data for f in renderer.frames(session)]
+
+    assert starved == [draw_placeholder(32, 32, mouth_level(b""))]
 
 
 def test_stub_reset_is_safe_with_nothing_in_flight() -> None:

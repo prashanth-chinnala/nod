@@ -183,6 +183,18 @@
   }
   .bars.hot i { background: var(--listening); }
 
+  .disclosure {
+    margin: 12px 0 0;
+    padding: 9px 11px;
+    font-size: 12.5px;
+    line-height: 1.5;
+    color: var(--ink-mid);
+    background: rgba(224, 164, 88, 0.07);
+    border: 1px solid rgba(224, 164, 88, 0.22);
+    border-radius: 7px;
+  }
+  .disclosure strong { color: var(--speaking); font-weight: 500; }
+
   /* ---------- readouts ---------- */
 
   .readouts { padding: 14px 16px; display: flex; flex-direction: column; }
@@ -278,6 +290,14 @@
         <div class="bars" id="bars" aria-hidden="true"></div>
         <span class="num" id="db" style="font-size:11.5px;color:var(--ink-mid)">off</span>
       </div>
+
+      <p class="disclosure">
+        <strong>No model loaded.</strong> Those five rectangles are the stub renderer —
+        the mouth height is computed from the actual amplitude of each frame's 40ms of
+        audio, which is what makes audio-driven video visible. A talking-head model
+        lands in M2, behind the same interface. The voice is a synthesised tone, not
+        speech; real TTS lands in M4.
+      </p>
     </div>
 
     <div class="panel readouts">

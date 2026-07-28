@@ -190,6 +190,48 @@ async def test_tts_generates_ahead_of_playback_but_not_infinitely() -> None:
     assert generation_ms == pytest.approx(played_ms / 4)
 
 
+def test_tone_amplitude_varies_at_a_syllable_rate() -> None:
+    """
+    The envelope is load-bearing, not cosmetic.
+
+    The stub renderer derives its mouth opening from per-frame RMS. A flat carrier
+    would give constant RMS and a placeholder whose mouth never moves, so the demo
+    could not show audio driving video at all.
+    """
+    import struct
+
+    pcm = tone_pcm(1000, 220.0)  # ~3.6 syllables at SYLLABLE_HZ
+    samples = struct.unpack(f"<{len(pcm) // 2}h", pcm)
+    window = SAMPLE_RATE // 40  # 25ms
+    peaks = [
+        max(abs(s) for s in samples[i : i + window])
+        for i in range(0, len(samples) - window, window)
+    ]
+
+    assert min(peaks) < 0.7 * max(peaks), "envelope must actually swing"
+
+
+def test_tone_chunks_join_without_a_phase_discontinuity() -> None:
+    """
+    Restarting the phase per chunk clicks twelve times a second.
+
+    It sounds like a transport fault and is not one, so the joint is checked here.
+    """
+    import struct
+
+    whole = tone_pcm(160, 220.0)
+    first = tone_pcm(80, 220.0, start_ms=0)
+    second = tone_pcm(80, 220.0, start_ms=80)
+
+    assert first + second == whole, "a slice must equal the same span of the whole"
+
+    joined = struct.unpack(f"<{len(first + second) // 2}h", first + second)
+    boundary = len(first) // 2
+    step_at_joint = abs(joined[boundary] - joined[boundary - 1])
+    typical = max(abs(joined[i] - joined[i - 1]) for i in range(1, min(200, len(joined))))
+    assert step_at_joint <= typical * 2, "sample-to-sample step jumped at the boundary"
+
+
 async def test_tts_of_empty_text_yields_nothing() -> None:
     tts = ToneTTS(sleep=InstantSleep())
 

@@ -7,13 +7,21 @@ Two sources, and the difference between them is the honest state of the prototyp
 annotated -- frames on disk plus a `mouth_closed.json` naming the frames the
 renderer can cut from without the jaw popping. That script is M4.
 
-`placeholder_idle_loop` synthesises a slow brightness pulse. It is not a face. It
-exists so the session layer, transport, and client can be demonstrated end to end
-before a model or a reference clip exists, and it declares every frame a clean exit
--- which is true in the only sense available, since a solid rectangle has no mouth
-to be caught open. The seam constraint that `at_clean_exit` enforces is therefore
-untested against real footage until M4, and the demo running smoothly today is not
-evidence that it will.
+`placeholder_idle_loop` synthesises the same placeholder the stub renderer draws, with
+its mouth closed and a slow brightness pulse standing in for breathing. It is not a
+face.
+
+It shares `draw_placeholder` with the stub renderer deliberately: the idle loop and
+the rendered frames have to be visually continuous, or the handover between them pops
+regardless of how carefully `at_clean_exit` times it. Two placeholders that looked
+different would hide exactly the artifact the seam logic exists to prevent. When a
+real renderer lands, its idle frames come from the real reference clip via
+`load_idle_loop`, and this function stops being used at all.
+
+Every frame is declared a clean exit, which is true in the only sense available: the
+placeholder's mouth is always closed, so any frame is safe to cut from. The seam
+constraint is therefore untested against real footage, and the demo running smoothly
+today is not evidence that it will.
 """
 
 from __future__ import annotations
@@ -22,8 +30,8 @@ import json
 import math
 from pathlib import Path
 
-from avatar.bmp import solid_bmp
 from avatar.mixer import TARGET_FPS, IdleLoop
+from avatar.renderers.stub import draw_placeholder
 
 MOUTH_CLOSED_MANIFEST = "mouth_closed.json"
 
@@ -36,31 +44,38 @@ a two-second cycle reads as a flicker rather than as breathing.
 """
 
 
+BREATH_SWING = 0.13
+"""
+How far the head brightness swings either side of neutral.
+
+Large enough to read as alive on a glance, small enough not to look like a fault.
+"""
+
+
 def placeholder_idle_loop(
-    *,
-    width: int = 320,
-    height: int = 180,
-    base_rgb: tuple[int, int, int] = (44, 58, 68),
-    swing: int = 10,
+    *, width: int = 320, height: int = 180, swing: float = BREATH_SWING
 ) -> IdleLoop:
     """
-    A synthetic pulse standing in for a neutral clip. Not a face.
+    The stub placeholder with its mouth closed, breathing. Not a face.
 
-    Seamless by construction rather than by careful clip selection: the frame count
-    is exactly one sine period, so the last frame flows into the first with no
-    cross-fade needed. A real clip almost never has that property, which is why
-    `IdleLoop`'s docstring talks about cross-fading and this function does not need
-    to.
+    Seamless by construction rather than by careful clip selection: the frame count is
+    exactly one sine period, so the last frame flows into the first with no cross-fade
+    needed. A real clip almost never has that property, which is why `IdleLoop`'s
+    docstring talks about cross-fading and this function does not need to.
     """
     count = int(BREATH_PERIOD_SECONDS * TARGET_FPS)
-    frames: list[bytes] = []
-    for i in range(count):
-        phase = math.sin(2 * math.pi * i / count)
-        colour = tuple(max(0, min(255, channel + round(swing * phase))) for channel in base_rgb)
-        frames.append(solid_bmp(width, height, colour))  # type: ignore[arg-type]
+    frames = [
+        draw_placeholder(
+            width,
+            height,
+            level=0,  # mouth closed: the avatar is not speaking
+            brightness=1.0 + swing * math.sin(2 * math.pi * i / count),
+        )
+        for i in range(count)
+    ]
 
-    # Every frame, because a solid rectangle has no mouth. Marking a subset would
-    # look more rigorous and mean nothing.
+    # Every frame, because the placeholder's mouth is always closed and so any frame
+    # is safe to cut from. Marking a subset would look more rigorous and mean nothing.
     return IdleLoop(frames, range(count))
 
 

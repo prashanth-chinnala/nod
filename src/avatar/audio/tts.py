@@ -56,14 +56,60 @@ matters.
 """
 
 
-def tone_pcm(duration_ms: int, frequency_hz: float, *, amplitude: float = 0.22) -> bytes:
-    """Mono s16le sine wave. Amplitude kept low; this plays in someone's headphones."""
-    samples = int(SAMPLE_RATE * duration_ms / 1000)
-    step = 2 * math.pi * frequency_hz / SAMPLE_RATE
-    peak = int(32767 * amplitude)
-    return struct.pack(
-        f"<{samples}h", *(int(peak * math.sin(step * n)) for n in range(samples))
-    )
+SYLLABLE_HZ = 3.6
+"""
+Syllable rate of the amplitude envelope. Roughly conversational English.
+
+Not cosmetic. A constant-amplitude tone has constant RMS, and the stub renderer
+derives its mouth opening from exactly that -- so a flat carrier would produce a
+placeholder whose mouth never moves, and the demo could not show that audio is
+driving video at all. The envelope is what makes the two visibly coupled.
+"""
+
+ENVELOPE_FLOOR = 0.35
+"""How quiet the envelope gets between syllables. Never zero: silence reads as a dropout."""
+
+HARMONIC_MIX = 0.35
+"""Second-harmonic weight. Takes the edge off an otherwise very pure sine."""
+
+
+def tone_pcm(
+    duration_ms: int,
+    frequency_hz: float,
+    *,
+    start_ms: int = 0,
+    amplitude: float = 0.22,
+) -> bytes:
+    """
+    Mono s16le tone with a syllable-rate amplitude envelope.
+
+    `start_ms` is this slice's offset within the utterance, and it matters: carrier
+    phase and envelope phase are both computed from absolute sample position, so
+    consecutive chunks join without a discontinuity. Restarting the phase per chunk
+    puts an audible click at every 80ms boundary -- twelve a second -- which sounds
+    like a transport fault and is not one.
+
+    Amplitude is kept low; this plays in someone's headphones.
+    """
+    first = int(SAMPLE_RATE * start_ms / 1000)
+    count = int(SAMPLE_RATE * duration_ms / 1000)
+    if count <= 0:
+        return b""
+
+    carrier_step = 2 * math.pi * frequency_hz / SAMPLE_RATE
+    envelope_step = 2 * math.pi * SYLLABLE_HZ / SAMPLE_RATE
+    swing = 1.0 - ENVELOPE_FLOOR
+    # Normalise so carrier + harmonic still peaks at 1.0 and amplitude means what it says.
+    scale = int(32767 * amplitude / (1.0 + HARMONIC_MIX))
+
+    values = []
+    for offset in range(count):
+        n = first + offset
+        envelope = ENVELOPE_FLOOR + swing * (0.5 - 0.5 * math.cos(envelope_step * n))
+        carrier = math.sin(carrier_step * n) + HARMONIC_MIX * math.sin(2 * carrier_step * n)
+        values.append(int(scale * envelope * carrier))
+
+    return struct.pack(f"<{count}h", *values)
 
 
 class ToneTTS:
@@ -111,7 +157,9 @@ class ToneTTS:
         while emitted_ms < total_ms:
             chunk_ms = min(self.chunk_ms, total_ms - emitted_ms)
             yield AudioChunk(
-                pcm=tone_pcm(chunk_ms, frequency),
+                # start_ms keeps carrier and envelope phase continuous across chunk
+                # boundaries; without it every 80ms join clicks.
+                pcm=tone_pcm(chunk_ms, frequency, start_ms=emitted_ms),
                 epoch=epoch,
                 duration_ms=chunk_ms,
             )
