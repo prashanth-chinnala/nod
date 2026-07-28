@@ -1,0 +1,776 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>nod — session monitor</title>
+<!--
+  The prototype client. Every number on this page is measured, not simulated -- the
+  mockup at /mockup is the one with invented values.
+
+  Plain JS, no build step, no network beyond the WebSocket. The README promises a
+  clean clone reaches a running prototype, and an npm install would break that
+  promise for a page that needs no framework.
+
+  This doubles as the demo instrument for the Loom, which is why it surfaces
+  frames_repeated and the turn epoch rather than just the video: "the avatar reacted
+  immediately" is an assertion, and an epoch incrementing while stale frames are
+  dropped is evidence.
+
+  What is honest about the audio path, and load-bearing: each scheduled buffer
+  reports back how much of itself actually played, including when a barge-in stops
+  it early. That report is the only thing the server's history truncation trusts.
+-->
+<style>
+  :root {
+    --base:        #0E1418;
+    --glass:       rgba(255,255,255,0.035);
+    --glass-raise: rgba(255,255,255,0.055);
+    --hair:        rgba(255,255,255,0.085);
+    --hair-strong: rgba(255,255,255,0.14);
+
+    --ink:      #E7EDF1;
+    --ink-mid:  #8E9DA8;
+    --ink-low:  #5D6C77;
+
+    --idle:         #78878F;
+    --initializing: #78878F;
+    --listening:    #54B6D6;
+    --thinking:     #9B8FD4;
+    --speaking:     #E0A458;
+    --cancelling:   #54B6D6;
+    --closed:       #5D6C77;
+    --bad:          #D4685A;
+
+    --ui:   'Inter Tight', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    --data: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
+
+    --state: var(--idle);
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+
+  body {
+    margin: 0;
+    background: var(--base);
+    color: var(--ink);
+    font-family: var(--ui);
+    font-size: 15px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 28px 20px 40px;
+    position: relative;
+    overflow-x: hidden;
+  }
+
+  .wash {
+    position: fixed;
+    inset: -20% -10%;
+    pointer-events: none;
+    background:
+      radial-gradient(46% 40% at 22% 18%, rgba(84,182,214,0.13), transparent 70%),
+      radial-gradient(42% 46% at 82% 76%, rgba(155,143,212,0.11), transparent 72%),
+      radial-gradient(30% 30% at 62% 8%, rgba(224,164,88,0.06), transparent 70%);
+    z-index: 0;
+  }
+
+  .shell { width: 100%; max-width: 940px; position: relative; z-index: 1; }
+
+  .panel {
+    background: var(--glass);
+    border: 1px solid var(--hair);
+    border-radius: 14px;
+    backdrop-filter: blur(22px) saturate(150%);
+    -webkit-backdrop-filter: blur(22px) saturate(150%);
+  }
+
+  .label {
+    font-family: var(--data);
+    font-size: 10.5px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--ink-low);
+  }
+
+  .num {
+    font-family: var(--data);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ---------- top bar ---------- */
+
+  .bar { display: flex; align-items: center; gap: 18px; padding: 11px 16px; margin-bottom: 14px; }
+  .mark { font-size: 17px; font-weight: 500; letter-spacing: -0.02em; }
+  .mark span { color: var(--state); transition: color .5s ease; }
+  .meta { display: flex; gap: 16px; margin-left: auto; align-items: center; }
+  .meta .num { font-size: 12.5px; color: var(--ink-mid); }
+
+  button {
+    font-family: var(--ui);
+    font-size: 13px;
+    color: var(--ink);
+    background: var(--glass-raise);
+    border: 1px solid var(--hair-strong);
+    border-radius: 8px;
+    padding: 6px 13px;
+    cursor: pointer;
+    transition: background .16s ease, border-color .16s ease, opacity .16s ease;
+  }
+  button:hover:not(:disabled) { background: rgba(255,255,255,0.1); border-color: rgba(255,255,255,0.22); }
+  button:active:not(:disabled) { transform: scale(0.985); }
+  button:focus-visible { outline: 2px solid var(--listening); outline-offset: 2px; }
+  button:disabled { opacity: .38; cursor: not-allowed; }
+  button.primary { border-color: var(--state); }
+
+  /* ---------- main split ---------- */
+
+  .split {
+    display: grid;
+    grid-template-columns: minmax(0,1.65fr) minmax(0,1fr);
+    gap: 14px;
+    margin-bottom: 14px;
+  }
+
+  .stage { padding: 14px; }
+
+  .frame {
+    position: relative;
+    aspect-ratio: 16/9;
+    border-radius: 9px;
+    overflow: hidden;
+    background: linear-gradient(168deg, #1B252C 0%, #121A20 100%);
+    border: 1px solid rgba(255,255,255,0.06);
+  }
+  .frame canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+
+  .badge {
+    position: absolute;
+    top: 11px; left: 11px;
+    display: flex; align-items: center; gap: 7px;
+    padding: 5px 11px 5px 9px;
+    border-radius: 999px;
+    background: rgba(9,13,16,0.6);
+    border: 1px solid var(--hair);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+  }
+  .badge span {
+    font-family: var(--data);
+    font-size: 10.5px; letter-spacing: 0.11em; text-transform: uppercase;
+    color: var(--state);
+    transition: color .35s ease;
+  }
+  .lamp { width: 7px; height: 7px; border-radius: 50%; background: var(--state); transition: background .35s ease; }
+  body[data-state="SPEAKING"] .lamp { animation: onair 1.7s ease-in-out infinite; }
+  @keyframes onair { 0%,100% { opacity: 1 } 50% { opacity: .42 } }
+
+  .tc {
+    position: absolute; bottom: 11px; right: 12px;
+    font-family: var(--data); font-variant-numeric: tabular-nums;
+    font-size: 11px; color: rgba(231,237,241,0.5);
+  }
+
+  .mic { display: flex; align-items: center; gap: 11px; margin-top: 13px; padding: 0 2px; }
+  .bars { display: flex; align-items: flex-end; gap: 2.5px; height: 22px; flex: 1; }
+  .bars i {
+    display: block; flex: 1; min-width: 2px;
+    background: var(--ink-low); border-radius: 1px; height: 12%;
+    transition: height .09s linear, background .3s ease;
+  }
+  .bars.hot i { background: var(--listening); }
+
+  /* ---------- readouts ---------- */
+
+  .readouts { padding: 14px 16px; display: flex; flex-direction: column; }
+  .hero-stat { padding-bottom: 13px; border-bottom: 1px solid var(--hair); }
+  .hero-stat .v {
+    font-family: var(--data); font-variant-numeric: tabular-nums;
+    font-size: 31px; font-weight: 500; letter-spacing: -0.02em; line-height: 1.1; margin-top: 5px;
+  }
+  .hero-stat .v small { font-size: 14px; color: var(--ink-low); margin-left: 3px; font-weight: 400; }
+
+  .rows { margin-top: 4px; }
+  .row {
+    display: flex; align-items: baseline; justify-content: space-between;
+    padding: 8.5px 0; border-bottom: 1px solid rgba(255,255,255,0.045);
+  }
+  .row:last-child { border-bottom: 0; }
+  .row .k { font-size: 13px; color: var(--ink-mid); }
+  .row .v { font-family: var(--data); font-variant-numeric: tabular-nums; font-size: 13.5px; }
+  .row .v.warn { color: var(--speaking); }
+
+  /* ---------- waterfall ---------- */
+
+  .fall { padding: 15px 16px 17px; margin-bottom: 14px; }
+  .fall-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 12px; }
+  .fall-head .tot { font-family: var(--data); font-variant-numeric: tabular-nums; font-size: 19px; font-weight: 500; }
+  .fall-head .tot small { font-size: 12px; color: var(--ink-low); font-weight: 400; margin-left: 2px; }
+  .track { display: flex; gap: 2px; height: 26px; border-radius: 5px; overflow: hidden; background: rgba(255,255,255,0.03); }
+  .seg { position: relative; min-width: 3px; border-radius: 3px; transition: flex-grow .55s cubic-bezier(.4,0,.2,1); }
+  .keys { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 12px; }
+  .key { display: flex; align-items: center; gap: 6px; }
+  .key .dot { width: 7px; height: 7px; border-radius: 2px; }
+  .key .n { font-size: 12px; color: var(--ink-mid); }
+  .key .ms { font-family: var(--data); font-variant-numeric: tabular-nums; font-size: 12px; color: var(--ink); }
+  .measured-note { font-size: 12px; color: var(--ink-low); margin: 10px 0 0; }
+
+  /* ---------- controls ---------- */
+
+  .controls { padding: 14px 16px; margin-bottom: 14px; display: flex; flex-wrap: wrap; gap: 9px; align-items: center; }
+  .controls .label { margin-right: 4px; }
+  label.check { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--ink-mid); margin-left: auto; }
+
+  /* ---------- log ---------- */
+
+  .log { padding: 8px 16px 10px; max-height: 260px; overflow-y: auto; }
+  .line {
+    display: grid; grid-template-columns: 62px 108px minmax(0,1fr);
+    gap: 10px; padding: 5px 0;
+    border-bottom: 1px solid rgba(255,255,255,0.045);
+    font-family: var(--data); font-size: 11.5px;
+  }
+  .line:last-child { border-bottom: 0; }
+  .line .t { color: var(--ink-low); }
+  .line .e { color: var(--ink-mid); text-transform: uppercase; letter-spacing: .06em; }
+  .line .d { color: var(--ink); word-break: break-word; }
+  .line.drop .d, .line.drop .e { color: var(--speaking); }
+  .line.fail .d, .line.fail .e { color: var(--bad); }
+
+  @media (max-width: 860px) {
+    .split { grid-template-columns: minmax(0,1fr); }
+    .bar { flex-wrap: wrap; gap: 10px; }
+    .meta { margin-left: 0; width: 100%; }
+  }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+</head>
+<body data-state="INITIALIZING">
+<div class="wash" aria-hidden="true"></div>
+
+<div class="shell">
+
+  <div class="panel bar">
+    <div class="mark">nod<span>.</span></div>
+    <div class="meta">
+      <span class="num" id="renderer">—</span>
+      <span class="num" id="clock">00:00:00</span>
+      <button type="button" id="btn-connect" class="primary">Start session</button>
+    </div>
+  </div>
+
+  <div class="split">
+    <div class="panel stage">
+      <div class="frame">
+        <canvas id="canvas" width="256" height="144" aria-label="Avatar video output"></canvas>
+        <div class="badge">
+          <i class="lamp" aria-hidden="true"></i>
+          <span id="state-text">initializing</span>
+        </div>
+        <div class="tc" id="tc">pts 0</div>
+      </div>
+
+      <div class="mic">
+        <span class="label">mic</span>
+        <div class="bars" id="bars" aria-hidden="true"></div>
+        <span class="num" id="db" style="font-size:11.5px;color:var(--ink-mid)">off</span>
+      </div>
+    </div>
+
+    <div class="panel readouts">
+      <div class="hero-stat">
+        <div class="label">first frame (measured)</div>
+        <div class="v" id="ff">—</div>
+      </div>
+      <div class="rows">
+        <div class="row"><span class="k">End-to-end, to paint</span><span class="v" id="e2e">—</span></div>
+        <div class="row"><span class="k">Client fps</span><span class="v" id="fps">—</span></div>
+        <div class="row"><span class="k">Frames repeated</span><span class="v warn" id="rep">0</span></div>
+        <div class="row"><span class="k">Frames discarded</span><span class="v" id="disc">0</span></div>
+        <div class="row"><span class="k">Turn epoch</span><span class="v" id="ep">0</span></div>
+        <div class="row"><span class="k">Buffer depth</span><span class="v" id="buf">0 fr</span></div>
+        <div class="row"><span class="k">Audio acked</span><span class="v" id="acked">0 ms</span></div>
+        <div class="row"><span class="k">Received</span><span class="v" id="bytes">0 KB</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel fall">
+    <div class="fall-head">
+      <span class="label">last turn latency (measured)</span>
+      <span class="tot"><span id="tot">—</span><small id="tot-unit"></small></span>
+    </div>
+    <div class="track" id="track"></div>
+    <div class="keys" id="keys"></div>
+    <p class="measured-note">Server-side stage timings for the most recent turn. Turn
+      detection and STT are absent because there is no VAD or transcriber yet — those
+      land in M4 and will appear here without a change to this page.</p>
+  </div>
+
+  <div class="panel controls">
+    <span class="label">candidate</span>
+    <button type="button" id="btn-speak" disabled>Starts speaking</button>
+    <button type="button" id="btn-done" disabled>Stops speaking</button>
+    <button type="button" id="btn-retract" disabled>Retract (noise)</button>
+    <label class="check"><input type="checkbox" id="chk-mic"> use mic energy for barge-in</label>
+  </div>
+
+  <div class="panel log" id="log"></div>
+
+</div>
+
+<script>
+"use strict";
+
+// ---------- wire protocol, mirroring transport/websocket.py ----------
+
+const HEADER_SIZE = 13;
+const KIND_VIDEO = 1;
+const KIND_AUDIO = 2;
+
+function decodeEnvelope(buffer) {
+  if (buffer.byteLength < HEADER_SIZE) throw new Error("short message");
+  const view = new DataView(buffer);
+  const kind = view.getUint8(0);
+  const ptsMs = view.getUint32(1, false);   // network byte order, like struct '!'
+  const epoch = view.getUint32(5, false);
+  const length = view.getUint32(9, false);
+  const payload = new Uint8Array(buffer, HEADER_SIZE);
+  // The length prefix is redundant over a WebSocket, which already delimits
+  // messages -- checking it anyway turns a truncated frame into an error instead of
+  // a canvas full of garbage.
+  if (payload.byteLength !== length) {
+    throw new Error(`declared ${length} payload bytes, got ${payload.byteLength}`);
+  }
+  return { kind, ptsMs, epoch, payload };
+}
+
+// ---------- state ----------
+
+const STAGE_STYLE = {
+  turn_detect:        { name: "Turn detect", colour: "#54B6D6" },
+  stt_finalize:       { name: "STT",         colour: "#6FA9C9" },
+  llm_ttft:           { name: "LLM TTFT",    colour: "#9B8FD4" },
+  tts_first_audio:    { name: "TTS",         colour: "#B58FC4" },
+  avatar_first_frame: { name: "First frame", colour: "#E0A458" },
+};
+const WATERFALL_ORDER = ["turn_detect", "stt_finalize", "llm_ttft", "tts_first_audio", "avatar_first_frame"];
+
+const el = (id) => document.getElementById(id);
+
+let socket = null;
+let audioCtx = null;
+let hello = null;
+let sessionStart = 0;
+
+let framesDrawn = 0;
+let bytesReceived = 0;
+let ackedMs = 0;
+let fpsWindow = [];
+let drawing = false;          // drop frames rather than queue them if decode is slow
+let framesDropped = 0;
+
+let pendingSources = [];      // scheduled audio, so a flush can stop it
+let nextAudioTime = 0;
+let lastTurnStages = {};
+let paintedEpoch = 0;         // highest turn epoch whose first frame we have painted
+
+let micStream = null;
+let micAnalyser = null;
+let micTriggered = false;
+
+const barEls = [];
+(function buildBars() {
+  const bars = el("bars");
+  for (let i = 0; i < 34; i++) {
+    const bar = document.createElement("i");
+    bars.appendChild(bar);
+    barEls.push(bar);
+  }
+})();
+
+// ---------- log ----------
+
+function log(event, detail, cls) {
+  const line = document.createElement("div");
+  line.className = "line" + (cls ? " " + cls : "");
+  const elapsed = sessionStart ? ((performance.now() - sessionStart) / 1000).toFixed(2) : "0.00";
+  line.innerHTML =
+    `<span class="t">${elapsed}s</span><span class="e"></span><span class="d"></span>`;
+  line.children[1].textContent = event;
+  line.children[2].textContent = detail;
+  const box = el("log");
+  box.prepend(line);
+  while (box.children.length > 120) box.lastChild.remove();
+}
+
+// ---------- rendering ----------
+
+const canvas = el("canvas");
+const ctx2d = canvas.getContext("2d", { alpha: false });
+
+async function drawFrame(payload, ptsMs, epoch) {
+  bytesReceived += payload.byteLength + HEADER_SIZE;
+  // A frame arriving while the previous one is still decoding is dropped, not
+  // queued. Queueing would trade a dropped frame for unbounded latency growth,
+  // which is the wrong direction for a conversation.
+  if (drawing) { framesDropped += 1; return; }
+  drawing = true;
+  try {
+    const bitmap = await createImageBitmap(new Blob([payload], { type: "image/bmp" }));
+    if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
+      canvas.width = bitmap.width;
+      canvas.height = bitmap.height;
+    }
+    ctx2d.drawImage(bitmap, 0, 0);
+    bitmap.close();
+    framesDrawn += 1;
+    fpsWindow.push(performance.now());
+    el("tc").textContent = "pts " + ptsMs;
+
+    // The first rendered frame of a turn has actually reached the screen. Reporting
+    // it is what lets the server measure a real end-to-end number instead of
+    // stopping its clock at the point the bytes left the process. Epoch 0 is the
+    // idle loop, which belongs to no turn.
+    if (epoch > paintedEpoch) {
+      paintedEpoch = epoch;
+      send({ type: "first_paint", epoch: epoch });
+    }
+  } catch (err) {
+    log("decode-fail", String(err), "fail");
+  } finally {
+    drawing = false;
+  }
+}
+
+setInterval(() => {
+  const cutoff = performance.now() - 1000;
+  fpsWindow = fpsWindow.filter((t) => t >= cutoff);
+  el("fps").textContent = socket ? fpsWindow.length.toFixed(0) : "—";
+  el("bytes").textContent = (bytesReceived / 1024).toFixed(0) + " KB";
+  if (sessionStart) {
+    const s = Math.floor((performance.now() - sessionStart) / 1000);
+    el("clock").textContent =
+      "00:" + String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0");
+  }
+}, 500);
+
+// ---------- audio ----------
+
+function playAudio(payload, epoch) {
+  bytesReceived += payload.byteLength + HEADER_SIZE;
+  if (!audioCtx || !hello) return;
+
+  const samples = payload.byteLength / 2;
+  if (samples === 0) return;
+  const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+  const buffer = audioCtx.createBuffer(1, samples, hello.sample_rate);
+  const channel = buffer.getChannelData(0);
+  for (let i = 0; i < samples; i++) channel[i] = view.getInt16(i * 2, true) / 32768;
+
+  const source = audioCtx.createBufferSource();
+  source.buffer = buffer;
+  source.connect(audioCtx.destination);
+
+  // Schedule against a running cursor rather than "now", or successive chunks
+  // overlap and the tone gains a stutter that is easy to mistake for a render bug.
+  const startAt = Math.max(audioCtx.currentTime, nextAudioTime);
+  const durationSec = buffer.duration;
+  nextAudioTime = startAt + durationSec;
+
+  const record = { source, startAt, durationSec, epoch, reported: false };
+  pendingSources.push(record);
+
+  source.onended = () => {
+    if (record.reported) return;
+    record.reported = true;
+    pendingSources = pendingSources.filter((r) => r !== record);
+    // How much of this buffer actually reached the candidate's ears. On a natural
+    // end that is its full duration; on a barge-in stop it is however far the
+    // context clock got. This number is the only evidence the server's history
+    // truncation trusts, which is why it is computed rather than assumed.
+    const played = Math.max(0, Math.min(durationSec, audioCtx.currentTime - startAt));
+    const ms = Math.round(played * 1000);
+    if (ms > 0) {
+      ackedMs += ms;
+      el("acked").textContent = ackedMs + " ms";
+      send({ type: "audio_played", ms: ms, epoch: epoch });
+    }
+  };
+  source.start(startAt);
+}
+
+function flushAudio() {
+  const stopped = pendingSources.length;
+  // Stop in place. onended still fires for each, so each still reports the portion
+  // it managed to play -- a server-side flush alone would leave this buffer running
+  // and the interruption would look laggy no matter how fast the state machine was.
+  for (const record of pendingSources.slice()) {
+    try { record.source.stop(); } catch (_) { /* already finished */ }
+  }
+  nextAudioTime = audioCtx ? audioCtx.currentTime : 0;
+  log("flush-audio", `stopped ${stopped} scheduled buffer(s)`, "drop");
+}
+
+// ---------- waterfall ----------
+
+function renderWaterfall() {
+  const track = el("track");
+  const keys = el("keys");
+  track.replaceChildren();
+  keys.replaceChildren();
+
+  let total = 0;
+  for (const stage of WATERFALL_ORDER) {
+    const ms = lastTurnStages[stage];
+    if (ms === undefined) continue;
+    total += ms;
+    const style = STAGE_STYLE[stage];
+
+    const seg = document.createElement("div");
+    seg.className = "seg";
+    seg.style.background = style.colour;
+    seg.style.flexGrow = String(ms);
+    seg.title = `${style.name} · ${ms.toFixed(0)} ms`;
+    track.appendChild(seg);
+
+    const key = document.createElement("div");
+    key.className = "key";
+    const dot = document.createElement("span");
+    dot.className = "dot";
+    dot.style.background = style.colour;
+    const name = document.createElement("span");
+    name.className = "n";
+    name.textContent = style.name;
+    const value = document.createElement("span");
+    value.className = "ms";
+    value.textContent = ms.toFixed(0);
+    key.append(dot, name, value);
+    keys.appendChild(key);
+  }
+
+  el("tot").textContent = total ? total.toFixed(0) : "—";
+  el("tot-unit").textContent = total ? "ms" : "";
+}
+
+// ---------- session ----------
+
+function setState(state) {
+  document.body.dataset.state = state;
+  document.documentElement.style.setProperty("--state", "var(--" + state.toLowerCase() + ")");
+  el("state-text").textContent = state.toLowerCase();
+  el("bars").classList.toggle("hot", state === "LISTENING" || state === "CANCELLING");
+
+  const live = socket !== null && state !== "CLOSED";
+  el("btn-speak").disabled = !live;
+  el("btn-done").disabled = !live || state !== "LISTENING";
+  el("btn-retract").disabled = !live || state !== "LISTENING";
+}
+
+function send(payload) {
+  if (socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(payload));
+}
+
+function handleControl(message) {
+  switch (message.type) {
+    case "hello":
+      hello = message;
+      el("renderer").textContent = message.renderer;
+      canvas.width = message.frame_width;
+      canvas.height = message.frame_height;
+      log("hello", `${message.renderer} · ${message.target_fps}fps · ${message.sample_rate}Hz · lead-in ${message.render_lead_in_frames}fr`);
+      break;
+
+    case "flush_audio":
+      flushAudio();
+      break;
+
+    case "track_open":
+      log("track-open", "video track carries frames until session end");
+      break;
+
+    case "track_close":
+      log("track-close", "");
+      break;
+
+    case "event":
+      handleEvent(message);
+      break;
+
+    case "stats":
+      el("rep").textContent = message.frames_repeated;
+      el("disc").textContent = message.frames_discarded;
+      el("ep").textContent = message.epoch;
+      el("buf").textContent = message.buffer_depth + " fr";
+      setState(message.state);
+      break;
+
+    case "error":
+      log("error", message.detail, "fail");
+      break;
+  }
+}
+
+function handleEvent(message) {
+  switch (message.event) {
+    case "state_change":
+      setState(message.to);
+      log("state", `${message.from} → ${message.to} @ epoch ${message.epoch}`);
+      if (message.to === "THINKING") lastTurnStages = {};
+      break;
+
+    case "latency":
+      lastTurnStages[message.stage] = message.ms;
+      renderWaterfall();
+      if (message.stage === "avatar_first_frame") {
+        el("ff").innerHTML = message.ms.toFixed(0) + "<small>ms</small>";
+      }
+      if (message.stage === "perceived_total") {
+        // Turn start to this page painting the frame. Always larger than
+        // avatar_first_frame; the difference is encode, socket, decode, and paint.
+        el("e2e").textContent = message.ms.toFixed(0) + " ms";
+      }
+      if (message.stage === "interrupt_to_silent") {
+        log("interrupt", `${message.ms.toFixed(1)}ms from speech onset to avatar quiet`, "drop");
+      }
+      break;
+
+    case "stale_dropped":
+      // The proof that barge-in worked by invalidation and not by luck.
+      log("stale-drop", `${message.kind} from epoch ${message.stale_epoch}, now ${message.current_epoch}`, "drop");
+      break;
+
+    case "session_failure":
+      log("failure", `${message.cause} in turn ${message.epoch}`, "fail");
+      break;
+  }
+}
+
+async function connect() {
+  audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+  await audioCtx.resume();
+  nextAudioTime = audioCtx.currentTime;
+
+  const url = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/session";
+  socket = new WebSocket(url);
+  socket.binaryType = "arraybuffer";
+
+  sessionStart = performance.now();
+  framesDrawn = 0; bytesReceived = 0; ackedMs = 0; framesDropped = 0; paintedEpoch = 0;
+  lastTurnStages = {}; renderWaterfall();
+  el("ff").textContent = "—";
+  el("acked").textContent = "0 ms";
+
+  socket.onopen = () => {
+    el("btn-connect").textContent = "End session";
+    log("connected", url);
+  };
+
+  socket.onmessage = (event) => {
+    if (typeof event.data === "string") {
+      handleControl(JSON.parse(event.data));
+      return;
+    }
+    try {
+      const envelope = decodeEnvelope(event.data);
+      if (envelope.kind === KIND_VIDEO) drawFrame(envelope.payload, envelope.ptsMs, envelope.epoch);
+      else if (envelope.kind === KIND_AUDIO) playAudio(envelope.payload, envelope.epoch);
+    } catch (err) {
+      log("protocol", String(err), "fail");
+    }
+  };
+
+  socket.onclose = () => {
+    log("disconnected", `${framesDrawn} frames drawn, ${framesDropped} dropped at the decoder`);
+    socket = null;
+    el("btn-connect").textContent = "Start session";
+    setState("CLOSED");
+  };
+
+  socket.onerror = () => log("socket-error", "see devtools console", "fail");
+}
+
+function disconnect() {
+  send({ type: "end_session" });
+  if (socket) socket.close();
+  stopMic();
+}
+
+// ---------- mic ----------
+
+async function startMic() {
+  try {
+    // Echo cancellation matters here: without it the avatar's own tone comes back
+    // through the mic and triggers a barge-in against itself, forever.
+    micStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    });
+  } catch (err) {
+    log("mic-denied", String(err), "fail");
+    el("chk-mic").checked = false;
+    return;
+  }
+  audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+  const source = audioCtx.createMediaStreamSource(micStream);
+  micAnalyser = audioCtx.createAnalyser();
+  micAnalyser.fftSize = 1024;
+  source.connect(micAnalyser);
+  log("mic-on", "energy threshold stands in for Silero VAD until M4");
+}
+
+function stopMic() {
+  if (micStream) micStream.getTracks().forEach((t) => t.stop());
+  micStream = null;
+  micAnalyser = null;
+  el("db").textContent = "off";
+  barEls.forEach((b) => (b.style.height = "12%"));
+}
+
+const MIC_TRIGGER_DB = -34;
+
+setInterval(() => {
+  if (!micAnalyser) return;
+  const samples = new Float32Array(micAnalyser.fftSize);
+  micAnalyser.getFloatTimeDomainData(samples);
+  let sum = 0;
+  for (const s of samples) sum += s * s;
+  const rms = Math.sqrt(sum / samples.length);
+  const db = 20 * Math.log10(Math.max(rms, 1e-6));
+  el("db").textContent = (db < -99 ? "−99" : "−" + Math.abs(db).toFixed(0)) + " dB";
+
+  for (let i = 0; i < barEls.length; i++) {
+    const envelope = Math.sin((i / barEls.length) * Math.PI);
+    const height = Math.max(8, Math.min(100, (db + 60) * 1.6 * envelope));
+    barEls[i].style.height = height.toFixed(0) + "%";
+  }
+
+  // A crude energy gate, and labelled as one. Real turn detection needs a VAD with
+  // separately tunable onset and end-of-turn thresholds -- they are not the same
+  // decision, and conflating them is what makes an avatar interrupt on a cough.
+  if (!el("chk-mic").checked) return;
+  if (db > MIC_TRIGGER_DB && !micTriggered) {
+    micTriggered = true;
+    send({ type: "speech_start" });
+  } else if (db <= MIC_TRIGGER_DB - 6 && micTriggered) {
+    micTriggered = false;
+  }
+}, 100);
+
+// ---------- wiring ----------
+
+el("btn-connect").addEventListener("click", () => (socket ? disconnect() : connect()));
+el("btn-speak").addEventListener("click", () => send({ type: "speech_start" }));
+el("btn-done").addEventListener("click", () =>
+  send({ type: "end_of_turn", transcript: "[candidate finished speaking]" }));
+el("btn-retract").addEventListener("click", () => send({ type: "speech_retract" }));
+el("chk-mic").addEventListener("change", (e) => (e.target.checked ? startMic() : stopMic()));
+
+setState("INITIALIZING");
+renderWaterfall();
+log("ready", "press Start session");
+</script>
+</body>
+</html>

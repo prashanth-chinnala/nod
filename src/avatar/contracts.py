@@ -90,6 +90,14 @@ class Turn:
     interrupted: bool = False
     started_at: float = 0.0
     first_frame_at: float | None = None
+    first_paint_at: float | None = None
+    """
+    When the client reported painting this turn's first frame.
+
+    Distinct from `first_frame_at`, which is when the server handed the frame to the
+    mixer. The gap between them is encode, socket, decode, and a paint -- the part
+    of the latency budget a server-side measurement cannot see.
+    """
 
 
 @runtime_checkable

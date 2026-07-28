@@ -280,6 +280,27 @@ class SessionOrchestrator:
             return
         turn.audio_played_ms += duration_ms
 
+    def on_first_paint(self, epoch: int) -> None:
+        """
+        Client painted the first frame of turn `epoch`.
+
+        This closes the only measurement the server cannot take for itself. A
+        timestamp at ingress and a timestamp at browser paint are very different
+        numbers: the gap holds encode, socket, decode, and a rendering frame, and
+        every one of those is a term the latency budget has to account for.
+        Reporting `avatar_first_frame` as if it were the perceived total would
+        understate the truth by exactly the amount that is hardest to fix.
+
+        Recorded once per turn. A second report for the same turn is ignored rather
+        than averaged -- there is only one first frame.
+        """
+        turn = self.turn
+        if turn is None or turn.epoch != epoch or turn.first_paint_at is not None:
+            return
+        now = self._clock()
+        turn.first_paint_at = now
+        self._telemetry.turn_latency(now - turn.started_at, epoch=epoch)
+
     # -- the generate/speak pipeline ----------------------------------------
 
     def _begin_turn(self) -> None:
@@ -388,7 +409,10 @@ class SessionOrchestrator:
         self._transition(State.SPEAKING)
         turn.first_frame_at = now
         self._telemetry.first_frame_latency(now - turn.started_at, epoch=my_epoch)
-        self._telemetry.turn_latency(now - turn.started_at, epoch=my_epoch)
+        # The perceived total is deliberately NOT emitted here. It is the same
+        # instant under a more flattering name, and reporting it as end-to-end would
+        # silently drop encode, socket, decode, and paint from the budget. It is
+        # emitted from `on_first_paint`, when the client says it actually saw it.
 
     async def _finish_turn(self, turn: Turn) -> None:
         self.history.append({"role": "assistant", "content": turn.text_generated})

@@ -1,0 +1,284 @@
+"""
+FastAPI app. One orchestrator per WebSocket session.
+
+This is the only module that imports a web framework, and the only one that knows a
+session is reached over HTTP. The orchestrator receives a `Transport`; it has no idea
+whether that is a WebSocket, WebRTC, or a test double.
+
+Three background tasks run for the lifetime of a session, and the split matters:
+
+  frame pump      drains the mixer at a constant cadence, forever. Not driven by
+                  turns -- the track carries frames in every state, including idle.
+  telemetry relay forwards instrumentation events to the browser as they happen, so
+                  a barge-in is visible as an epoch changing rather than as a guess
+                  about what the video did.
+  silence tick    drives `on_idle_tick`. The orchestrator owns no timer of its own,
+                  which is what lets the whole machine be tested on a fake clock.
+
+Concurrency is one session per socket with no pooling: a renderer is constructed and
+warmed at connect time and torn down at disconnect. For a GPU renderer that is the
+wrong shape -- cold-loading weights per session is exactly the cost §1.4 argues
+cannot be paid at conversation start -- and it is deferred to M7 rather than
+pretended away.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import json
+import os
+from collections.abc import Mapping
+from pathlib import Path
+from typing import Any
+
+from fastapi import FastAPI, WebSocket
+from fastapi.responses import FileResponse
+
+from avatar.audio.tts import SAMPLE_RATE, ToneTTS
+from avatar.contracts import RendererConfig
+from avatar.idle import placeholder_idle_loop
+from avatar.llm import ScriptedInterviewer
+from avatar.mixer import FRAME_INTERVAL_MS, TARGET_FPS, FrameMixer
+from avatar.orchestrator import RENDER_LEAD_IN_FRAMES, SessionOrchestrator
+from avatar.renderers import build
+from avatar.state import State
+from avatar.telemetry import Telemetry
+from avatar.transport.websocket import WebSocketTransport
+
+WEB_DIR = Path(__file__).resolve().parents[2] / "web"
+
+FRAME_WIDTH = 256
+FRAME_HEIGHT = 144
+"""
+Small on purpose.
+
+Uncompressed BMP at 25fps costs width * height * 3 * 25 bytes/sec -- about 2.7MB/s
+at this size. That is fine on localhost and indefensible over a network, and it is
+a consequence of having no encoder rather than a considered choice. The real
+renderer emits JPEG or WebP in M2 and this constraint disappears; until then, small
+frames keep the demo honest about where the bytes go. Recorded in PROCESS.md 3.4.
+"""
+
+RENDERER_FIRST_FRAME_DELAY_MS = 200
+"""
+Audio the stub renderer requires before emitting a frame.
+
+Not arbitrary: real talking-head models need a lookahead window, and setting this to
+zero would make the first-frame latency readout meaningless and let the lead-in
+buffer look unnecessary.
+"""
+
+IDENTITY_REFERENCE = os.environ.get("AVATAR_REFERENCE", "assets/reference.mp4")
+RENDERER_NAME = os.environ.get("AVATAR_RENDERER", "stub")
+"""
+The one-line renderer swap, as an environment variable.
+
+`AVATAR_RENDERER=musetalk uvicorn avatar.server:app` is the whole change once M2
+lands. Nothing else in this file mentions a model.
+"""
+
+SILENCE_TICK_SECONDS = 1.0
+STATS_INTERVAL_SECONDS = 0.5
+RELAY_QUEUE_DEPTH = 256
+
+RELAYED_EVENTS = frozenset(
+    {"state_change", "latency", "stale_dropped", "session_failure", "counter"}
+)
+"""
+Which telemetry events reach the browser.
+
+`frame_repeated` is excluded despite being one of the most interesting signals: it
+fires up to 25 times a second, and relaying it would spend the socket on
+instrumentation instead of video. The count still reaches the page in the stats
+message.
+"""
+
+app = FastAPI(title="nod", docs_url=None, redoc_url=None)
+
+
+@app.get("/")
+async def index() -> FileResponse:
+    return FileResponse(WEB_DIR / "index.html")
+
+
+@app.get("/mockup")
+async def mockup() -> FileResponse:
+    """The design mockup, with simulated numbers. Kept reachable for reference."""
+    return FileResponse(WEB_DIR / "mockup.html")
+
+
+@app.get("/healthz")
+async def healthz() -> dict[str, str]:
+    return {"status": "ok", "renderer": RENDERER_NAME}
+
+
+class BrowserSession:
+    """One conversational session bound to one WebSocket."""
+
+    def __init__(self, socket: WebSocket) -> None:
+        self._socket = socket
+        self._relay: asyncio.Queue[Mapping[str, object]] = asyncio.Queue(
+            maxsize=RELAY_QUEUE_DEPTH
+        )
+
+        self._telemetry = Telemetry()
+        self._telemetry.subscribe(self._on_telemetry)
+
+        self._transport = WebSocketTransport(socket.send_bytes, socket.send_text)
+        self._mixer = FrameMixer(
+            placeholder_idle_loop(width=FRAME_WIDTH, height=FRAME_HEIGHT),
+            self._telemetry,
+        )
+        self._orchestrator = SessionOrchestrator(
+            renderer=build(
+                RendererConfig(
+                    name=RENDERER_NAME,
+                    options={
+                        "width": FRAME_WIDTH,
+                        "height": FRAME_HEIGHT,
+                        "first_frame_delay_ms": RENDERER_FIRST_FRAME_DELAY_MS,
+                        "frame_interval_ms": FRAME_INTERVAL_MS,
+                    },
+                )
+            ),
+            mixer=self._mixer,
+            transport=self._transport,
+            llm=ScriptedInterviewer(),
+            tts=ToneTTS(),
+            telemetry=self._telemetry,
+        )
+
+    # -- lifecycle ----------------------------------------------------------
+
+    async def run(self) -> None:
+        await self._socket.accept()
+        await self._send(
+            {
+                "type": "hello",
+                "sample_rate": SAMPLE_RATE,
+                "target_fps": TARGET_FPS,
+                "frame_interval_ms": FRAME_INTERVAL_MS,
+                "render_lead_in_frames": RENDER_LEAD_IN_FRAMES,
+                "renderer": RENDERER_NAME,
+                "frame_width": FRAME_WIDTH,
+                "frame_height": FRAME_HEIGHT,
+            }
+        )
+        await self._orchestrator.start(IDENTITY_REFERENCE)
+
+        tasks = [
+            asyncio.create_task(self._pump_frames(), name="frames"),
+            asyncio.create_task(self._pump_relay(), name="relay"),
+            asyncio.create_task(self._pump_stats(), name="stats"),
+            asyncio.create_task(self._tick_silence(), name="silence"),
+        ]
+        try:
+            await self._receive_loop()
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            # The socket is very likely already gone by the time we get here, so
+            # every teardown step has to tolerate a closed transport.
+            with contextlib.suppress(Exception):
+                await self._orchestrator.close()
+
+    async def _receive_loop(self) -> None:
+        while True:
+            message = await self._socket.receive()
+            if message["type"] == "websocket.disconnect":
+                return
+            text = message.get("text")
+            if text is None:
+                # Binary from the client is mic audio. Turn detection is M4; until
+                # then the client keeps the mic locally and sends explicit events.
+                continue
+            try:
+                await self._handle(json.loads(text))
+            except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+                await self._send({"type": "error", "detail": f"{type(exc).__name__}: {exc}"})
+
+    async def _handle(self, message: Mapping[str, Any]) -> None:
+        kind = message.get("type")
+        if kind == "speech_start":
+            await self._orchestrator.on_speech_start()
+        elif kind == "speech_retract":
+            await self._orchestrator.on_speech_retract()
+        elif kind == "end_of_turn":
+            await self._orchestrator.on_end_of_turn(str(message.get("transcript", "")))
+        elif kind == "audio_played":
+            # The client's report of what it actually played. The only input that
+            # moves audio_played_ms, and therefore the only evidence history
+            # truncation runs on.
+            self._orchestrator.on_audio_played(int(message["ms"]), int(message["epoch"]))
+        elif kind == "first_paint":
+            # Closes the end-to-end measurement. Everything from here back to turn
+            # start is visible to the server; the encode-socket-decode-paint tail is
+            # not, and this is the only report of it.
+            self._orchestrator.on_first_paint(int(message["epoch"]))
+        elif kind == "end_session":
+            await self._orchestrator.close()
+        else:
+            await self._send({"type": "error", "detail": f"unknown message {kind!r}"})
+
+    # -- background pumps ---------------------------------------------------
+
+    async def _pump_frames(self) -> None:
+        """
+        Drain the mixer forever.
+
+        Deliberately not conditional on state: the track carries frames while idle,
+        while listening, and while thinking. Gating this on SPEAKING is the bug that
+        produces a track which stalls between turns.
+        """
+        async for frame in self._mixer.stream():
+            if self._orchestrator.state is State.CLOSED:
+                return
+            await self._transport.send_frame(frame)
+
+    async def _pump_relay(self) -> None:
+        while True:
+            record = await self._relay.get()
+            await self._send({"type": "event", **record})
+
+    async def _pump_stats(self) -> None:
+        while True:
+            await asyncio.sleep(STATS_INTERVAL_SECONDS)
+            await self._send(
+                {
+                    "type": "stats",
+                    **self._orchestrator.stats(),
+                    "bytes_sent": self._transport.bytes_sent,
+                    "latency": self._telemetry.snapshot()["latency"],
+                }
+            )
+
+    async def _tick_silence(self) -> None:
+        while True:
+            await asyncio.sleep(SILENCE_TICK_SECONDS)
+            await self._orchestrator.on_idle_tick()
+
+    # -- plumbing -----------------------------------------------------------
+
+    def _on_telemetry(self, record: Mapping[str, object]) -> None:
+        """
+        Called synchronously from inside instrumentation, so it must not block.
+
+        Dropping on a full queue is the right failure: a client too slow to keep up
+        with the event stream should lose readouts, not stall the render loop that
+        is emitting them.
+        """
+        if record.get("event") not in RELAYED_EVENTS:
+            return
+        with contextlib.suppress(asyncio.QueueFull):
+            self._relay.put_nowait(record)
+
+    async def _send(self, payload: Mapping[str, object]) -> None:
+        with contextlib.suppress(Exception):
+            await self._socket.send_text(json.dumps(payload, default=str))
+
+
+@app.websocket("/session")
+async def session_socket(socket: WebSocket) -> None:
+    await BrowserSession(socket).run()
