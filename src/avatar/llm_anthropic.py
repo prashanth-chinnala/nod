@@ -189,4 +189,13 @@ def build_llm(name: str = "scripted") -> object:
         return ScriptedInterviewer()
     if key == "anthropic":
         return AnthropicInterviewer()
-    raise ValueError(f"unknown LLM {name!r}; available: 'scripted', 'anthropic'")
+    if key == "openai":
+        # Also the path to a free local model: Ollama, LM Studio, and vLLM all speak the
+        # OpenAI wire format, so OPENAI_BASE_URL is the only extra setting needed.
+        from avatar.llm_openai import OpenAIInterviewer
+
+        return OpenAIInterviewer()
+    raise ValueError(
+        f"unknown LLM {name!r}; available: 'scripted', 'anthropic', 'openai' "
+        "(openai + OPENAI_BASE_URL also covers Ollama and other local servers)"
+    )

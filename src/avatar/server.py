@@ -35,7 +35,8 @@ from typing import Any
 from fastapi import FastAPI, WebSocket
 from fastapi.responses import FileResponse
 
-from avatar.audio.tts import SAMPLE_RATE, ToneTTS
+from avatar.audio.tts import SAMPLE_RATE
+from avatar.audio.tts_deepgram import build_tts
 from avatar.audio.turn_detection import (
     END_OF_TURN_SILENCE_MS,
     EventKind,
@@ -83,6 +84,14 @@ The one-line renderer swap, as an environment variable.
 
 `AVATAR_RENDERER=musetalk uvicorn avatar.server:app` is the whole change once M2
 lands. Nothing else in this file mentions a model.
+"""
+
+TTS_NAME = os.environ.get("AVATAR_TTS", "tone")
+"""
+Which synthesiser to run. `tone` needs nothing; `deepgram` needs a key.
+
+Defaults to `tone` for the same reason as the LLM and the VAD: a clean clone has to run
+with no credentials and no network.
 """
 
 LLM_NAME = os.environ.get("AVATAR_LLM", "scripted")
@@ -137,7 +146,13 @@ async def mockup() -> FileResponse:
 
 @app.get("/healthz")
 async def healthz() -> dict[str, str]:
-    return {"status": "ok", "renderer": RENDERER_NAME, "llm": LLM_NAME, "vad": VAD_NAME}
+    return {
+        "status": "ok",
+        "renderer": RENDERER_NAME,
+        "llm": LLM_NAME,
+        "tts": TTS_NAME,
+        "vad": VAD_NAME,
+    }
 
 
 class BrowserSession:
@@ -177,7 +192,7 @@ class BrowserSession:
             mixer=self._mixer,
             transport=self._transport,
             llm=build_llm(LLM_NAME),  # type: ignore[arg-type]
-            tts=ToneTTS(),
+            tts=build_tts(TTS_NAME),  # type: ignore[arg-type]
             telemetry=self._telemetry,
         )
 
@@ -196,6 +211,7 @@ class BrowserSession:
                 "frame_width": FRAME_WIDTH,
                 "frame_height": FRAME_HEIGHT,
                 "llm": LLM_NAME,
+                "tts": TTS_NAME,
                 "vad": VAD_NAME,
                 "vad_frame_ms": FRAME_MS,
                 "end_of_turn_silence_ms": END_OF_TURN_SILENCE_MS,

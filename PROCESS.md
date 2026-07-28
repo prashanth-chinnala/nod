@@ -103,10 +103,10 @@ verified. An agent must not assign these tags.**
 
 | Stage | Target (ms) | Measured in prototype (ms) | Tag | Notes |
 |---|---|---|---|---|
-| End-of-turn detection | 100–300 | NOT YET MEASURED | | Often the largest and least-discussed term |
+| End-of-turn detection | 100–300 | **700** | | Configuration, not measurement. Over twice the top of my own target — see §3.3.1 caveat 4 |
 | Speech-to-text finalize | 50–150 | NOT YET MEASURED | | Streaming, so mostly already done incrementally |
 | LLM time-to-first-token | 200–500 | NOT YET MEASURED | | Only TTFT matters, not total generation |
-| TTS time-to-first-audio | 100–300 | NOT YET MEASURED | | Sentence-chunked, not whole-response |
+| TTS time-to-first-audio | 100–300 | **893** cold / **~400** warm | | Deepgram Aura-2, real. 3–9x over my target. See §3.3.2 |
 | Avatar first frame | 50–150 | NOT YET MEASURED | | |
 | Encode + network + jitter buffer | 50–150 | NOT YET MEASURED | | |
 | **Perceived total** | | NOT YET MEASURED | | |
@@ -283,6 +283,40 @@ model, which requires M0, which requires a GPU:
 | Steady-state fps, real model | NOT YET MEASURED | | Blocked on M0 |
 | Output resolution, real model | NOT YET MEASURED | | Blocked on M0 |
 | Peak VRAM | NOT YET MEASURED | | No GPU used yet |
+
+#### 3.3.2 Real TTS versus the placeholder — measured A/B
+
+Same pipeline, same host, one component swapped (`AVATAR_TTS`). Both runs passed all 17
+end-to-end assertions, so this is a like-for-like comparison rather than two different
+scenarios.
+
+| Stage | Placeholder `ToneTTS` | Deepgram Aura-2 | Delta |
+|---|---|---|---|
+| `tts_first_audio` | 124ms | **893ms** | +769ms |
+| `avatar_first_frame` | 404ms | **1226ms** | +822ms |
+| `perceived_total` (to client paint) | 430ms | **1235ms** | +805ms |
+
+**Real speech synthesis is the dominant term in the budget, and it is not close.** It
+alone consumes more than the entire sub-second target the brief describes.
+
+Adding the end-of-turn window, a full conversational turn measures roughly
+**700ms + 1235ms ≈ 1.9s** from the candidate finishing their sentence to the avatar
+visibly starting to answer — about twice the target. The two largest terms are the
+silence window (a policy choice, see caveat 4) and network TTS.
+
+Three things this changes about §3.4, and none of them are "buy a bigger GPU":
+
+1. **The renderer is not the bottleneck.** Even a perfect zero-latency model leaves
+   ~1.9s, because TTS and turn detection do not touch the GPU.
+2. **Aura's warm/cold spread is ~400ms vs ~900ms**, and the first turn of every session
+   pays the cold path. Connection pre-warming at session start is a cheap, unimplemented
+   win worth roughly 500ms on turn one.
+3. **The sub-second claim requires a streaming TTS**, not a request/response one. Aura's
+   REST endpoint returns first audio only after synthesising a leading portion; the
+   WebSocket interface exists precisely for this and is the obvious next measurement.
+
+Measured on the host named in §3.3.1, with `AVATAR_LLM=scripted` — so `llm_ttft` (181ms)
+is still a placeholder reporting its own configured delay, not a real model.
 
 #### 3.3.1 What M3 does measure — session layer only, no ML model
 

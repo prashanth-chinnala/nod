@@ -362,3 +362,70 @@ them would defeat the point of asking. Raw material assembled; conclusions not w
 
 **Next:** the triage cell, then Deepgram TTS/STT (key verified: Aura-2 returned 79KB of
 16kHz PCM). Anthropic completions blocked on account credit, not on code.
+
+---
+
+## Session 5 — real voice, and the measurement that reframes the budget
+
+**Attempted:** replace the placeholder tone with Deepgram Aura, and add an OpenAI
+adapter alongside the Anthropic one.
+
+**Worked.** 199 tests. 17/17 end-to-end with real synthesised speech through the whole
+pipeline — VAD, turn policy, LLM, TTS, renderer, transport, client acks.
+
+### Two format facts that came from measuring, not reading
+
+1. **`/v1/speak` returns `audio/wav` by default.** The 44-byte RIFF header would have
+   been handed to the browser as PCM — an audible click at the start of every sentence —
+   and would have skewed the byte-to-duration arithmetic the renderer uses to drive the
+   mouth. `container=none` returns bare `audio/l16`. Confirmed by inspecting the first 16
+   bytes of both responses; asserted in the suite so it cannot be dropped.
+2. **Cold TTFB is ~3x warm** (~1020ms vs ~380ms). That is why the HTTP client is
+   constructed once per process — a client per request would put every turn on the cold
+   path.
+
+### The A/B that matters
+
+Same pipeline, one component swapped, both runs passing all 17 assertions:
+
+| Stage | `ToneTTS` | Aura-2 | Delta |
+|---|---|---|---|
+| tts_first_audio | 124ms | **893ms** | +769ms |
+| avatar_first_frame | 404ms | **1226ms** | +822ms |
+| perceived_total | 430ms | **1235ms** | +805ms |
+
+**Real TTS alone exceeds the entire sub-second target.** With the 700ms silence window, a
+full turn is ~1.9s from the candidate stopping to the avatar starting — roughly twice
+target — and *neither* dominant term touches a GPU.
+
+That reframes §3.4 substantially. Before this measurement the implicit assumption was
+that the renderer would be the bottleneck and more GPU would be the answer. It is not:
+even a zero-latency model leaves ~1.9s. The real levers are a streaming TTS interface
+instead of request/response, and the silence-window policy choice.
+
+Worth noting the placeholder was not merely inaccurate here — it was *optimistic in a
+way that hid the actual problem*. 124ms of fake TTS made the budget look comfortable.
+
+### OpenAI adapter, and Ollama for free
+
+Added alongside the Anthropic one rather than replacing it: two unrelated providers
+behind one `SentenceStream` is stronger evidence for the swappable-boundary claim than
+either alone, and the module docstring tabulates what the boundary actually absorbs
+(system-prompt placement, `max_tokens` vs `max_completion_tokens`, sampling accepted vs
+rejected, thinking knob vs none, two different stream shapes).
+
+The useful consequence: Ollama, LM Studio, and vLLM all speak the OpenAI wire format, so
+a free local model needs **no new adapter** — only `OPENAI_BASE_URL` and a model name. A
+local endpoint authenticates nothing, so a placeholder key is supplied rather than
+demanded.
+
+### Both LLM providers are billing-blocked, not code-blocked
+
+Anthropic: `400 invalid_request_error`, credit balance too low. OpenAI: `429
+insufficient_quota`. Both keys authenticate. Swapping vendors does not help; the blocker
+is account credit on both. Recorded in both module docstrings as structurally complete
+and never verified against a live completion.
+
+**Next:** Deepgram streaming STT (turns still carry `[Nms of speech, no transcriber]`),
+and Aura's WebSocket interface, which §3.3.2 now identifies as the single largest
+available latency win.

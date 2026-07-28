@@ -205,7 +205,14 @@ async def main() -> int:
         print("\nturn 3: no buttons -- synthetic speech through the VAD")
         states_before_mic = len(seen.states)
         await speak_into_the_mic(socket, MIC_SPEECH_FRAMES, MIC_SILENCE_FRAMES)
-        await asyncio.sleep(1.2)
+        # Long enough for a real TTS round trip. Measured Deepgram time-to-first-audio
+        # is ~400ms warm and ~1000ms cold, and the mixer then needs its lead-in
+        # buffer before SPEAKING. 1.2s was fine against the local synthesiser and is
+        # not against a network one -- the assertion below was measuring the settle
+        # window, not the pipeline.
+        deadline = time.monotonic() + 8.0
+        while len(seen.states) <= states_before_mic + 1 and time.monotonic() < deadline:
+            await asyncio.sleep(0.1)
         mic_states = seen.states[states_before_mic:]
 
         elapsed = time.monotonic() - connected_at
