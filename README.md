@@ -7,10 +7,12 @@ Built as the Exterview Head of Engineering take-home. The reasoning, the
 model-selection memo, the build-vs-buy recommendation, and the migration plan live in
 [PROCESS.md](PROCESS.md); this file is only how to run what exists.
 
-> **Status: M1 and M3 complete, M0 blocked.** The session layer and the streaming path
-> work end to end. There is **no ML model wired in**, so there is no video of a face —
-> the avatar is a coloured rectangle that changes in time with the audio. See
-> [What works today](#what-works-today) for the exact boundary and
+> **Status: M1, M3, and M4's turn-taking complete. M0 blocked.** With credentials it runs
+> a real spoken conversation today — real transcription, a real LLM, a real synthesised
+> voice. What is missing is the **face**: no talking-head model is wired in, so the avatar
+> is five rectangles whose mouth height tracks the audio. See
+> [What works today](#what-works-today) for the exact boundary,
+> [PROCESS.md](PROCESS.md) §3.3.3 for the measured latency budget, and
 > [DEVLOG.md](DEVLOG.md) for what was deferred and why.
 
 ## Quick start
@@ -23,6 +25,10 @@ uvicorn avatar.server:app
 
 Then open **<http://127.0.0.1:8000>** and press **Start session**.
 
+That works with **no credentials at all** — every default is a placeholder that needs no
+key and no network. To hear a real voice and hold a real conversation, see
+[Configuration](#configuration).
+
 - **Starts speaking** → the session moves to `LISTENING`
 - **Stops speaking** → `THINKING`, then `SPEAKING` with audio and frames
 - **Starts speaking** again mid-answer → barge-in. Watch the epoch increment, the audio
@@ -34,8 +40,74 @@ invented values, kept for comparison.
 To verify the same thing headlessly:
 
 ```bash
-python scripts/smoke_session.py     # 15 assertions over a real socket
+python scripts/smoke_session.py     # 17 assertions over a real socket
 ```
+
+A step-by-step test protocol — what to click, what to say, what each readout proves and
+what it does not — is in [docs/DEMO_SCRIPT.md](docs/DEMO_SCRIPT.md).
+
+## Configuration
+
+Every component is chosen by an environment variable, and **every default is a working
+no-credential one**. Copy the template and fill in whichever services you have:
+
+```bash
+cp .env.example .env      # .env is gitignored; never commit it
+chmod 600 .env
+```
+
+`.env` is loaded automatically at server import — see
+[`src/avatar/config.py`](src/avatar/config.py). No `source` step, no `python-dotenv`. A
+real environment variable always wins over the file, so `AVATAR_TTS=tone uvicorn ...`
+still overrides it.
+
+`GET /config` reports which implementation each boundary resolved to, and which variable
+*names* came from the file — never their values.
+
+| Variable | Default | Options |
+|---|---|---|
+| `AVATAR_RENDERER` | `stub` | `stub` (no GPU) · the chosen model, once M2 lands |
+| `AVATAR_LLM` | `scripted` | `scripted` · `openai` · `anthropic` |
+| `AVATAR_TTS` | `tone` | `tone` · `deepgram` |
+| `AVATAR_STT` | `none` | `none` · `deepgram` |
+| `AVATAR_VAD` | `energy` | `energy` (no deps) · `silero` (needs `.[vad]`, **never executed**) |
+| `AVATAR_LLM_MODEL` | adapter default | any model the chosen endpoint serves |
+| `AVATAR_TTS_VOICE` | `aura-2-thalia-en` | any Aura voice |
+| `OPENAI_BASE_URL` | vendor default | any OpenAI-compatible endpoint — see below |
+| `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `DEEPGRAM_API_KEY` | unset | credentials |
+
+### Any OpenAI-compatible endpoint
+
+`AVATAR_LLM=openai` plus `OPENAI_BASE_URL` reaches far more than OpenAI, because Ollama,
+LM Studio, and vLLM all speak the same wire format. **A local model therefore needs no new
+adapter and no key at all** — which makes a fully offline, zero-cost interviewer a config
+change:
+
+| Target | `OPENAI_BASE_URL` | Key |
+|---|---|---|
+| Local Ollama | `http://localhost:11434/v1` | none needed |
+| Ollama Cloud | `https://ollama.com/v1` | your Ollama key |
+| LM Studio | `http://localhost:1234/v1` | none needed |
+| OpenAI | *(omit)* | your OpenAI key |
+
+### Running it for real
+
+```bash
+# .env holds the keys; no prefixes needed
+uvicorn avatar.server:app
+curl -s localhost:8000/config | python3 -m json.tool   # confirm what resolved
+```
+
+If `/config` shows `scripted`, `tone`, or `none` when you expected otherwise, `.env` was
+not picked up and you are measuring placeholders.
+
+### Secrets
+
+`.env` is gitignored and **must stay that way** — this repository is published, and a key
+committed to a public repo is scraped within minutes and cannot be un-published. Only
+[`.env.example`](.env.example) is tracked, and it contains no values. For Colab, use
+**Colab Secrets** rather than a notebook cell: anything typed into a cell is saved inside
+the notebook file.
 
 ## What works today
 
