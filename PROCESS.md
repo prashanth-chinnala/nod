@@ -244,9 +244,8 @@ transport all live outside it — see §3.2.
 | Configuration | **Built** | `.env.development` / `.env.local` / `.env` layered at import, real env vars winning; `GET /config` reports what each boundary resolved to and which files were read. Every default is a working no-credential one |
 | Turn-taking policy | **Built** (M4) | Server-side. Onset, hysteresis, retraction, and end-of-turn as separately tuned decisions; 30 tests over probability sequences |
 | **A real voice activity detector** | **Partly** (M4) | The policy is real and tested. The default detector under it is an energy gate that cannot tell speech from a door. `SileroVad` is written, wired, and **has never been executed** — no torch in the dev environment |
-| **Real LLM** | **Not built** (M4) | `ScriptedInterviewer` asks canned questions. The sentence chunker it feeds is real and survives the swap |
-| **Real TTS** | **Not built** (M4) | `ToneTTS` emits a sine wave of the correct duration. Timing and chunking are real; the voice is not |
-| Frame encoding (JPEG/WebP) | **Not built** (M2) | Uncompressed BMP costs ~2.7MB/s at 256×144. Fine on localhost, indefensible over a network |
+| Frame encoding | **Built** | PNG, stdlib `zlib`, no new dependency. **108.10 KB → 0.57 KB per frame, 22.20 → 0.12 Mbps at 25fps — 188×.** Was the reason 0.5fps of 25 arrived through a tunnel. The client sniffs the format from magic bytes, so M2 can switch to JPEG for photographic frames with no protocol change |
+| Client jitter buffer | **Built** | 150ms lead, `?audioLead=` overridable, underruns counted and surfaced. Absent before, which is why audio was clean on localhost and broke through a tunnel |
 | Warm model pooling | Deferred (M7) | Described in §1.4. Constructing a renderer per session is exactly the cost that section argues cannot be paid at conversation start |
 | Multi-session concurrency | Deferred (M7) | One orchestrator per socket is wired and works; only one session has been exercised |
 | WebRTC transport | Deferred (M7) | Stretch goal. §1.4 states what the WebSocket shortcut gives up |
