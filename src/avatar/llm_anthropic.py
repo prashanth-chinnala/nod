@@ -38,7 +38,7 @@ import os
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import aclosing
 
-from avatar.contracts import Message
+from avatar.contracts import Message, SentenceStream
 from avatar.llm import MAX_CHUNK_CHARS, chunk_into_sentences
 
 DEFAULT_MODEL = "claude-opus-5"
@@ -176,7 +176,7 @@ def _build_client() -> object:
     return AsyncAnthropic()
 
 
-def build_llm(name: str = "scripted") -> object:
+def build_llm(name: str = "scripted") -> SentenceStream:
     """
     The one-line LLM swap, mirroring `renderers.build` and `vad.build_vad`.
 

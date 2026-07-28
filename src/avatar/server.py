@@ -35,6 +35,7 @@ from typing import Any
 from fastapi import FastAPI, WebSocket
 from fastapi.responses import FileResponse
 
+from avatar.audio.stt import build_stt
 from avatar.audio.tts import SAMPLE_RATE
 from avatar.audio.tts_deepgram import build_tts
 from avatar.audio.turn_detection import (
@@ -84,6 +85,14 @@ The one-line renderer swap, as an environment variable.
 
 `AVATAR_RENDERER=musetalk uvicorn avatar.server:app` is the whole change once M2
 lands. Nothing else in this file mentions a model.
+"""
+
+STT_NAME = os.environ.get("AVATAR_STT", "none")
+"""
+Which transcriber to run. `none` needs nothing; `deepgram` needs a key.
+
+The transcriber never decides when a turn ends -- `audio.turn_detection` does. See the
+`Transcriber` docstring in `contracts` for why that split is deliberate.
 """
 
 TTS_NAME = os.environ.get("AVATAR_TTS", "tone")
@@ -151,6 +160,7 @@ async def healthz() -> dict[str, str]:
         "renderer": RENDERER_NAME,
         "llm": LLM_NAME,
         "tts": TTS_NAME,
+        "stt": STT_NAME,
         "vad": VAD_NAME,
     }
 
@@ -168,6 +178,7 @@ class BrowserSession:
         self._telemetry.subscribe(self._on_telemetry)
 
         self._vad = build_vad(VAD_NAME)
+        self._stt = build_stt(STT_NAME)
         self._detector = TurnDetector(frame_ms=FRAME_MS)
         self._mic = bytearray()
         self._speech_probability = 0.0
@@ -191,8 +202,8 @@ class BrowserSession:
             ),
             mixer=self._mixer,
             transport=self._transport,
-            llm=build_llm(LLM_NAME),  # type: ignore[arg-type]
-            tts=build_tts(TTS_NAME),  # type: ignore[arg-type]
+            llm=build_llm(LLM_NAME),
+            tts=build_tts(TTS_NAME),
             telemetry=self._telemetry,
         )
 
@@ -212,6 +223,7 @@ class BrowserSession:
                 "frame_height": FRAME_HEIGHT,
                 "llm": LLM_NAME,
                 "tts": TTS_NAME,
+                "stt": STT_NAME,
                 "vad": VAD_NAME,
                 "vad_frame_ms": FRAME_MS,
                 "end_of_turn_silence_ms": END_OF_TURN_SILENCE_MS,
@@ -220,6 +232,12 @@ class BrowserSession:
         await self._orchestrator.start(IDENTITY_REFERENCE)
 
         tasks = [
+            # Warmed in the background, deliberately not awaited. The measured ~910ms
+            # connect has to be paid before the first turn -- but awaiting it here would
+            # delay the video track by the same amount, and the candidate would sit in
+            # front of a blank panel at session start. Nothing is lost by overlapping:
+            # the microphone is not streaming yet.
+            asyncio.create_task(self._warm_transcriber(), name="stt-warm"),
             asyncio.create_task(self._pump_frames(), name="frames"),
             asyncio.create_task(self._pump_relay(), name="relay"),
             asyncio.create_task(self._pump_stats(), name="stats"),
@@ -235,6 +253,8 @@ class BrowserSession:
             # every teardown step has to tolerate a closed transport.
             with contextlib.suppress(Exception):
                 await self._orchestrator.close()
+            with contextlib.suppress(Exception):
+                await self._stt.aclose()
 
     async def _receive_loop(self) -> None:
         while True:
@@ -276,6 +296,13 @@ class BrowserSession:
         else:
             await self._send({"type": "error", "detail": f"unknown message {kind!r}"})
 
+    async def _warm_transcriber(self) -> None:
+        """Open the STT socket without blocking the video track."""
+        connect = getattr(self._stt, "connect", None)
+        if connect is not None:
+            with contextlib.suppress(Exception):
+                await connect()
+
     # -- microphone ---------------------------------------------------------
 
     async def _on_mic_audio(self, pcm: bytes) -> None:
@@ -293,6 +320,11 @@ class BrowserSession:
         echo cancellation, not ours — and if that fails, the avatar interrupts itself in
         a loop. A different VAD would not fix it.
         """
+        # The transcriber gets the raw stream, unframed: it has its own opinion about
+        # buffering and does not need the VAD's fixed window. It must never block this
+        # path, which is why `push_audio` swallows its own failures.
+        await self._stt.push_audio(pcm)
+
         self._mic.extend(pcm)
         frame_bytes = self._vad.frame_samples * 2
         while len(self._mic) >= frame_bytes:
@@ -317,11 +349,13 @@ class BrowserSession:
                 float(self._detector.end_of_turn_silence_ms),
                 epoch=self._orchestrator.epoch,
             )
-            # No transcriber yet, so the turn carries its duration instead of words.
-            # The orchestrator does not care -- it appends whatever it is given to
-            # history -- which is what makes STT a drop-in later.
+            # Whatever the transcriber has finalised by now. The policy has already
+            # decided the turn is over, so this does not wait for a word still in
+            # flight -- that gap is the documented cost of keeping turn detection local
+            # rather than delegating it to the STT vendor's endpointing.
+            transcript = self._stt.take_transcript()
             await self._orchestrator.on_end_of_turn(
-                f"[{event.speech_ms}ms of speech, no transcriber]"
+                transcript or f"[{event.speech_ms}ms of speech, no transcript]"
             )
 
     # -- background pumps ---------------------------------------------------

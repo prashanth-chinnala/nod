@@ -17,6 +17,7 @@ it is replaceable without the state machine noticing:
     Transport            how frames and audio reach the client.
     SentenceStream       the LLM, already chunked into speakable units.
     SpeechStream         the TTS.
+    Transcriber          the STT. Accumulates words; decides nothing.
 """
 
 from __future__ import annotations
@@ -189,6 +190,36 @@ class SpeechStream(Protocol):
 
     def __call__(self, text: str, epoch: int) -> AsyncGenerator[AudioChunk, None]:
         """Closeable, for the same reason as `SentenceStream`."""
+        ...
+
+
+class Transcriber(Protocol):
+    """
+    Speech to text. Accumulates words and nothing else.
+
+    Deliberately *not* a turn detector. Every streaming STT service ships its own
+    endpointing, and using it would move the turn-taking decision into a vendor's
+    defaults -- replacing a policy with 30 tests over probability sequences
+    (`audio.turn_detection`) with a threshold nobody here can see or tune. So the
+    transcriber is fed the same audio as the VAD, transcribes continuously, and is
+    *asked* for its text when the turn policy says the turn is over.
+
+    The consequence worth naming: the transcript is whatever had been finalised by that
+    moment, so a word still in flight can be missed. That is the cost of keeping turn
+    detection under local control, and it is the right trade for an interview product
+    where a wrong turn boundary is far more damaging than a dropped final word.
+    """
+
+    async def push_audio(self, pcm: bytes) -> None:
+        """Feed microphone audio. Must not block the caller's audio path."""
+        ...
+
+    def take_transcript(self) -> str:
+        """Return everything finalised since the last call, and clear it."""
+        ...
+
+    async def aclose(self) -> None:
+        """Release the connection. Safe to call more than once."""
         ...
 
 

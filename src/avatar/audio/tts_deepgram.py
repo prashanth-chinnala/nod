@@ -42,7 +42,7 @@ from collections.abc import AsyncGenerator
 from contextlib import aclosing
 
 from avatar.audio.tts import CHUNK_MS, SAMPLE_RATE
-from avatar.contracts import AudioChunk
+from avatar.contracts import AudioChunk, SpeechStream
 
 SPEAK_URL = "https://api.deepgram.com/v1/speak"
 
@@ -193,7 +193,7 @@ def _build_client() -> object:
     return httpx.AsyncClient(timeout=REQUEST_TIMEOUT_S)
 
 
-def build_tts(name: str = "tone") -> object:
+def build_tts(name: str = "tone") -> SpeechStream:
     """
     The one-line TTS swap, mirroring the renderer, VAD, and LLM registries.
 
