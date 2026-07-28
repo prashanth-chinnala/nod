@@ -20,11 +20,12 @@ dev = [
   "ruff>=0.6",
   "mypy>=1.11",
 ]
-# M3. Kept out of [dev] so CI never needs a web stack to lint the state machine.
+# Kept out of [dev] so CI never needs a web stack to lint the state machine. The
+# codec and the Transport implementation are tested with a list standing in for the
+# socket, so nothing in `tests/` imports these.
 server = [
   "fastapi>=0.115",
   "uvicorn[standard]>=0.30",
-  "pillow>=10.0",
 ]
 
 [tool.setuptools.packages.find]
@@ -43,6 +44,20 @@ python_version = "3.11"
 strict = true
 warn_unreachable = true
 files = ["src/avatar"]
+
+# CI installs only [dev], which has no web stack, so fastapi is absent when mypy
+# runs there. Suppressing the missing import keeps the type check on the modules
+# that matter rather than forcing a web dependency into CI to satisfy the linter.
+[[tool.mypy.overrides]]
+module = ["fastapi.*", "starlette.*", "uvicorn.*"]
+ignore_missing_imports = true
+
+# Consequence of the above: with fastapi unresolved, its decorators are Any, and
+# strict mode rejects those. Scoped to this one module so the relaxation cannot
+# spread to the orchestration layer.
+[[tool.mypy.overrides]]
+module = "avatar.server"
+disallow_untyped_decorators = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

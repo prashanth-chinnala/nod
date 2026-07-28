@@ -22,10 +22,10 @@ mixer's lead-in buffer can be tested against a slow renderer without owning one.
 
 from __future__ import annotations
 
-import struct
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 
+from avatar.bmp import solid_bmp
 from avatar.contracts import IDLE_EPOCH, AudioChunk, Frame
 
 FRAME_INTERVAL_MS = 40  # 25fps
@@ -36,19 +36,6 @@ PALETTE: tuple[tuple[int, int, int], ...] = (
     (52, 74, 88),
     (46, 66, 78),
 )
-
-
-def solid_bmp(width: int, height: int, rgb: tuple[int, int, int]) -> bytes:
-    """Minimal 24-bit BMP, top-down, one flat colour."""
-    r, g, b = rgb
-    row = bytes((b, g, r)) * width
-    row += b"\x00" * (-len(row) % 4)  # rows are 4-byte aligned
-    pixels = row * height
-    dib = struct.pack(
-        "<IiiHHIIiiII", 40, width, -height, 1, 24, 0, len(pixels), 2835, 2835, 0, 0
-    )
-    header = b"BM" + struct.pack("<IHHI", 14 + len(dib) + len(pixels), 0, 0, 14 + len(dib))
-    return header + dib + pixels
 
 
 @dataclass(frozen=True, slots=True)

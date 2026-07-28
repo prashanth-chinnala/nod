@@ -18,10 +18,12 @@ stdout.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import math
 import sys
 from collections import defaultdict
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol, TextIO
 
@@ -42,6 +44,17 @@ STAGE_INTERRUPT_TO_SILENT = "interrupt_to_silent"
 
 class Sink(Protocol):
     def write(self, line: str) -> None: ...
+
+
+Observer = Callable[[Mapping[str, object]], None]
+"""
+A live subscriber to the event stream.
+
+The browser client is one: it renders state changes, stale-frame drops, and
+first-frame latency as they happen rather than on a poll, which is what makes a
+barge-in visible as an integer changing rather than as a guess about what the video
+did. Observers must not raise -- see `_emit`.
+"""
 
 
 class _StreamSink:
@@ -101,18 +114,33 @@ class Histogram:
 class Telemetry:
     """Records events and latency samples. Cheap enough to call on every frame."""
 
-    def __init__(self, sink: Sink | None = None) -> None:
+    def __init__(self, sink: Sink | None = None, *, retain_events: bool = True) -> None:
         self._sink: Sink = sink if sink is not None else _StreamSink(sys.stdout)
+        self._observers: list[Observer] = []
+        # Retaining every event is what the tests assert against, and it is an
+        # unbounded list -- fine for a suite and for a demo session, wrong for a
+        # long-lived server. Off by default nowhere, but switchable.
+        self._retain_events = retain_events
         self.histograms: dict[str, Histogram] = {}
         self.counters: dict[str, int] = defaultdict(int)
         self.events: list[dict[str, object]] = []
+
+    def subscribe(self, observer: Observer) -> None:
+        self._observers.append(observer)
 
     # -- emit ---------------------------------------------------------------
 
     def _emit(self, event: str, **fields: object) -> None:
         record: dict[str, object] = {"event": event, **fields}
-        self.events.append(record)
+        if self._retain_events:
+            self.events.append(record)
         self._sink.write(json.dumps(record, default=str))
+        for observer in self._observers:
+            # An observer that raises must not break the thing it is observing.
+            # Losing a readout in the browser is a cosmetic failure; taking down a
+            # live session because of one is not.
+            with contextlib.suppress(Exception):
+                observer(record)
 
     def observe_ms(self, stage: str, value_ms: float, *, epoch: int) -> None:
         hist = self.histograms.setdefault(stage, Histogram(stage))
