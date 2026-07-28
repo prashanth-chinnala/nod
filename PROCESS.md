@@ -284,6 +284,36 @@ model, which requires M0, which requires a GPU:
 | Output resolution, real model | NOT YET MEASURED | | Blocked on M0 |
 | Peak VRAM | NOT YET MEASURED | | No GPU used yet |
 
+#### 3.3.3 The full real stack — measured, every component live
+
+`AVATAR_LLM=openai` (gpt-oss:20b via Ollama Cloud), `AVATAR_TTS=deepgram` (Aura-2),
+`AVATAR_STT=deepgram` (Nova-3). All 17 end-to-end assertions pass, including barge-in with
+stale-artifact drops verified from telemetry.
+
+| Stage | Target §1.5 | Placeholders | **Real stack** | Verdict |
+|---|---|---|---|---|
+| End-of-turn detection | 100–300ms | 700ms | **700ms** | Config, not measurement. Over target by choice |
+| LLM time-to-first-token | 200–500ms | 181ms (fake) | **1903–3234ms** | **4–6x over** |
+| TTS time-to-first-audio | 100–300ms | 124ms (fake) | **949–1275ms** | **3–4x over** |
+| Avatar first frame | 50–150ms | 404ms | **2983–4658ms** | Dominated by the two above |
+| **Perceived total** | **<1000ms** | 430ms | **2992–4661ms** | **3–5x over** |
+
+Adding the silence window, a full conversational turn measures **3.7s–5.4s** from the
+candidate finishing their sentence to the avatar visibly answering.
+
+**The headline finding for §3.4: not one of the three dominant terms is the renderer.**
+
+1. **LLM TTFT (~1.9–3.2s)** is a free-tier cloud model. A paid low-latency model is the
+   fix, and it is a spend decision rather than an engineering one.
+2. **TTS TTFA (~0.9–1.3s)** is Aura over REST. Aura's WebSocket interface measured
+   **351–361ms flat** with the connection cost paid once per session — a verified
+   ~550ms saving, not yet implemented.
+3. **End-of-turn (700ms)** is a policy number no hardware can improve.
+
+A perfect, zero-latency talking-head model would still leave roughly **3.4s**. Any claim
+that "more GPU" closes this gap is wrong, and the measurement is what makes that
+falsifiable rather than an opinion.
+
 #### 3.3.2 Real TTS versus the placeholder — measured A/B
 
 Same pipeline, same host, one component swapped (`AVATAR_TTS`). Both runs passed all 17

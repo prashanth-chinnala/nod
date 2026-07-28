@@ -43,7 +43,37 @@ from avatar.transport.websocket import Kind, decode
 URL = "ws://127.0.0.1:8000/session"
 
 SPEAK_SETTLE_SECONDS = 2.0
-"""Long enough for TTFT + first audio + the lead-in buffer, with room to spare."""
+"""
+Fallback only. Prefer `wait_for_state` -- fixed sleeps do not survive a component swap.
+
+Written against the placeholder stack, where a whole turn was ~430ms. With a real LLM and
+a real TTS the same turn measures ~3s, so a fixed 2s window was firing the barge-in before
+any audio existed -- and the barge-in assertions then failed for want of anything to
+cancel, which looked like a state-machine bug and was a stopwatch bug.
+"""
+
+TURN_TIMEOUT_SECONDS = 25.0
+"""
+Generous enough for the slowest real stack measured (LLM ~1.9s + TTS ~0.9s + lead-in),
+with headroom for a cold connection on the first turn.
+"""
+
+
+async def wait_for_state(seen: Observed, state: str, *, since: int, timeout: float) -> bool:
+    """
+    Wait until `state` appears in the transition log after index `since`.
+
+    Replaces sleeping a guessed duration. The whole point of this script is that it keeps
+    working when a component is swapped, and a hard-coded settle window is exactly the
+    thing that does not.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if state in seen.states[since:]:
+            return True
+        await asyncio.sleep(0.05)
+    return False
+
 
 BARGE_IN_SETTLE_SECONDS = 1.0
 
@@ -182,17 +212,24 @@ async def main() -> int:
         print("\nturn 1: candidate asks, avatar answers to completion")
         await socket.send(json.dumps({"type": "speech_start"}))
         await asyncio.sleep(0.1)
+        before_turn1 = len(seen.states)
         await socket.send(json.dumps({"type": "end_of_turn", "transcript": "smoke test"}))
         started = time.monotonic()
-        await asyncio.sleep(SPEAK_SETTLE_SECONDS)
+        reached_speaking = await wait_for_state(
+            seen, "SPEAKING", since=before_turn1, timeout=TURN_TIMEOUT_SECONDS
+        )
+        # A little audio has to actually flow before a barge-in has anything to cancel.
+        await asyncio.sleep(0.5)
         spoke_for = time.monotonic() - started
         audio_after_turn1 = seen.audio_ms
 
         print("\nturn 2: candidate barges in mid-sentence")
         await socket.send(json.dumps({"type": "speech_start"}))
         await asyncio.sleep(0.1)
+        before_turn2 = len(seen.states)
         await socket.send(json.dumps({"type": "end_of_turn", "transcript": "second"}))
-        await asyncio.sleep(0.8)
+        await wait_for_state(seen, "SPEAKING", since=before_turn2, timeout=TURN_TIMEOUT_SECONDS)
+        await asyncio.sleep(0.5)
         states_before_barge_in = len(seen.states)
         await socket.send(json.dumps({"type": "speech_start"}))  # <-- barge-in
         await asyncio.sleep(BARGE_IN_SETTLE_SECONDS)
@@ -210,9 +247,9 @@ async def main() -> int:
         # buffer before SPEAKING. 1.2s was fine against the local synthesiser and is
         # not against a network one -- the assertion below was measuring the settle
         # window, not the pipeline.
-        deadline = time.monotonic() + 8.0
-        while len(seen.states) <= states_before_mic + 1 and time.monotonic() < deadline:
-            await asyncio.sleep(0.1)
+        await wait_for_state(
+            seen, "SPEAKING", since=states_before_mic, timeout=TURN_TIMEOUT_SECONDS
+        )
         mic_states = seen.states[states_before_mic:]
 
         elapsed = time.monotonic() - connected_at
@@ -250,7 +287,7 @@ async def main() -> int:
             "presentation timestamps are strictly monotonic",
             all(b > a for a, b in zip(seen.frame_pts, seen.frame_pts[1:], strict=False)),
         ),
-        check("the avatar reached SPEAKING", "SPEAKING" in seen.states),
+        check("the avatar reached SPEAKING", reached_speaking and "SPEAKING" in seen.states),
         check(
             "audio reached the client",
             seen.audio_chunks > 0,

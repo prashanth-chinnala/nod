@@ -45,6 +45,7 @@ from avatar.audio.turn_detection import (
     TurnEvent,
 )
 from avatar.audio.vad import FRAME_MS, build_vad
+from avatar.config import load_env
 from avatar.contracts import RendererConfig
 from avatar.idle import placeholder_idle_loop
 from avatar.llm_anthropic import build_llm
@@ -54,6 +55,11 @@ from avatar.renderers import build
 from avatar.state import State
 from avatar.telemetry import STAGE_TURN_DETECT, Telemetry
 from avatar.transport.websocket import WebSocketTransport
+
+# Before any os.environ.get below. Without this, .env was inert: every run needed
+# `set -a && . ./.env && set +a` in front of it, and forgetting produced a session that
+# silently fell back to every placeholder -- no error, just quietly the wrong system.
+_FROM_ENV_FILE = load_env()
 
 WEB_DIR = Path(__file__).resolve().parents[2] / "web"
 
@@ -151,6 +157,27 @@ async def index() -> FileResponse:
 async def mockup() -> FileResponse:
     """The design mockup, with simulated numbers. Kept reachable for reference."""
     return FileResponse(WEB_DIR / "mockup.html")
+
+
+@app.get("/config")
+async def config() -> dict[str, object]:
+    """
+    Which implementation each boundary resolved to, and which came from `.env`.
+
+    Names only, never values -- most of what `.env` holds is a credential. Exists because
+    "why is it still using the placeholder voice?" is otherwise answered by reading code.
+    """
+    return {
+        "renderer": RENDERER_NAME,
+        "llm": LLM_NAME,
+        "llm_model": os.environ.get("AVATAR_LLM_MODEL", "(adapter default)"),
+        "llm_base_url": os.environ.get("OPENAI_BASE_URL", "(vendor default)"),
+        "tts": TTS_NAME,
+        "tts_voice": os.environ.get("AVATAR_TTS_VOICE", "(adapter default)"),
+        "stt": STT_NAME,
+        "vad": VAD_NAME,
+        "loaded_from_env_file": sorted(_FROM_ENV_FILE),
+    }
 
 
 @app.get("/healthz")
