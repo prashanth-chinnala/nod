@@ -33,8 +33,18 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, WebSocket
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
+from avatar.api import (
+    agents,
+    faces,
+    guardrails,
+    knowledge,
+    pronunciations,
+    sessions,
+    tools,
+)
 from avatar.audio.stt import build_stt
 from avatar.audio.tts import SAMPLE_RATE
 from avatar.audio.tts_deepgram import build_tts
@@ -152,6 +162,25 @@ what happened to both of these.**
 """
 
 app = FastAPI(title="nod", docs_url=None, redoc_url=None)
+
+# The console runs on a different origin in development (Next.js on :3000, this on :8000),
+# so the browser needs permission to call across. Named origins rather than `*`: with
+# credentials disallowed a wildcard is not a data-exfiltration hole, but it does mean any
+# page on the internet can drive this API while a developer has it running -- including
+# creating agents and deleting sessions. Two literal origins cost nothing and remove that.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE"],
+    allow_headers=["content-type"],
+)
+
+# Console CRUD, distinct from the session WebSocket below. These routers manage
+# configuration; the socket *is* the runtime. They share this process only because a second
+# deployment unit would be overhead at this size -- nothing in the orchestration path imports
+# them, so splitting them out later is a routing change rather than a rewrite.
+for _resource in (agents, faces, guardrails, knowledge, pronunciations, sessions, tools):
+    app.include_router(_resource.router)
 
 
 @app.get("/")

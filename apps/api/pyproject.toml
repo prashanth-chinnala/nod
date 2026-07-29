@@ -58,10 +58,14 @@ src = ["src", "tests"]
 target-version = "py311"
 
 [tool.ruff.lint]
+# En dash, em dash and typographic quotes are intentional in prose. RUF001/RUF002 exist to
+# catch homoglyphs pasted from elsewhere; mangling real punctuation to satisfy them would
+# make the writing worse, which is the opposite of the point.
+allowed-confusables = ["–", "—", "‘", "’", "“", "”"]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.12"
 strict = true
 warn_unreachable = true
 files = ["src/avatar"]
@@ -94,6 +98,12 @@ ignore_missing_imports = true
 # Consequence of the above: with fastapi unresolved, its decorators are Any, and
 # strict mode rejects those. Scoped to this one module so the relaxation cannot
 # spread to the orchestration layer.
+# numpy and chromadb arrive via the optional [vector] extra and are never type-checked here.
+[[tool.mypy.overrides]]
+module = ["numpy.*", "chromadb.*"]
+ignore_missing_imports = true
+follow_imports = "skip"
+
 [[tool.mypy.overrides]]
 module = "avatar.server"
 disallow_untyped_decorators = false
