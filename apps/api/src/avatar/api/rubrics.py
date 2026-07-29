@@ -71,6 +71,14 @@ class CompetencyIn(BaseModel):
     """
     max_turns: int = Field(default=DEFAULT_MAX_TURNS, ge=1, le=20)
     min_signals: int = Field(default=DEFAULT_MIN_SIGNALS, ge=1, le=20)
+    weight: float = Field(default=1.0, gt=0, le=10)
+    """
+    Contribution to the scorecard, not to the running order.
+
+    `gt=0` rather than `ge=0`: a zero-weight competency would still be asked about, consuming
+    turns from a fixed-length interview, and then count for nothing. An operator who wants that
+    means to delete it.
+    """
 
     @model_validator(mode="after")
     def _min_signals_must_be_reachable(self) -> CompetencyIn:

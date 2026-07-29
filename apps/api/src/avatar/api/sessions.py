@@ -1,30 +1,29 @@
 """
 Conversation records: what was said, what it cost, and what got interrupted.
 
-**Append-only, deliberately.** There is no PATCH and no DELETE. A conversation record that
-can be edited is not evidence, and evidence is the entire reason this collection exists —
-every latency figure in `PROCESS.md` traces back to observed turns, and a record that could
-be revised after the fact would make those figures unciteable. Turns are appended; a session
-is ended once.
+**Append-only, deliberately.** There is no PATCH and no DELETE. A conversation record that can
+be edited is not evidence, and evidence is the entire reason this collection exists — every
+latency figure in `PROCESS.md` traces back to observed turns, and a record that could be revised
+after the fact would make those figures unciteable. Turns are appended; a session is ended once.
 
 **Why the per-turn shape mirrors the telemetry rather than the UI.** A turn stores the four
-stage timings the runtime already emits (`llm_ttft_ms`, `tts_first_audio_ms`,
-`first_frame_ms`, `perceived_total_ms`) plus `heard`, `said`, and whether the transcriber
-produced anything. Storing a pre-computed "total" instead would lose the breakdown, and the
-breakdown is the finding: none of the three dominant terms is the renderer.
+stage timings the runtime already emits (`llm_ttft_ms`, `tts_first_audio_ms`, `first_frame_ms`,
+`perceived_total_ms`) plus `heard`, `said`, and whether the transcriber produced anything.
+Storing a pre-computed "total" instead would lose the breakdown, and the breakdown is the
+finding: none of the three dominant terms is the renderer.
 
 **`transcribed` is stored separately from `heard` on purpose.** An empty transcript is not the
-same as a silent candidate, and conflating them hides the failure that took a day to find —
-the interviewer asking a plausible question that ignores the answer, because no words ever
-reached it. A session where `transcribed` is false on every turn is a broken STT
-configuration, and that must be visible in a list rather than needing a log grep.
+same as a silent candidate, and conflating them hides the failure that took a day to find — the
+interviewer asking a plausible question that ignores the answer, because no words ever reached
+it. A session where `transcribed` is false on every turn is a broken STT configuration, and that
+must be visible in a list rather than needing a log grep.
 """
 
 from __future__ import annotations
 
 from typing import Annotated, Any
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from avatar.store import NotFound, now_iso, store
@@ -158,14 +157,86 @@ async def rtc_credentials(session_id: str) -> dict[str, Any]:
 
 
 @router.post("/{session_id}/end")
-async def end_session(session_id: str) -> dict[str, Any]:
+async def end_session(session_id: str, background: BackgroundTasks) -> dict[str, Any]:
     """
-    Mark a session finished. Idempotent: the first `ended_at` is the one that stands.
+    Mark a session finished, then score it in the background. Idempotent on both counts.
 
     A socket can close twice — a client disconnect racing a server shutdown — and the second
-    call must not move the timestamp, because session duration is derived from it.
+    call must not move the timestamp, because session duration is derived from it. The early
+    return also stops a second close from re-scoring, which would spend a model call to
+    overwrite an identical scorecard.
+
+    Scoring is queued rather than awaited, and that is the whole architectural point: the
+    response to "the interview is over" must not wait on six model calls. The scorecard appears
+    on the record when it is ready, and `GET /sessions/{id}` reports `scoring` as `pending`
+    until then, so a reader can tell "not scored yet" from "could not be scored".
     """
     record = _load(session_id)
     if record.get("ended_at"):
         return record
-    return store.update(COLLECTION, session_id, {"ended_at": now_iso()})
+    updated = store.update(
+        COLLECTION, session_id, {"ended_at": now_iso(), "scoring": {"status": "pending"}}
+    )
+    background.add_task(run_scoring, session_id)
+    return updated
+
+
+@router.post("/{session_id}/score")
+async def score_now(session_id: str, background: BackgroundTasks) -> dict[str, Any]:
+    """
+    Re-score a session on demand.
+
+    Exists for the cases the automatic pass cannot cover: a rubric corrected after the fact, a
+    scorecard that came back `unavailable` because credentials were missing at the time, or a
+    judge model changed. Re-scoring overwrites, deliberately — a history of scorecards would
+    invite picking the flattering one, and the turns it was derived from are append-only and
+    unchanged, so any scorecard can be reproduced from them.
+
+    Does not require the session to have ended. Scoring a live interview mid-way is a legitimate
+    thing for an operator to do — it is how you check the rubric is working before running
+    twenty candidates through it.
+    """
+    _load(session_id)
+    store.update(COLLECTION, session_id, {"scoring": {"status": "pending"}})
+    background.add_task(run_scoring, session_id)
+    return {"session_id": session_id, "scoring": {"status": "pending"}}
+
+
+async def run_scoring(session_id: str) -> None:
+    """
+    Assess one session and write the scorecard onto its record.
+
+    Every failure is written rather than raised. This runs detached from any request, so an
+    exception here would land in a server log nobody is reading and the record would sit on
+    `pending` for ever — indistinguishable from a scorer that is still working. A stored reason
+    is the only form of this failure anyone will ever see.
+
+    Imports are local to keep the scoring path out of the module import graph for a process that
+    only serves CRUD, and to keep this router free of a dependency on the runtime.
+    """
+    from avatar.agent_config import resolve_agent
+    from avatar.judge_openai import build_judge
+    from avatar.plan import InterviewPlan
+    from avatar.scoring import Scorecard, score_session
+
+    try:
+        record = store.get(COLLECTION, session_id)
+    except NotFound:
+        return  # deleted between queueing and running; nothing to write to
+
+    try:
+        agent_id = record.get("agent_id")
+        plan = resolve_agent(str(agent_id)).plan if agent_id else InterviewPlan()
+        built = build_judge()
+        judge, model = built if built else (None, "")
+        card = await score_session(record, plan, judge, model=model)  # type: ignore[arg-type]
+    except Exception as exc:
+        card = Scorecard(
+            status="unavailable",
+            reason=f"scoring failed: {type(exc).__name__}: {exc}",
+        )
+
+    try:
+        store.update(COLLECTION, session_id, {"scoring": card.as_dict()})
+    except Exception:  # pragma: no cover - a failed write must not crash a background task
+        return

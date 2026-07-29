@@ -232,6 +232,7 @@ def _load_plan(data: Store, rubric_id: str | None, agent_id: str) -> InterviewPl
                 ),
                 max_turns=int(entry.get("max_turns") or DEFAULT_MAX_TURNS),
                 min_signals=int(entry.get("min_signals") or DEFAULT_MIN_SIGNALS),
+                weight=float(entry.get("weight") or 1.0),
             )
         )
     return InterviewPlan(name=str(record.get("name") or ""), competencies=tuple(competencies))

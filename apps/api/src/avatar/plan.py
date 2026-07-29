@@ -111,6 +111,16 @@ class Competency:
     signals: tuple[str, ...] = ()
     max_turns: int = DEFAULT_MAX_TURNS
     min_signals: int = DEFAULT_MIN_SIGNALS
+    weight: float = 1.0
+    """
+    How much this competency contributes to the scorecard. Read by `avatar.scoring`, ignored
+    here.
+
+    Deliberately separate from the declared order, which is what *this* module uses. Order
+    answers "what next" and a weight answers "how much did it matter" -- two different
+    questions, and one number doing both jobs would mean an operator could not say "ask about
+    communication first, but weight it least", which is a perfectly ordinary thing to want.
+    """
 
 
 @dataclass
