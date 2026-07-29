@@ -1,0 +1,67 @@
+# The console assistant, as its own distribution.
+#
+# Separate from `avatar` for one specific reason: that package declares `dependencies = []`, and the
+# emptiness is load-bearing — it is what lets CI run the state machine and the turn-taking policy
+# with no GPU, no model weights, and no network. LangGraph and a LangChain provider stack inside it
+# would spend that guarantee to serve a screen that is not on the interview path.
+#
+# The dependency points one way. This package imports `avatar.store` (stdlib-only, so it costs
+# nothing) and `avatar.config`; `avatar` imports nothing from here. So the interview runtime cannot
+# be broken by anything in this directory, which is the property worth protecting.
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nod-assistant"
+version = "0.1.0"
+description = "Console assistant — reads interview records, explains them, and proposes changes a human commits"
+requires-python = ">=3.11"
+
+dependencies = [
+  "avatar",
+  "langgraph>=0.2",
+  "langchain-core>=0.3",
+  # The provider adapter. OpenAI-shaped on purpose, matching `avatar.llm_openai`: Ollama, LM Studio
+  # and vLLM all speak this wire format, so a local model needs a base URL rather than a new
+  # dependency.
+  "langchain-openai>=0.2",
+  "fastapi>=0.115",
+  "sse-starlette>=2.1",
+  "uvicorn>=0.30",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "pytest-asyncio>=0.23",
+  "ruff>=0.6",
+  "mypy>=1.11",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 96
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+# The LangChain and LangGraph packages ship incomplete annotations, and `build_graph` returns a
+# compiled object whose type is not usefully expressible. Following those imports into strict mode
+# produces errors about their internals rather than about this code.
+ignore_missing_imports = true
+disallow_any_explicit = false
+
+[[tool.mypy.overrides]]
+module = ["langgraph.*", "langchain_core.*", "langchain_openai.*", "sse_starlette.*"]
+ignore_errors = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

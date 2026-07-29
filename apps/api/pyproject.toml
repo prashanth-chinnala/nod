@@ -59,6 +59,13 @@ server = [
 [tool.setuptools.packages.find]
 where = ["src"]
 
+# Ship the PEP 561 marker, so a consumer's type checker uses these annotations instead of
+# treating everything from `avatar` as Any. `apps/assistant` imports `avatar.store`, and without
+# this its own strict mypy reported every store call as returning Any -- an error about the
+# absence of a marker file, which reads as an error about the calling code.
+[tool.setuptools.package-data]
+avatar = ["py.typed"]
+
 [tool.ruff]
 line-length = 96
 src = ["src", "tests"]

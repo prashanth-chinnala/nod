@@ -34,7 +34,10 @@ const GROUPS = [
   },
   {
     label: "Observe",
-    items: [{ href: "/sessions", name: "Sessions", hint: "Transcripts & latency" }],
+    items: [
+      { href: "/sessions", name: "Sessions", hint: "Transcripts & latency" },
+      { href: "/assistant", name: "Assistant", hint: "Ask across interviews" },
+    ],
   },
 ] as const;
 
