@@ -274,13 +274,13 @@ export default function KnowledgePage() {
             />
 
             <form
-              className="grid gap-4 px-5 py-5 sm:grid-cols-[1fr_2fr_auto_auto] sm:items-end"
+              className="grid gap-x-4 px-5 py-5 sm:grid-cols-[minmax(0,1fr)_minmax(0,2fr)_auto_auto] sm:grid-rows-[auto_auto_auto]"
               onSubmit={(event) => {
                 event.preventDefault();
                 void runQuery();
               }}
             >
-              <Field label="Knowledge base">
+              <Field row label="Knowledge base">
                 <Select
                   value={selectedId}
                   onChange={(event) => {
@@ -299,7 +299,7 @@ export default function KnowledgePage() {
                 </Select>
               </Field>
 
-              <Field label="Query" hint="Scored by term overlap, so wording matters.">
+              <Field row label="Query" hint="Scored by term overlap, so wording matters.">
                 <Input
                   value={query}
                   placeholder="e.g. what should I ask about queues?"
@@ -307,7 +307,7 @@ export default function KnowledgePage() {
                 />
               </Field>
 
-              <Field label="Top k">
+              <Field row label="Top k">
                 <Select value={topK} onChange={(event) => setTopK(Number(event.target.value))}>
                   {TOP_K_CHOICES.map((choice) => (
                     <option key={choice} value={choice}>
@@ -317,9 +317,13 @@ export default function KnowledgePage() {
                 </Select>
               </Field>
 
-              <Button type="submit" variant="primary" disabled={running || !query.trim()}>
-                {running ? "Retrieving…" : "Retrieve"}
-              </Button>
+              {/* Row 2 explicitly: the button belongs beside the controls, not aligned
+                  against the full height of the fields next to it. */}
+              <div className="row-start-2 self-start">
+                <Button type="submit" variant="primary" disabled={running || !query.trim()}>
+                  {running ? "Retrieving…" : "Retrieve"}
+                </Button>
+              </div>
             </form>
 
             {queryError ? (

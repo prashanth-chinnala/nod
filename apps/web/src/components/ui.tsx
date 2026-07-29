@@ -161,7 +161,12 @@ export function Table({
                   scope="col"
                   className={cx(
                     "border-b border-hair px-5 py-2.5",
-                    align === "right" ? "text-right" : "text-left",
+                    // Numeric columns collapse to their content. Without this the browser
+                    // divides the width evenly, so on a wide screen a single digit floats in
+                    // the middle of a 200px column and reads as unaligned even though it is
+                    // right-aligned — which is exactly how this looked before. Slack goes to
+                    // the text columns, where it is useful.
+                    align === "right" ? "w-0 text-right whitespace-nowrap" : "text-left",
                     "text-[11px] font-medium tracking-[0.06em] uppercase text-ink-low",
                   )}
                 >
@@ -207,7 +212,10 @@ export function Cell({
         "px-5 py-3 align-middle",
         mono && "font-mono text-[12px]",
         dim && "text-ink-mid",
-        right && "text-right",
+        // `whitespace-nowrap` pairs with the header's `w-0`: the column can only collapse to
+        // its content if the content refuses to wrap. Without it a long figure would wrap
+        // instead of widening the column, and the row would grow taller for no reason.
+        right && "text-right whitespace-nowrap",
       )}
     >
       {children}
@@ -272,15 +280,40 @@ export function Page({
 
 /* ------------------------------------------------------------------ fields */
 
+/**
+ * A labelled control, optionally with a hint beneath it.
+ *
+ * `row` makes the field participate in its parent grid's rows via subgrid, so labels line up
+ * with labels and controls with controls across a row of fields. That exists because the
+ * obvious approach is wrong: a flex row with `items-end` aligns the *bottom of each field*, so
+ * a field that has a hint sits with its hint on the baseline and its control pushed up — the
+ * one field with help text ends up visibly out of line with the others. Subgrid aligns the
+ * parts rather than the boxes, which is the only version that survives some fields having
+ * hints and some not.
+ *
+ * The parent must declare three rows (`grid-rows-[auto_auto_auto]`) for this to bind to.
+ */
 export function Field({
   label,
   hint,
+  row,
   children,
 }: {
   label: string;
   hint?: string;
+  row?: boolean;
   children: ReactNode;
 }) {
+  if (row) {
+    return (
+      <label className="row-span-3 grid grid-rows-subgrid gap-0">
+        <span className="self-end pb-1.5 text-[12px] font-medium text-ink">{label}</span>
+        <span className="self-start">{children}</span>
+        {/* Rendered even when empty so the row exists and the grid stays in step. */}
+        <span className="self-start pt-1.5 text-[11.5px] text-ink-low">{hint ?? ""}</span>
+      </label>
+    );
+  }
   return (
     <label className="block">
       <span className="mb-1.5 block text-[12px] font-medium text-ink">{label}</span>
