@@ -44,49 +44,193 @@ verified. An agent must not assign these tags.**
 
 ### 1.1 System overview
 
-> One paragraph, then one diagram. The diagram should show the per-turn loop: candidate audio in → turn detection → STT → LLM → TTS → avatar render → transport → browser. Mark on it which stages are streaming and which are blocking — that distinction is the core insight of the whole document.
+A production Tavus-class system is not one model. It is a **pipeline of streaming stages
+wrapped in deterministic session orchestration**, where the talking-head model is one
+bounded stage near the end. The interesting engineering is almost entirely in the
+orchestration: which stages overlap, who is allowed to cancel whom, and what happens to
+work already in flight when the candidate interrupts.
+
+The single most important structural claim in this document: **the stages must overlap.**
+Executed sequentially and to completion, the same components produce a multi-second
+turnaround with every one of them performing exactly to spec. Executed as overlapping
+streams — LLM tokens chunked into sentences as they arrive, each sentence sent to TTS
+before the next is generated, each audio chunk driving frames before the sentence finishes
+— the first frame can emerge while the LLM is still writing. That is the whole trick, and
+§3.3.3 shows what it costs when a link in the chain is slow anyway.
+
+```
+        ┌────── candidate speaks ───────┐
+        │                               │
+        ▼                               │
+   ┌─────────┐   audio frames (32ms)    │
+   │  MIC    ├──────────────┬───────────┘
+   └─────────┘              │
+                            ▼
+                  ┌───────────────────┐
+                  │ TURN DETECTION    │  ◀── streaming, local. NOT the vendor's
+                  │ VAD + hysteresis  │      endpointing: this decides the turn
+                  └─────────┬─────────┘
+                            │  end-of-turn (silence window elapsed)   ▲ BLOCKING
+                            ▼                                        │ the wait IS
+                  ┌───────────────────┐                              │ the policy
+                  │ STT               │  ◀── streaming; mostly ──────┘
+                  │                   │      already done by now
+                  └─────────┬─────────┘
+                            │  final transcript
+                            ▼
+                  ┌───────────────────┐
+                  │ LLM               │  ◀── streaming. Only TTFT matters.
+                  └─────────┬─────────┘      Total generation time does not.
+                            │  tokens ──▶ sentence chunker
+                            ▼
+                  ┌───────────────────┐
+                  │ TTS               │  ◀── streaming, per sentence.
+                  └─────────┬─────────┘      Sentence 2 synthesises while
+                            │  PCM chunks     sentence 1 is still playing.
+                            ▼
+                  ┌───────────────────┐
+                  │ AVATAR RENDER     │  ◀── streaming. Needs only the first
+                  │ identity + audio  │      ~200ms of audio to emit frame 1.
+                  └─────────┬─────────┘
+                            │  frames + audio, tagged with a turn epoch
+                            ▼
+                  ┌───────────────────┐
+                  │ MIXER             │  ◀── constant cadence. Owns presentation
+                  │ idle loop ⇄ turn  │      timestamps. Never stalls the track.
+                  └─────────┬─────────┘
+                            ▼
+                  ┌───────────────────┐
+                  │ TRANSPORT         │  ── WebRTC in production;
+                  │                   │     WebSocket in this prototype (§1.4)
+                  └─────────┬─────────┘
+                            ▼
+                       ┌────────┐
+                       │BROWSER │ ──▶ reports first paint + audio actually played
+                       └────────┘
+```
+
+**Streaming vs. blocking, which is the point of the diagram:** every stage above is
+streaming *except* end-of-turn detection. That stage is a deliberate wait — and in this
+prototype it is **700ms**, the single largest term in the measured budget (§1.5). It is
+not a performance bug to be optimised away; it is a conversational policy choice, and no
+amount of hardware changes it. Cutting it to 300ms makes the system interrupt people
+mid-thought.
 
 ### 1.2 Identity capture
 
-> Answer: what artifact does a reference video become, and what does that imply for serving?
->
-> Cover: input requirements (duration, framing), whether processing is offline/one-time or per-session, and — the load-bearing question — **per-person weights vs. shared model + identity embedding**. State the serving consequence explicitly: per-person weights mean cold-loading a checkpoint onto a GPU worker at session start; a shared model with cached identity features does not.
->
-> Note whether any *precomputation* step exists (face detection, parsing, appearance-feature extraction, latent encoding of reference frames). If it does, that is architecturally significant: it is the reason first-frame latency can be low at conversation time.
+The load-bearing question is **per-person weights vs. a shared model plus per-person
+precomputed features**, because the two have completely different serving costs. Per-person
+weights mean cold-loading a checkpoint onto a GPU worker when a session starts. A shared
+model with cached identity features means the weights are already resident and only a small
+per-person artifact needs fetching.
 
-| Question | Answer | Tag |
-|---|---|---|
-| Input to enrollment | | |
-| Artifact produced | | |
-| Enrollment latency | | |
-| Reusable across sessions? | | |
-| Per-person GPU state at inference | | |
+MuseTalk — the open-source system this prototype targets, and the one where the internals
+are readable rather than inferred — is firmly the second kind. Its weights are
+identity-agnostic; a reference video becomes a set of precomputed *features*, not a
+fine-tune.
+
+| Question | Answer | Evidence | Tag |
+|---|---|---|---|
+| Input to enrollment | A short reference video or a single image of a face, roughly front-on. MuseTalk operates on a **256×256 face region** cropped from the frame, so framing matters more than duration | MuseTalk README | |
+| Artifact produced | Per-frame VAE latents of the reference frames, plus face detection / parsing / bounding-box metadata. **No per-person model weights** | MuseTalk README + inference code | |
+| Enrollment latency | Dominated by face detection and VAE encoding over the reference frames — seconds to minutes depending on clip length. `NOT YET MEASURED` here (blocked on M0) | — | |
+| Reusable across sessions? | Yes. The artifact is a function of the reference clip alone, so it is computed once per persona and cached | Follows from the above | |
+| Per-person GPU state at inference | Only the cached latents and crop metadata. The U-Net, VAE, and audio encoder are shared across every persona on the worker | MuseTalk README | |
+
+**The serving consequence, stated plainly:** because identity is data rather than weights,
+one warm GPU worker can serve any persona without reloading a model. That is what makes a
+warm pool (§1.4) economically viable at all. If the architecture required per-person
+weights, every session start would pay a checkpoint load, and the pool would have to be
+partitioned by persona rather than shared — a materially worse cost curve.
+
+**Why this is architecturally significant beyond cost:** the existence of a precomputation
+step is *the reason first-frame latency can be low at conversation time.* All the expensive
+identity work happens offline. At conversation time the model is doing something much
+smaller — conditioning cached latents on new audio. This is exactly why the
+`TalkingHeadRenderer` Protocol in this prototype splits `prepare_identity` from
+`push_audio`/`frames`: the boundary mirrors the architectural split, and `prepare_identity`
+is explicitly allowed to be slow.
 
 ### 1.3 The audio-to-video mechanism
 
-> This is the highest-value section. Structure it as **elimination**, not description — the latency constraint rules out most of the design space, and showing that reasoning is worth more than naming the right answer.
->
-> Walk the candidate model classes and kill them one by one against the ~25–30fps / sub-second first-frame requirement:
+Structured as **elimination**, because the real-time constraint kills most of the design
+space and the reasoning is worth more than the answer. The bar: ~25–30fps sustained, and a
+first frame inside a sub-second turn budget that STT, LLM, and TTS have already spent most
+of.
 
 | Class | Example work | Why it survives or dies |
 |---|---|---|
-| Full generative video diffusion | | |
-| Audio-conditioned latent diffusion, multi-step | | |
-| Motion-space diffusion + neural render | | |
-| Latent-space mouth inpainting, few-step | | |
-| 3D rig driven by visemes | | |
-| 3D Gaussian splatting / NeRF per-identity | | |
+| Full generative video diffusion | Sora-class, Stable Video Diffusion | **Dies on throughput by orders of magnitude.** Generating a whole talking human per frame solves a vastly larger problem than needed, and nothing in this class runs at 25fps. Also uncontrollable: no guarantee the identity stays stable across a 20-minute interview |
+| Audio-conditioned latent diffusion, multi-step | Diffusion talking-head research generally | **Dies on the step count.** *N* denoising steps per frame multiplies per-frame cost by *N*. At 25fps there is a ~40ms budget per frame; multi-step diffusion is nowhere near it |
+| Motion-space diffusion + neural render | **Ditto** (Ant Group, ACM MM 2025) | **Survives, with an operational cost.** Diffuses in a compact *motion* space rather than pixel space, cuts denoising from **50 steps to 10**, and compiles the DiT to **TensorRT**. Explicitly built for streaming and low first-frame delay. The TensorRT engines are GPU-specific, which is a real deployment constraint |
+| Latent-space mouth inpainting, single-step | **MuseTalk** | **Survives, and is the cheapest.** Borrows the Stable Diffusion v1.4 U-Net architecture but **is not a diffusion model** — it inpaints the mouth region in VAE latent space in a **single step**. Claims **30fps+ on a V100** at a 256×256 face region |
+| 3D rig driven by visemes | Classical game-engine avatars | **Survives on latency, dies on realism.** Viseme-driven rigs are trivially real-time and fully controllable, but look animated rather than photographic — the wrong product for an interview meant to feel human |
+| 3D Gaussian splatting / NeRF per-identity | Per-identity neural head research | **Dies on enrollment, not inference.** Inference can be fast, but each identity needs its own trained representation — minutes to hours of per-person GPU work. That breaks the "upload a reference clip, interview in seconds" product shape and reintroduces the per-person-weights cost §1.2 rejected |
 
-> Then state what you believe production systems actually run, and why. Two sub-claims worth making explicitly because they are the difference between a surface answer and a real one:
->
-> 1. **What is actually generated vs. replayed.** If only the mouth/lower-face region is synthesized and composited onto pre-recorded body footage, the model is solving a far smaller problem than "generate a talking human." Say so, and say how you'd verify it from observed output (fixed background? repeating gesture cycles? seam artifacts at the jaw?).
-> 2. **The audio conditioning signal.** Raw waveform, mel spectrogram, or features from a self-supervised speech encoder (Whisper encoder / HuBERT / wav2vec2)? Published real-time open-source systems use the latter; that is a strong **[C]** anchor for an **[I]** claim about vendors.
->
-> Also address: how is temporal consistency maintained across chunk boundaries when frames are generated in a streaming fashion? This is where naive implementations visibly break.
+**What survives** is a narrow band: *single- or few-step generation, in a compact latent or
+motion space, over a small region of the frame, conditioned on precomputed identity
+features.* That is a much smaller problem than "generate video of a person talking," and
+recognising that it is smaller is the actual insight.
+
+#### 1.3.1 Two sub-claims that separate a surface answer from a real one
+
+**Sub-claim A — most of the frame is replayed, not generated.**
+
+The strong inference is that production systems synthesise only the **mouth / lower-face
+region** and composite it onto pre-recorded body footage, rather than generating a whole
+human per frame. MuseTalk does exactly this and is explicit about it: it inpaints a 256×256
+face region and leaves the rest of the frame alone.
+
+How to verify it from observed vendor output, without any inside access:
+
+- **A fixed or near-fixed background** across a long session
+- **Repeating gesture and blink cycles** — a tell that body motion is a looped clip
+- **Seam artifacts at the jawline or neck** under fast speech, where the composite boundary
+  sits
+- **Head pose that does not respond to speech content** — the head moves on the loop's
+  schedule, not the sentence's
+
+**Sub-claim B — the audio conditioning signal is self-supervised speech encoder features,
+not raw waveform or bare mel spectrograms.**
+
+This has a strong primary-source anchor in open source: MuseTalk encodes audio with a
+frozen **`whisper-tiny`** model and fuses those embeddings into the U-Net's image
+embeddings by **cross-attention**. Whisper-encoder / HuBERT / wav2vec2 features are the
+norm across published real-time systems.
+
+The engineering reason: these features are already phonetically structured and
+speaker-normalised, so the visual model learns a much easier mapping than it would from
+spectrograms — and it generalises across voices it never trained on, which is what makes
+one model serve any TTS voice.
+
+#### 1.3.2 Temporal consistency across chunk boundaries
+
+This is where naive streaming implementations visibly break, and it is worth being concrete
+because the failure is characteristic: a **flicker or jaw jump exactly at chunk
+boundaries**, periodic at the chunk rate. Once seen it is unmistakable, and it is the first
+thing to look for in any streaming talking-head demo.
+
+Three mechanisms address it, and they compose:
+
+1. **Overlapping audio context.** Condition each chunk on a window that extends before and
+   after its own frames, so a frame's generation sees the phonemes on both sides of it.
+   MuseTalk's audio feature extraction takes a multi-frame window rather than a single
+   frame's worth.
+2. **Anchoring to shared reference latents.** Because every frame is inpainted against
+   *the same* cached identity latents (§1.2), there is no drift in appearance between
+   chunks — the identity cannot wander, because it is not being generated.
+3. **Compositing only the region that changes.** If the background and body come from a
+   fixed clip, they are identical across a boundary by construction. Only the mouth region
+   can flicker, which shrinks the problem to a small area.
+
+**A fourth, at the orchestration layer rather than the model:** the mixer must emit at a
+constant cadence and own presentation timestamps, so that a renderer briefly falling behind
+produces a repeated frame rather than a stalled track. A stall is more visible than a
+duplicate — and it also corrupts the receiver's jitter estimate, so the recovery is worse
+than the original glitch. That is implemented and tested in this prototype
+(`src/avatar/mixer.py`), and it is the one part of this section that is not inference.
 
 ### 1.4 Real-time serving architecture
-
-> Four sub-questions. Be concrete about numbers even when they're inferred.
 
 **Session and model pooling.** *Cold-start cost of loading model weights + CUDA context, why that cannot be paid at conversation start, what a warm pool implies for cost (idle GPU time you pay for), how sessions bind to workers, and what happens under a thundering herd of simultaneous interviews.*
 
@@ -130,8 +274,6 @@ verified. An agent must not assign these tags.**
 
 ### 1.7 Observability plan
 
-> §7.5 makes this mandatory, and it's cheap to do well. For each stage in the §1.5 table, specify the instrumentation.
-
 | Signal | Type | Where emitted | Alert threshold |
 |---|---|---|---|
 | Per-stage latency | histogram, p50/p95/p99 | | |
@@ -142,8 +284,6 @@ verified. An agent must not assign these tags.**
 | GPU pool utilization & queue depth | gauge | | |
 | Session failure by cause | counter, labeled | | |
 | Reconnect rate | counter | | |
-
-> Add one line on **trace propagation**: a single trace ID following one conversational turn across STT, LLM, TTS, render, and transport. Without it, "the avatar felt laggy" is unfalsifiable.
 
 ---
 
@@ -169,8 +309,6 @@ verified. An agent must not assign these tags.**
 | Ditto | NOT YET MEASURED — not attempted | Apache-2.0 | Yes, streaming-native | Undecided. TensorRT 8.6.1 with GPU-specific prebuilt engines fights an ephemeral Colab runtime |
 | Wav2Lip | Published ~real-time on modest GPUs | **Licence prohibits commercial use** | No | **Rejected on licence.** Not run |
 | LatentSync | ~10x slower than real time (~100s for 10s of video on a 4090, published) | Open | No | **Rejected on latency.** Not run |
-
-> Include at least one model you rejected **on license** and one you rejected **on latency**. That demonstrates the criteria were real rather than decorative.
 
 #### 2.2.1 Spike run 1 — MuseTalk on a free-tier Colab T4
 
@@ -250,11 +388,7 @@ transport all live outside it — see §3.2.
 | Multi-session concurrency | Deferred (M7) | One orchestrator per socket is wired and works; only one session has been exercised |
 | WebRTC transport | Deferred (M7) | Stretch goal. §1.4 states what the WebSocket shortcut gives up |
 
-> Deferring things is expected and fine. Deferring them *silently* is what costs points.
-
 ### 3.2 Component contracts
-
-> §7.2 and §7.4 both grade this. Show the interface that makes the ML model one bounded, swappable piece — and prove it by shipping a second trivial implementation (a static-image stub is enough).
 
 ```python
 class TalkingHeadRenderer(Protocol):
@@ -274,8 +408,6 @@ orchestration code outside this interface. The renderer has no concept of a turn
 session state, VAD, or transport.
 
 ### 3.3 Measured results
-
-> State how you measured, not just the number. A timestamp at ingress and a timestamp at browser paint are very different measurements from two `time.time()` calls around a function.
 
 **The headline numbers the brief asks for do not exist yet.** They require a talking-head
 model, which requires M0, which requires a GPU:
@@ -397,8 +529,6 @@ Reproduce with `uvicorn avatar.server:app` then `python scripts/smoke_session.py
 
 ### 3.4 Gap to production real-time
 
-> Be specific: "an L4 instead of a T4 gets us from X to Y fps" beats "more GPU."
-
 Gaps identified from the M3 run. The GPU rows cannot be quantified until M0 produces
 real throughput figures, and are marked as such rather than estimated.
 
@@ -462,52 +592,199 @@ thresholds.**
 
 ## 5. Migration plan
 
-> Test from §8: could another senior engineer execute this without you in the room? Write it as a runbook, not a narrative.
+Written as a runbook rather than a narrative, against the §8 test: another senior engineer
+should be able to execute this without the author in the room.
+
+**Assumes §4 concluded "build" or "hybrid."** If §4 concludes "keep the vendor," this plan
+is the contingency, not the roadmap.
 
 ### 5.1 Preconditions
 
-> What must be true before phase 1 starts — quality bar met, observability deployed on the vendor path first so you have a baseline to compare against.
+Every one of these must be true before shadow mode starts. The ordering is deliberate:
+**observability goes onto the vendor path first**, because without a baseline measured the
+same way, phase 1 produces two sets of numbers that cannot be compared.
+
+| # | Precondition | Why it gates everything after it |
+|---|---|---|
+| 1 | The §1.7 telemetry is deployed **on the vendor path**, in production, for at least two weeks | This is the baseline. Comparing in-house p95 against a vendor number from a marketing page is not a comparison |
+| 2 | Both paths sit behind one internal interface, with the vendor as an implementation of it | If the vendor call is spread through the codebase, there is nothing to flag. This is the `TalkingHeadRenderer` boundary generalised to the whole avatar stage |
+| 3 | A quality bar is written down and is **measurable without a human in the loop** | "Looks fine" cannot gate an automated rollout. Lip-sync offset in ms and frame-drop rate can |
+| 4 | Rollback is a config flip, tested at least once in staging under live traffic | An untested rollback is a hope. See §5.4 |
+| 5 | Warm-pool capacity exists for the target cohort **plus headroom**, with a documented cold-start cost | Discovering the pool is undersized during a live interview is the worst time to learn it |
+| 6 | An incident owner and an escalation path exist for the in-house path | The vendor absorbed this operational load. Someone now carries a pager who did not before |
+
+Precondition 3 is the one most often skipped and the most expensive to skip: without a
+machine-checkable quality bar, every promotion decision becomes a meeting.
 
 ### 5.2 Phase 1 — Shadow mode
 
 | | |
 |---|---|
-| Traffic served by | Vendor |
-| In-house path | Renders in parallel, output discarded |
-| Duration | |
-| Compared | Latency distributions, failure rates, sync quality |
-| Exit criteria | |
-| Cost | Double render cost — state it |
+| Traffic served by | **Vendor.** Candidates see only vendor output |
+| In-house path | Renders the same session in parallel; **output discarded, never shown** |
+| Duration | **2–4 weeks**, and long enough to include at least one full business cycle plus one deploy of each path |
+| Compared | Latency distributions (p50/p95/p99, not means), failure and reconnect rates, lip-sync offset, frame-drop rate, cost per avatar-minute |
+| Exit criteria | In-house **p95** first-frame latency within an agreed margin of vendor p95; failure rate no worse; quality bar (precondition 3) met on ≥99% of shadowed sessions |
+| Cost | **Double render cost for the whole window, plus the shadow GPU pool.** State it in the budget request up front — it is the single largest line in this plan and discovering it late kills the project's credibility |
+
+**Why percentiles, not means:** a mean hides exactly the failure this system is prone to.
+One session in fifty with a 6-second first frame is a candidate having a visibly broken
+interview, and it barely moves an average.
+
+**Two things shadow mode cannot tell you**, and they must be stated rather than assumed
+away:
+
+- **Nothing about perceived quality.** No candidate is watching the shadow output. Only
+  phase 2 tests that.
+- **Nothing about interaction dynamics.** Barge-in behaviour depends on the candidate
+  reacting to what they hear. Shadowed output nobody hears cannot produce a realistic
+  interruption pattern, so the interruption path is genuinely only exercised from stage 1
+  of phase 2 onward.
 
 ### 5.3 Phase 2 — Flagged rollout
 
+Cohorts are ordered by **how survivable a bad outcome is**, not by size. A candidate
+interview is a one-shot event with real consequences for the candidate — a broken one cannot
+be retried away — so real candidates come last, and internal users absorb the first
+failures.
+
 | Stage | Cohort | Duration | Promote if | Abort if |
 |---|---|---|---|---|
-| 1 | Internal only | | | |
-| 2 | | | | |
-| 3 | | | | |
-| 4 | 100% | | | |
+| 1 | **Internal only** — employees running practice interviews | 1 week | Zero P1 incidents; quality bar met; the on-call rotation has handled at least one real alert | Any P1, or the quality bar missed on >1% of sessions |
+| 2 | **5% of real candidates**, excluding any client with a contractual SLA | 1 week | p95 latency and failure rate within the phase-1 margin on real traffic; no increase in interview-abandonment rate | Abandonment rate up at all, or any candidate-reported failure traced to the render path |
+| 3 | **25%**, still excluding SLA-bound clients | 2 weeks | Metrics hold at 5× the traffic; warm pool holds p95 at peak concurrency | Pool saturation, or p95 degrading as concurrency rises — that is a capacity problem, not a model problem |
+| 4 | **100%**, SLA clients included, vendor kept warm | 2 weeks | All of the above sustained through a peak period | Anything above |
 
-> Cohorts should be chosen so a bad outcome is survivable — internal interviews before real candidates. Say why you chose the order you chose.
+**Abandonment rate is the metric to watch above all others.** Latency percentiles say
+whether the system is fast; abandonment says whether the experience is acceptable, and it
+is the one number a candidate votes with.
+
+**One explicit carve-out:** clients with contractual latency or availability SLAs stay on
+the vendor until stage 4. Migrating them early puts a commercial commitment at risk to save
+a week of rollout.
 
 ### 5.4 Rollback
 
-> Config flip, not a deploy. Target time-to-rollback. Who can execute it without approval. What happens to sessions in flight at the moment of rollback — this is the detail that separates a plan from a hope.
+**Rollback is a config flip, not a deploy.** If rolling back requires a build, the mean
+time to recovery is however long CI takes, and that is not a rollback plan.
+
+| | |
+|---|---|
+| Mechanism | Flip the routing flag to `vendor`. Same interface (precondition 2), so no code path changes |
+| Target time-to-rollback | **< 60 seconds** from decision to all new sessions on the vendor |
+| Who may execute | **Any on-call engineer, without approval.** A rollback needing a manager's sign-off will be delayed past the point of usefulness |
+| Trigger | Explicit and pre-agreed: any P1, p95 breaching the agreed ceiling for 5 consecutive minutes, or the quality bar failing on >1% of sessions in a 15-minute window |
+| Verification | The flag's effect is visible in the telemetry within one session's length; the dashboard shows path attribution per session |
+
+**Sessions in flight at the moment of rollback** — the detail that separates a plan from a
+hope. There are two options and they must be chosen deliberately, not discovered:
+
+- **Let them finish on the in-house path.** An interview is stateful — conversation
+  history, a warm renderer session, the candidate mid-sentence. Cutting over mid-session
+  means a visible discontinuity: the avatar's appearance changes between one turn and the
+  next, which is worse for that candidate than a slightly degraded render.
+- **Hard-cut them to the vendor.** Correct only when the failure is severe enough that
+  finishing is worse than a visible seam — the renderer producing garbage frames, or
+  leaking audio between sessions.
+
+**Default: drain, don't cut.** New sessions go to the vendor immediately; in-flight
+sessions finish where they started. The hard cut is reserved for correctness and privacy
+failures, and it needs its own separate flag so that reaching for it is a deliberate act.
+
+Maximum drain time is bounded by the interview length cap, so it must be stated: with a
+60-minute cap, full drain is up to 60 minutes. If that is unacceptable, the interview cap
+is the thing to change, not the rollback design.
 
 ### 5.5 Decommission
 
-> When the vendor contract is actually cancelled, and how long you keep the integration warm as an escape hatch after full cutover.
+Do **not** cancel the vendor contract at 100% traffic. Keep the integration warm — flag
+intact, credentials valid, path tested — for **at least one full billing cycle plus one
+quarter** of stable 100% operation.
+
+| Milestone | Gate |
+|---|---|
+| Stop shadow rendering | 2 weeks after 100%, when the comparison has served its purpose |
+| Reduce vendor spend to a minimum retainer | One quarter at 100% with no rollback exercised |
+| Cancel the contract | Two quarters stable, **and** the in-house path has survived one GPU-provider incident, one model upgrade, and one peak period |
+| Delete the integration code | Never, until the contract is cancelled. Dead code that is a working escape hatch is worth its maintenance |
+
+**Run the vendor path in staging on a schedule even after cutover**, so the escape hatch is
+known-good rather than assumed-good. An untested fallback discovered to be broken during an
+incident is equivalent to having no fallback, and the failure mode is silent — credentials
+expire, APIs version, and nothing tells you until you need it.
 
 ---
 
 ## 6. Sources
 
-> Numbered, so §1 tags can reference them. Separate primary sources from secondary ones — a vendor's own docs and a published paper are primary; a listicle blog post is not, and citing one as though it were undermines the whole confirmed/inferred framing.
+Numbered so §1's **[C]** tags can reference them. Primary and secondary are separated
+deliberately: a vendor's own documentation and a published paper are primary; a
+comparison blog post is not, and citing one as though it were would undermine the whole
+confirmed-vs-inferred framing this document rests on.
 
-**Primary**
+**A note on what these sources can and cannot support.** Every source below is either
+open-source documentation or a vendor's own published material. **No source here is inside
+information about any vendor's implementation.** Where §1 describes vendor internals, the
+source supports an *open-source analogue* or a vendor's own *performance claim* — never
+the vendor's actual architecture. That gap is exactly what the **[I]** tag is for, and it
+is the reason the tagging is not a formality.
 
-1.
+**Primary — open-source implementations (code and documentation read directly)**
 
-**Secondary / context**
+1. **MuseTalk** — <https://github.com/TMElyralab/MuseTalk>
+   Verified directly from the repository: trained in the latent space of `ft-mse-vae`;
+   audio encoded by a **frozen `whisper-tiny`**; generation network borrowed from the
+   **Stable Diffusion v1.4 U-Net** with audio fused to image embeddings by
+   **cross-attention**; **"NOT a diffusion model"** — single-step latent inpainting;
+   **256×256 face region**; claims **"30fps+ on an NVIDIA Tesla V100"**. Licence: *"The
+   code of MuseTalk is released under the MIT License. There is no limitation for both
+   academic and commercial usage"*, and *"The trained model are available for any purpose,
+   even commercially."* Supports §1.2 and §1.3.
+2. **MuseTalk paper** — <https://arxiv.org/abs/2410.10122>
+   Multi-scale feature fusion within the U-Net; the SIS and AAM strategies.
+3. **Ditto** — <https://github.com/antgroup/ditto-talkinghead> (Ant Group, ACM MM 2025)
+   Motion-space diffusion; **denoising steps reduced from 50 to 10** with comparable
+   evaluated quality; **DiT converted to TensorRT**; jointly optimised for *"streaming
+   processing, real-time inference, and low first-frame delay."* Apache-2.0. Supports
+   §1.3's surviving row and §2.2's operability argument.
+4. **Ditto paper** — <https://arxiv.org/abs/2411.19509>
+5. **Wav2Lip** — <https://github.com/Rudrabha/Wav2Lip>
+   Licence verified directly, and it is the basis for §2.2's rejection-on-licence:
+   *"This repository can only be used for personal/research/non-commercial purposes"*, and
+   *"As the models are trained on the LRS2 dataset, any form of commercial use is strictly
+   prohibited."* No formal OSS licence is offered.
 
-1.
+**Primary — vendor's own published claims (performance, not architecture)**
+
+6. **Tavus — Conversational Video Interface overview** —
+   <https://docs.tavus.io/sections/conversational-video-interface/overview-cvi>
+   The published pipeline order: perception (Raven) → conversational flow (Sparrow) → STT →
+   LLM → TTS → realtime replica (Phoenix). Named **WebRTC** transport. Supports §1.1's
+   stage ordering and §1.4's transport argument.
+7. **Tavus — "the world's fastest Conversational Video Interface"** —
+   <https://www.tavus.io/post/introducing-the-worlds-fastest-conversational-video-interface-for-developers>
+   Claims **~600ms utterance-to-utterance**, and under one second generally. This is the
+   number §1.5's target column is calibrated against, and the number §3.3.3's measured
+   3.7–5.4s should be read next to. **It is a vendor marketing claim, not an independent
+   measurement** — worth stating whenever it is cited.
+8. **Tavus — turn-taking and speculative execution** —
+   <https://www.tavus.io/blog/generative-ai-avatars-table-stakes-conversation-leap>
+   Describes retrieval on every utterance without a perceptible pause, and **speculative
+   execution** — preparing a response while the user is still speaking. Relevant to §3.4:
+   it is a way to attack the end-of-turn term that this prototype does not implement.
+
+**Secondary / context — used for orientation only, never as evidence for a [C] tag**
+
+9. Comparison write-ups of open-source lip-sync models (relative speed and quality
+   rankings of LivePortrait, SadTalker, Wav2Lip, MuseTalk). Directional only; the specific
+   figures in §2.2 come from the repositories in 1–5, not from these.
+10. Assorted engineering blog posts on WebRTC versus WebSocket for low-latency media. Used
+    to frame §1.4's transport reasoning; the argument there stands on the protocols'
+    documented properties rather than on any of these posts.
+
+**Explicitly not consulted, and the resulting [U]:** no vendor's private documentation, no
+network-level inspection of a live vendor session, and no vendor account of any kind. The
+brief states none is required. The practical consequence is that §1.3's sub-claim A
+(mouth-region synthesis composited onto replayed body footage) **remains inferred** — the
+verification methods listed there are the ones that *would* confirm it, and they have not
+been carried out against a live vendor session.
