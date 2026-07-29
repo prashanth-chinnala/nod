@@ -1,9 +1,9 @@
 """
 FastAPI app. One orchestrator per WebSocket session.
 
-This is the only module that imports a web framework, and the only one that knows a
-session is reached over HTTP. The orchestrator receives a `Transport`; it has no idea
-whether that is a WebSocket, WebRTC, or a test double.
+This is the only module that imports a web framework, and the only one that knows a session is
+reached over HTTP. The orchestrator receives a `Transport`; it has no idea whether that is a
+WebSocket, WebRTC, or a test double.
 
 Three background tasks run for the lifetime of a session, and the split matters:
 
@@ -15,11 +15,10 @@ Three background tasks run for the lifetime of a session, and the split matters:
   silence tick    drives `on_idle_tick`. The orchestrator owns no timer of its own,
                   which is what lets the whole machine be tested on a fake clock.
 
-Concurrency is one session per socket with no pooling: a renderer is constructed and
-warmed at connect time and torn down at disconnect. For a GPU renderer that is the
-wrong shape -- cold-loading weights per session is exactly the cost §1.4 argues
-cannot be paid at conversation start -- and it is deferred to M7 rather than
-pretended away.
+Concurrency is one session per socket with no pooling: a renderer is constructed and warmed at
+connect time and torn down at disconnect. For a GPU renderer that is the wrong shape --
+cold-loading weights per session is exactly the cost §1.4 argues cannot be paid at conversation
+start -- and it is deferred to M7 rather than pretended away.
 """
 
 from __future__ import annotations
@@ -79,20 +78,19 @@ FRAME_HEIGHT = 144
 """
 Small on purpose.
 
-Uncompressed BMP at 25fps costs width * height * 3 * 25 bytes/sec -- about 2.7MB/s
-at this size. That is fine on localhost and indefensible over a network, and it is
-a consequence of having no encoder rather than a considered choice. The real
-renderer emits JPEG or WebP in M2 and this constraint disappears; until then, small
-frames keep the demo honest about where the bytes go. Recorded in PROCESS.md 3.4.
+Uncompressed BMP at 25fps costs width * height * 3 * 25 bytes/sec -- about 2.7MB/s at this size.
+That is fine on localhost and indefensible over a network, and it is a consequence of having no
+encoder rather than a considered choice. The real renderer emits JPEG or WebP in M2 and this
+constraint disappears; until then, small frames keep the demo honest about where the bytes go.
+Recorded in PROCESS.md 3.4.
 """
 
 RENDERER_FIRST_FRAME_DELAY_MS = 200
 """
 Audio the stub renderer requires before emitting a frame.
 
-Not arbitrary: real talking-head models need a lookahead window, and setting this to
-zero would make the first-frame latency readout meaningless and let the lead-in
-buffer look unnecessary.
+Not arbitrary: real talking-head models need a lookahead window, and setting this to zero would
+make the first-frame latency readout meaningless and let the lead-in buffer look unnecessary.
 """
 
 IDENTITY_REFERENCE = os.environ.get("AVATAR_REFERENCE", "assets/reference.mp4")
@@ -100,8 +98,8 @@ RENDERER_NAME = os.environ.get("AVATAR_RENDERER", "stub")
 """
 The one-line renderer swap, as an environment variable.
 
-`AVATAR_RENDERER=musetalk uvicorn avatar.server:app` is the whole change once M2
-lands. Nothing else in this file mentions a model.
+`AVATAR_RENDERER=musetalk uvicorn avatar.server:app` is the whole change once M2 lands. Nothing
+else in this file mentions a model.
 """
 
 STT_NAME = os.environ.get("AVATAR_STT", "none")
@@ -116,28 +114,28 @@ TTS_NAME = os.environ.get("AVATAR_TTS", "tone")
 """
 Which synthesiser to run. `tone` needs nothing; `deepgram` needs a key.
 
-Defaults to `tone` for the same reason as the LLM and the VAD: a clean clone has to run
-with no credentials and no network.
+Defaults to `tone` for the same reason as the LLM and the VAD: a clean clone has to run with no
+credentials and no network.
 """
 
 LLM_NAME = os.environ.get("AVATAR_LLM", "scripted")
 """
 Which interviewer to run. `scripted` needs nothing; `anthropic` needs a key.
 
-Defaults to `scripted` so a clean clone runs with no credentials and no network, which
-is what the README promises. `AVATAR_LLM=anthropic` is the whole switch.
+Defaults to `scripted` so a clean clone runs with no credentials and no network, which is what
+the README promises. `AVATAR_LLM=anthropic` is the whole switch.
 """
 
 VAD_NAME = os.environ.get("AVATAR_VAD", "energy")
 """
 Which speech detector to run. `energy` needs nothing; `silero` needs torch.
 
-Turn detection happens server-side rather than in the browser. The trade-off, stated
-because it is a real one: the client streams microphone audio continuously, which costs
-bandwidth and means candidate audio reaches the server even between turns. In exchange,
-the turn-taking policy is one implementation with one set of thresholds that can be
-tested and tuned centrally, rather than whatever each browser happened to ship. For an
-interview product the second consideration wins; for a consumer toy it might not.
+Turn detection happens server-side rather than in the browser. The trade-off, stated because it
+is a real one: the client streams microphone audio continuously, which costs bandwidth and means
+candidate audio reaches the server even between turns. In exchange, the turn-taking policy is
+one implementation with one set of thresholds that can be tested and tuned centrally, rather
+than whatever each browser happened to ship. For an interview product the second consideration
+wins; for a consumer toy it might not.
 """
 
 SILENCE_TICK_SECONDS = 1.0
@@ -159,16 +157,15 @@ RELAYED_EVENTS = frozenset(
 """
 Which telemetry events reach the browser.
 
-`frame_repeated` is excluded despite being one of the most interesting signals: it
-fires up to 25 times a second, and relaying it would spend the socket on
-instrumentation instead of video. The count still reaches the page in the stats
-message.
+`frame_repeated` is excluded despite being one of the most interesting signals: it fires up to
+25 times a second, and relaying it would spend the socket on instrumentation instead of video.
+The count still reaches the page in the stats message.
 
-`heard` and `said` are the conversation itself, so they belong here rather than only in a
-server log. Both are once-per-turn-ish -- `said` is once per sentence -- so the volume
-argument that excludes `frame_repeated` does not apply. **This allowlist is easy to forget:
-a new event is silently invisible to the client until it is added here, which is exactly
-what happened to both of these.**
+`heard` and `said` are the conversation itself, so they belong here rather than only in a server
+log. Both are once-per-turn-ish -- `said` is once per sentence -- so the volume argument that
+excludes `frame_repeated` does not apply. **This allowlist is easy to forget: a new event is
+silently invisible to the client until it is added here, which is exactly what happened to both
+of these.**
 """
 
 app = FastAPI(title="nod", docs_url=None, redoc_url=None)
@@ -207,8 +204,8 @@ async def config() -> dict[str, object]:
     """
     Which implementation each boundary resolved to, and which came from `.env`.
 
-    Names only, never values -- most of what `.env` holds is a credential. Exists because
-    "why is it still using the placeholder voice?" is otherwise answered by reading code.
+    Names only, never values -- most of what `.env` holds is a credential. Exists because "why
+    is it still using the placeholder voice?" is otherwise answered by reading code.
     """
     return {
         "renderer": RENDERER_NAME,
@@ -357,6 +354,7 @@ class BrowserSession:
             }
         )
         await self._orchestrator.start(IDENTITY_REFERENCE)
+        self._persist_recording()
 
         tasks = [
             # Warmed in the background, deliberately not awaited. The measured ~910ms
@@ -454,16 +452,15 @@ class BrowserSession:
         """
         Feed the candidate's microphone through the VAD and the turn policy.
 
-        Frames are fixed-size because Silero requires exactly 512 samples; the buffer
-        exists to absorb whatever chunk size the browser happens to deliver. Leftover
-        bytes stay buffered rather than being padded out, since a short frame scored as
-        a full one reads as a VAD that misses quiet speech.
+        Frames are fixed-size because Silero requires exactly 512 samples; the buffer exists to
+        absorb whatever chunk size the browser happens to deliver. Leftover bytes stay buffered
+        rather than being padded out, since a short frame scored as a full one reads as a VAD
+        that misses quiet speech.
 
-        Note what is *not* here: no gate on the session state. The microphone is
-        processed while the avatar is speaking, because that is precisely when barge-in
-        has to work. Keeping the avatar's own voice out of this path is the browser's
-        echo cancellation, not ours — and if that fails, the avatar interrupts itself in
-        a loop. A different VAD would not fix it.
+        Note what is *not* here: no gate on the session state. The microphone is processed while
+        the avatar is speaking, because that is precisely when barge-in has to work. Keeping the
+        avatar's own voice out of this path is the browser's echo cancellation, not ours — and
+        if that fails, the avatar interrupts itself in a loop. A different VAD would not fix it.
         """
         # The transcriber gets the raw stream, unframed: it has its own opinion about
         # buffering and does not need the VAD's fixed window. It must never block this
@@ -524,9 +521,9 @@ class BrowserSession:
         """
         Drain the mixer forever.
 
-        Deliberately not conditional on state: the track carries frames while idle,
-        while listening, and while thinking. Gating this on SPEAKING is the bug that
-        produces a track which stalls between turns.
+        Deliberately not conditional on state: the track carries frames while idle, while
+        listening, and while thinking. Gating this on SPEAKING is the bug that produces a track
+        which stalls between turns.
         """
         async for frame in self._mixer.stream():
             if self._orchestrator.state is State.CLOSED:
@@ -567,9 +564,8 @@ class BrowserSession:
         """
         Called synchronously from inside instrumentation, so it must not block.
 
-        Dropping on a full queue is the right failure: a client too slow to keep up
-        with the event stream should lose readouts, not stall the render loop that
-        is emitting them.
+        Dropping on a full queue is the right failure: a client too slow to keep up with the
+        event stream should lose readouts, not stall the render loop that is emitting them.
         """
         self._accumulate(record)
         if record.get("event") not in RELAYED_EVENTS:
@@ -579,14 +575,14 @@ class BrowserSession:
 
     def _accumulate(self, record: Mapping[str, object]) -> None:
         """
-        Build up the current turn from the events already being emitted, and persist it when
-        the turn ends.
+        Build up the current turn from the events already being emitted, and persist it when the
+        turn ends.
 
         Reading the existing telemetry rather than adding write calls throughout the
         orchestrator: the events are already the authority on what happened, so a second path
         recording the same facts could disagree with the first, and the transcript would then
-        contradict the log. Nothing here can raise — instrumentation must never be able to end
-        a conversation, so every failure is swallowed deliberately.
+        contradict the log. Nothing here can raise — instrumentation must never be able to end a
+        conversation, so every failure is swallowed deliberately.
         """
         event = record.get("event")
         try:
@@ -636,6 +632,26 @@ class BrowserSession:
                     self._flush_turn()
         except Exception:  # pragma: no cover - instrumentation must never break a session
             self._turn = {}
+
+    def _persist_recording(self) -> None:
+        """
+        Store what happened when recording was set up, once, after the transport has connected.
+
+        Written even when the answer is "off" or "unavailable", which is the whole reason it is
+        stored at all: a session record that says nothing about recording is indistinguishable
+        from one where recording silently failed, and the difference only matters at the moment
+        someone asks for the video -- long after anyone could act on it.
+
+        Called after `orchestrator.start`, because that is what opens the transport and
+        therefore what creates the room. Reading it earlier would always report the
+        constructor's placeholder.
+        """
+        if self._rtc is None or not self._session_id:
+            return
+        try:
+            store.update("sessions", self._session_id, {"recording": dict(self._rtc.recording)})
+        except Exception:  # pragma: no cover - a write failure must not end the interview
+            return
 
     def _on_plan_update(self, snapshot: Mapping[str, object]) -> None:
         """
@@ -691,8 +707,8 @@ async def session_socket(socket: WebSocket, session: str | None = None) -> None:
 
     That id is what the candidate's link carries, and it is how configuration reaches the
     runtime without an environment variable: the record names an agent, and the agent names a
-    knowledge base, a lexicon, a guardrail and a face. `AVATAR_AGENT` remains as a fallback
-    for running the prototype with no console data, which the README promises still works.
+    knowledge base, a lexicon, a guardrail and a face. `AVATAR_AGENT` remains as a fallback for
+    running the prototype with no console data, which the README promises still works.
     """
     await BrowserSession(socket, session_id=session).run()
 

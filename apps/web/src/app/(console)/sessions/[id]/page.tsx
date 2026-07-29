@@ -89,6 +89,13 @@ type Scoring = {
   note?: string;
 };
 
+type Recording = {
+  status: "off" | "requested" | "unavailable";
+  reason?: string;
+  filepath?: string;
+  room_sid?: string;
+};
+
 type Session = {
   id: string;
   agent_id: string | null;
@@ -100,6 +107,20 @@ type Session = {
   coverage?: { plan?: string; focus?: string | null; complete?: boolean;
                competencies?: CoverageItem[] } | null;
   scoring?: Scoring | null;
+  recording?: Recording | null;
+};
+
+/**
+ * Recording tone, and `requested` is deliberately `info` rather than `ok`.
+ *
+ * Nothing in the runtime observes a file being written — the SFU accepts an egress config whether
+ * or not a worker exists to act on it — so a green chip here would assert something no code has
+ * checked. `info` says "asked for", which is the strongest true statement available.
+ */
+const RECORDING_TONE: Record<Recording["status"], Status> = {
+  requested: "info",
+  unavailable: "warn",
+  off: "neutral",
 };
 
 /** Rating tone. `no_evidence` is neutral, not bad: an absence is not a negative finding. */
@@ -401,6 +422,42 @@ export default function ReportPage({ params }: { params: Promise<{ id: string }>
           </div>
         </Card>
       ) : null}
+
+      <Card>
+        <CardHeader
+          title="Recording"
+          hint="Egress is configured on the room at creation rather than started by this code, so the SFU owns it for the room's whole lifetime. What that cannot tell us is whether a file was actually produced — that needs an egress service, and its absence is silent."
+        />
+        <div className="px-5 py-4">
+          {session.recording ? (
+            <>
+              <Chip status={RECORDING_TONE[session.recording.status]}>
+                {session.recording.status === "requested"
+                  ? "requested"
+                  : session.recording.status === "unavailable"
+                    ? "not set up"
+                    : "not requested"}
+              </Chip>
+              {session.recording.filepath ? (
+                <p className="mt-2.5 font-mono text-[11.5px] text-ink-mid">
+                  {session.recording.filepath}
+                </p>
+              ) : null}
+              <p className="mt-2 max-w-3xl text-[12px] leading-relaxed text-ink-low">
+                {session.recording.reason}
+              </p>
+            </>
+          ) : (
+            <p className="text-[12.5px] text-ink-mid">
+              {/* No field at all means the session predates recording, or ran on the WebSocket
+                  transport where there is no room to configure. Distinguished from "off", which
+                  is a recording that was deliberately not asked for. */}
+              This session has no recording state — it ran before recording existed, or on the
+              WebSocket transport, which has no room to attach egress to.
+            </p>
+          )}
+        </div>
+      </Card>
 
       <Card>
         <CardHeader

@@ -118,14 +118,39 @@ class LiveKitTransport:
         self._audio_source: Any = None
         self._video_source: Any = None
         self._connected = False
+        self.recording: dict[str, Any] = {
+            "status": "off",
+            "reason": "the session has not started",
+        }
+        """
+        What happened when recording was set up, filled in by `connect`.
+
+        Public and plain data, because the server stores it on the session record and the
+        console renders it. An attribute rather than a callback: the transport already knows the
+        answer by the time anything else could ask.
+        """
 
     async def connect(self) -> None:
         """
-        Join the room. Separate from `open_track` because joining can fail for reasons that have
-        nothing to do with the track -- a wrong URL, an expired token -- and those deserve a
-        different error than "the avatar has no video".
+        Create the room, then join it.
+
+        Separate from `open_track` because joining can fail for reasons that have nothing to do
+        with the track -- a wrong URL, an expired token -- and those deserve a different error
+        than "the avatar has no video".
+
+        The room is created explicitly before the join, and the order is load-bearing: LiveKit
+        auto-creates a room for the first participant to arrive, and an auto-created room
+        carries no egress configuration. Join first and the interview records nothing, with no
+        error anywhere. `ensure_room` is idempotent and returns a status rather than raising, so
+        a deployment with no egress service still holds the interview -- the outcome is kept on
+        `recording` for the session record to store, because a recording that was never set up
+        must be visible on the record rather than discovered when someone asks for the video.
         """
         from livekit import rtc
+
+        from avatar.transport.recording import ensure_room
+
+        self.recording = await ensure_room(self.room_name)
 
         url, _, _ = credentials()
         self._room = rtc.Room()
