@@ -37,41 +37,100 @@ that can be demoed end to end — a real face driven by a real voice, configured
 console, with a knowledge base, and honest numbers throughout. `main` holds the assessment
 deliverable; this branch is the product.
 
-| Roadmap item | Est. | State |
-|---|---|---|
-| Text chat + two-sided transcript | 2 h | **Done.** Verified live — a typed answer produced a follow-up quoting "40,000 corrupted records" |
-| Monorepo — `apps/api` + `apps/web`, pnpm, two CI jobs | — | **Done.** 534 API tests green; web builds, typechecks, lints |
-| Console shell — tokens, 9 primitives, grouped nav | 1.5 d | **Done** |
-| JSON resource store, atomic writes | — | **Done** |
-| Knowledge base v1 — retrieval | 1 d | **Done.** BM25 + Chroma Cloud behind one Protocol, 22 tests |
-| Pronunciations — lexicon | 2 h | **Done.** 19 tests, including `C++` / `C#` / `.NET` / `Node.js` |
-| Agents CRUD | 2 d | **Done** — router, tests, page. Turn-taking params exposed |
-| Faces + prep queue | 1.5 d | **Done** against the placeholder renderer. Real prep needs a GPU |
-| Knowledge management UI | 2 d | **Done** — incl. the interactive retrieval tester |
-| Tools | 2 d | **CRUD done.** Not yet callable mid-turn — see the gap below |
-| Guardrails | 1.5 d | **CRUD + `/check` done.** Not yet enforced mid-turn |
-| Sessions and transcripts | 1.5 d | **CRUD + page done.** The runtime does not write records yet |
-| MuseTalk renderer behind the Protocol | — | **Written, never executed.** 27 GPU-free tests |
-| Design and polish pass | 2 d | Partial — primitives and tokens exist, no dedicated pass |
-
-### The gap that matters, stated plainly
-
-**The console configures things the runtime does not yet consult.** Every resource has an
-API, tests, and a page; the live conversation currently reads none of them. A knowledge base
-can be created and its retrieval tested in the UI, and the interviewer still will not use it
-until the wiring below lands. That distinction is easy to lose behind a row of green ticks,
-so it gets its own heading.
-
-| Wiring | State |
+| Roadmap item | State |
 |---|---|
-| Retrieval → the prompt | In progress. Decorator on `SentenceStream`, no orchestrator change |
-| Pronunciation → TTS | Module done, decorator written, not yet constructed in `server.py` |
-| Guardrails → the turn | Not started. Input check before the LLM, output check before TTS |
-| Tools → a call loop | Not started. **The only item that changes the orchestrator** |
-| Sessions ← the runtime | Not started. `heard`/`said`/latency exist as telemetry; nothing persists them |
-| An agent selected per session | Not started. The socket ignores `agent_id`; config comes from env vars |
-| Console overview page at `/` | Not started |
-| A real face | **Blocked on a GPU spike run** |
+| Text chat + two-sided transcript | **Done.** Verified live |
+| Monorepo — `apps/api`, `apps/web`, `apps/assistant`, pnpm, CI | **Done.** 666 API tests green; web builds, typechecks, lints |
+| Console shell — tokens, primitives, grouped nav | **Done** |
+| JSON resource store, atomic writes | **Done** |
+| Knowledge base — retrieval | **Done.** BM25 + Chroma Cloud behind one Protocol |
+| Pronunciations — lexicon | **Done,** incl. `C++` / `C#` / `.NET` / `Node.js` |
+| Agents CRUD + attachment pickers | **Done.** Every reference attachable from the console |
+| Faces + prep queue | **Done** against the placeholder renderer. Real prep needs a GPU |
+| Tools | **Done and callable mid-turn** — round bound, final pass withholds `tools` |
+| Guardrails | **Done and enforced mid-turn,** both directions |
+| Sessions + reports | **Done.** The runtime writes turns, coverage and recording state |
+| Rubrics — competency plan | **Done.** Steers questions; verified changing what was asked |
+| Async scorer | **Done.** `POST /score` returns in 8 ms against 6,093 ms of scoring |
+| Report view — quotes, coverage, scorecard, delivery | **Done** |
+| WebRTC via LiveKit, two-way | **Done.** Verified against a real SFU |
+| First-frame latency over WebRTC | **Done.** `perceived_total` 4,296 ms vs `first_frame` 4,221 ms |
+| Egress recording | **Done.** A real 1m37s MP4, H.264 720p30 + AAC, ffmpeg-probed |
+| Console assistant — LangGraph, 9 read / 5 write tools | **Done.** Docked, screen-aware, voice in and out |
+| Identity — wordmark, app icon, favicon | **Done** |
+| MuseTalk renderer behind the Protocol | **Written, never executed.** 27 GPU-free tests |
+
+### The gaps that matter, stated plainly
+
+The console-configures-nothing gap that used to live here is closed: every resource is
+attachable and the live conversation consults all of them. What remains:
+
+| Gap | State |
+|---|---|
+| **A real face** | **Blocked on a GPU spike run.** The only thing between the stub and a face |
+| **No authentication, anywhere** | The candidate link is not a credential, and the assistant service will read any transcript in the store. Bound to loopback with CORS on two origins, which is a development posture and not a security one. Sharpest the moment anything deploys |
+| Calibration anchors | The assistant can *propose* one, and it verifies the quote against the session's verified quotes first. There is no anchor field on a rubric and no promotion endpoint yet, so a proposal has nowhere to land |
+| Scorecard versioning | Re-scoring overwrites. Turns are append-only so any scorecard is reproducible, but the previous one is gone |
+| Egress in production | Files land on the recorder's disk, which is wrong past a demo. The fix is an `s3`/`gcp`/`azure` field on the same output object |
+| First-frame attribution | Measured by adjacency, not identity — the epoch marker and the frame travel different paths. Biased optimistic. Exact needs the epoch inside the frame (SEI / `RTCEncodedVideoFrame`) |
+| Assistant has no tests | `apps/api` has 666; `apps/assistant` has none. Verified by driving it live, which is not the same thing |
+
+### The assistant, and why LangGraph is here but not in the interview
+
+Two opposite workloads, so the answer is allowed to differ. The interview path is realtime and
+barge-in driven: cancellation by epoch is the load-bearing design, and a graph engine has no
+useful model of abandoning work mid-flight. The console assistant is turn-based text with no
+interruption where three seconds is fine, which is what LangGraph is built for.
+
+It lives in `apps/assistant` rather than in `avatar`, because that package declares
+`dependencies = []` and the emptiness is what lets CI run the state machine with no GPU and no
+model weights. The dependency points one way: the assistant imports `avatar.store`, `avatar`
+imports nothing back.
+
+**Reads are free; writes are proposals.** Nine read tools leave no trace. Five write tools each
+record an attributed action — what, who, via the assistant, when, `status: proposed` — and none
+of them mutates a rubric, a rating or a weight. A human applies a proposal in the console, and
+that decision is recorded separately. The trail therefore answers two questions a single
+`updated_at` cannot: what did a model suggest, and what did a person decide. That is also the
+position you want when a rejected candidate asks why — a versioned rubric, a verified quote, and
+a named human.
+
+### Two loops, never joined
+
+The most load-bearing decision in the scoring design, recorded because the wrong version of it
+is easy to build and hard to undo.
+
+| Loop | Input | Adjusts |
+|---|---|---|
+| Candidate score | Transcript + rubric + anchors. Nothing else, ever | That candidate's scorecard |
+| Instrument quality | Aggregated human overrides, offer patterns | Rubric wording, weights, anchors |
+
+If managers consistently override the judge on one competency, the rubric is miscalibrated: fix
+it for everyone, going forward. Never nudge that candidate's number. Same information, and it
+improves the measurement instead of contaminating it.
+
+**A completed hire is not a template.** Feeding who got hired back into who scores well is the
+mechanism behind Amazon's abandoned recruiting tool, and it is the pattern the bias-audit
+requirements in NYC LL144 and the EU AI Act exist to catch. Four things break it independently: N
+is tiny, outcomes are censored (you never see results for candidates you rejected), the target is
+wrong ("someone decided to hire" is not "will do well"), and it encodes the process rather than
+the person.
+
+The legitimate version anchors the *scale*, not the candidate. Promote a verified quote as an
+example of what a rating sounds like, so future assessments compare an answer to an exemplar
+answer rather than a person to a person — a behaviourally anchored rating scale, and
+`verify_quotes` already produces exactly that artefact. Two properties make it safe: it anchors
+the scale rather than modelling anyone, and promotion is a deliberate human act, so an anchor is
+reviewed rather than harvested. That gate is the whole difference between calibration and
+laundering last cycle's preferences into this one.
+
+Explicit labels are signal; implicit behaviour is not. A manager writing "this rating is wrong,
+she did demonstrate X, here is the quote" is deliberate, attributable and reviewable. Dwell time,
+click counts and hire outcomes are none of those, and there is deliberately no tool for them.
+
+**If you want a real benchmark, collect the thing that matters:** on-the-job performance at 6–12
+months. That is what validity studies use and almost nobody records. Starting now yields
+something real in a year — and even then it validates the rubric rather than scoring candidates.
 
 ### Decisions changed since the first draft
 
