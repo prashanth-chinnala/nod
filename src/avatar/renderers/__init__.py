@@ -25,14 +25,17 @@ def build(config: RendererConfig | None = None) -> TalkingHeadRenderer:
 
         return StubRenderer(**config.options)  # type: ignore[arg-type]
 
-    # M2 lands the chosen model here, e.g.:
-    #   if name == "musetalk":
-    #       from avatar.renderers.musetalk import MuseTalkRenderer
-    #       return MuseTalkRenderer(**config.options)
+    if name == "musetalk":
+        # The import is inside the branch, so selecting 'stub' never touches this module
+        # and CI never needs torch. Constructing the renderer is still cheap -- the backend
+        # and its several GB of weights load on first use, not here.
+        from avatar.renderers.musetalk import MuseTalkRenderer
+
+        return MuseTalkRenderer(**config.options)  # type: ignore[arg-type]
 
     raise ValueError(
-        f"unknown renderer {config.name!r}; available: 'stub'. "
-        "The real renderer is pending the M0 model spike."
+        f"unknown renderer {config.name!r}; available: 'stub', 'musetalk'. "
+        "'musetalk' additionally needs the model weights on disk and a GPU."
     )
 
 

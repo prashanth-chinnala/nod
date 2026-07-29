@@ -79,6 +79,9 @@ module = [
   "httpx.*",
   "openai.*",
   "anthropic.*",
+  "PIL.*",
+  "cv2.*",
+  "musetalk.*",
 ]
 ignore_missing_imports = true
 
