@@ -113,7 +113,7 @@ export default function HomePage() {
       action={
         <div className="flex gap-2">
           <Button onClick={() => void load()}>Refresh</Button>
-          <Link href="/sessions/new"><Button variant="primary">Start a session</Button></Link>
+          <Link href="/sessions/new"><Button variant="primary">New session</Button></Link>
         </div>
       }
     >

@@ -92,10 +92,10 @@ export function Nav() {
           href="/sessions/new"
           className="block rounded-lg border border-accent/45 bg-accent/12 px-3 py-2 text-center text-[12.5px] font-medium text-accent transition-colors hover:bg-accent/20"
         >
-          Start a session
+          New session
         </Link>
         <p className="mt-2 text-[11px] leading-relaxed text-ink-low">
-          Talk or type, then interrupt mid-answer
+          Pick an interviewer, get a candidate link
         </p>
       </div>
     </nav>
