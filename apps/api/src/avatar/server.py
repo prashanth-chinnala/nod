@@ -247,7 +247,23 @@ class BrowserSession:
         self._mic = bytearray()
         self._speech_probability = 0.0
 
-        self._transport = WebSocketTransport(socket.send_bytes, socket.send_text)
+        # WebRTC when the SFU is configured and a session id names a room, WebSocket otherwise.
+        # Chosen per session rather than per process, so one deployment can serve both -- and so
+        # a clean clone with no SFU still reaches a working prototype, as the README promises.
+        #
+        # The socket stays open either way. Even on the WebRTC path it carries the candidate's
+        # microphone up and the control messages the console reads, because moving those to the
+        # data channel too would mean two protocols to debug for no gain while the browser is
+        # already connected here.
+        self._transport: Any = WebSocketTransport(socket.send_bytes, socket.send_text)
+        self._rtc: Any = None
+        if session_id and _livekit_available():
+            from avatar.transport.livekit import LiveKitTransport
+
+            self._rtc = LiveKitTransport(
+                f"session-{session_id}", width=FRAME_WIDTH, height=FRAME_HEIGHT
+            )
+            self._transport = _Tee(self._rtc, self._transport)
         self._mixer = FrameMixer(
             placeholder_idle_loop(width=FRAME_WIDTH, height=FRAME_HEIGHT),
             self._telemetry,
@@ -600,3 +616,56 @@ async def session_socket(socket: WebSocket, session: str | None = None) -> None:
     for running the prototype with no console data, which the README promises still works.
     """
     await BrowserSession(socket, session_id=session).run()
+
+
+def _livekit_available() -> bool:
+    """
+    Whether an SFU is configured. Checked once per session, not per frame.
+
+    Deliberately only a credentials check, not a connection attempt: probing the SFU here would
+    put a network round trip on the path a candidate takes to open their interview, and the
+    connection failure surfaces at `open_track` anyway with a better message.
+    """
+    return bool(os.environ.get("LIVEKIT_API_KEY") and os.environ.get("LIVEKIT_API_SECRET"))
+
+
+class _Tee:
+    """
+    Sends to both transports, so a session is watchable over WebRTC *and* instrumented over the
+    socket the console already speaks.
+
+    Not a permanent shape. It exists because the browser needs media over WebRTC while the
+    console's telemetry, transcript and latency readouts arrive over the WebSocket, and moving
+    those to the data channel is a client change rather than a server one. The WebRTC leg is
+    primary: if it fails, the socket leg continues regardless, because a session that degrades
+    to a working WebSocket beats one that dies.
+    """
+
+    def __init__(self, primary: Any, secondary: Any) -> None:
+        self._primary = primary
+        self._secondary = secondary
+
+    async def open_track(self) -> None:
+        await self._secondary.open_track()
+        with contextlib.suppress(Exception):
+            await self._primary.open_track()
+
+    async def send_audio(self, chunk: Any) -> None:
+        await self._secondary.send_audio(chunk)
+        with contextlib.suppress(Exception):
+            await self._primary.send_audio(chunk)
+
+    async def send_frame(self, frame: Any) -> None:
+        await self._secondary.send_frame(frame)
+        with contextlib.suppress(Exception):
+            await self._primary.send_frame(frame)
+
+    async def flush_audio(self) -> None:
+        await self._secondary.flush_audio()
+        with contextlib.suppress(Exception):
+            await self._primary.flush_audio()
+
+    async def close_track(self) -> None:
+        with contextlib.suppress(Exception):
+            await self._primary.close_track()
+        await self._secondary.close_track()

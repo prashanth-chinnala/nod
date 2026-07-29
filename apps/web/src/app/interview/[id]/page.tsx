@@ -17,6 +17,7 @@ import Link from "next/link";
 
 import { Button, Card, CardHeader, Chip, Field, Input, Metric, Page, type Status } from "@/components/ui";
 import { AUDIO_LEAD_MS, useSession, type SessionState } from "@/lib/session";
+import { useRtc } from "@/lib/rtc";
 
 const API = process.env.NEXT_PUBLIC_API_BASE ?? "http://127.0.0.1:8000";
 
@@ -45,6 +46,17 @@ export default function InterviewPage({ params }: { params: Promise<{ id: string
   const session = useSession(API, id);
   const { state, hello, connected, transcript, metrics, error } = session;
   const { connect, disconnect, say, send, startMic, stopMic, attachCanvas } = session;
+  // Destructured rather than read through the object: a hook's returned object counts as ref
+  // access during render under React's rules, and property reads in JSX would trip it.
+  const {
+    hasVideo: rtcVideo,
+    audioBlocked,
+    join: joinRtc,
+    leave: leaveRtc,
+    unblockAudio,
+    attachVideo,
+    attachAudio,
+  } = useRtc(API, id);
   const [draft, setDraft] = useState("");
   const [micOn, setMicOn] = useState(false);
   const scroller = useRef<HTMLDivElement | null>(null);
@@ -76,9 +88,28 @@ export default function InterviewPage({ params }: { params: Promise<{ id: string
       action={
         <div className="flex gap-2">
           {connected ? (
-            <Button variant="danger" onClick={disconnect}>End session</Button>
+            <Button
+              variant="danger"
+              onClick={() => {
+                disconnect();
+                void leaveRtc();
+              }}
+            >
+              End session
+            </Button>
           ) : (
-            <Button variant="primary" onClick={() => void connect()}>Start session</Button>
+            <Button
+              variant="primary"
+              onClick={() => {
+                void connect();
+                // Both legs, deliberately. WebRTC carries the media when an SFU is present;
+                // the socket carries the microphone, the transcript and the telemetry either
+                // way, and is the whole transport when there is no SFU.
+                void joinRtc();
+              }}
+            >
+              Start session
+            </Button>
           )}
           <Link href="/sessions"><Button>All sessions</Button></Link>
         </div>
@@ -95,6 +126,21 @@ export default function InterviewPage({ params }: { params: Promise<{ id: string
         </Card>
       ) : null}
 
+      {audioBlocked ? (
+        <Card className="border-warn/40 bg-warn/5">
+          <div className="flex flex-wrap items-center gap-3 px-5 py-4">
+            <p className="min-w-0 flex-1 text-[12.5px] leading-relaxed text-ink-mid">
+              <span className="text-warn">The browser blocked audio playback.</span> Video plays
+              and the mouth moves, so this looks like broken audio rather than a policy that
+              needs one click to satisfy.
+            </p>
+            <Button variant="primary" onClick={() => void unblockAudio()}>
+              Enable audio
+            </Button>
+          </div>
+        </Card>
+      ) : null}
+
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_380px]">
         {/* ---------------------------------------------------------- video */}
         <Card>
@@ -105,22 +151,45 @@ export default function InterviewPage({ params }: { params: Promise<{ id: string
                 ? `${hello.renderer} · ${hello.frame_width}×${hello.frame_height} · target ${hello.target_fps}fps`
                 : "not connected"
             }
-            action={<Chip status={STATE_TONE[state]}>{state.toLowerCase()}</Chip>}
+            action={
+              <div className="flex items-center gap-2">
+                <Chip status={rtcVideo ? "ok" : "neutral"}>
+                  {rtcVideo ? "webrtc" : "websocket"}
+                </Chip>
+                <Chip status={STATE_TONE[state]}>{state.toLowerCase()}</Chip>
+              </div>
+            }
           />
           <div className="p-5">
             <div className="relative overflow-hidden rounded-lg border border-hair bg-black">
               {/* Fixed aspect so the panel does not jump when the renderer's size changes. */}
               <div className="aspect-video w-full">
+                {/* Two surfaces, one shown at a time. The WebRTC <video> is preferred when the
+                    SFU is delivering a track; the canvas is the WebSocket path's renderer and
+                    also the fallback. Both are always mounted rather than swapped, because
+                    attaching a track to an element that does not exist yet silently does
+                    nothing — and that failure looks exactly like a black video. */}
+                <video
+                  ref={attachVideo}
+                  autoPlay
+                  playsInline
+                  muted
+                  aria-label="Interviewer video"
+                  className={rtcVideo ? "size-full object-contain" : "hidden"}
+                />
                 <canvas
                   ref={attachCanvas}
                   width={256}
                   height={144}
                   aria-label="Interviewer video"
-                  className="size-full object-contain"
+                  className={rtcVideo ? "hidden" : "size-full object-contain"}
                   // Nearest-neighbour: the placeholder renders 256×144 flat rectangles, and
                   // smoothing them into a blur hides whether the mouth is actually moving.
                   style={{ imageRendering: "pixelated" }}
                 />
+                {/* Audio is a separate element: the video is muted so the WebSocket path's Web
+                    Audio scheduling and the WebRTC track can never both play the same speech. */}
+                <audio ref={attachAudio} autoPlay />
               </div>
               {!connected ? (
                 <div className="absolute inset-0 grid place-items-center bg-base/80 text-[12.5px] text-ink-mid">
