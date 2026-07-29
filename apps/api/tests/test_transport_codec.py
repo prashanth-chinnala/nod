@@ -7,7 +7,8 @@ socket. That keeps the web stack out of the CI dependency set and keeps this fil
 fast, and it is the same reason the orchestrator takes a `Transport` rather than a
 WebSocket.
 
-The client in `web/index.html` reimplements `decode` in JavaScript. The round-trip
+The web client reimplements `decode` in TypeScript (`apps/web/src/lib/session.ts`), so the
+header layout is duplicated across two languages by necessity. The round-trip
 tests here are what pin the byte layout the two sides have to agree on -- network
 byte order for the header, little-endian for the PCM payload, which is an easy pair
 to get backwards.

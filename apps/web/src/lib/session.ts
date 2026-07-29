@@ -1,10 +1,9 @@
 /**
  * The live session, as a hook.
  *
- * A faithful port of the plain-JS client at `apps/api/web/index.html`, which stays as the
- * minimal-dependency reference implementation — the API's README promises a clean clone
- * reaches a running prototype with no build step, and that page keeps the promise. This one
- * is the product surface.
+ * Originally a port of a plain-JS client the API served itself; that page is gone, and this
+ * is now the only client. The API serves JSON and a WebSocket, nothing else — which is the
+ * right split, and it means the runtime no longer has an opinion about how it is rendered.
  *
  * Three things here are load-bearing and were each a bug before they were code:
  *
@@ -104,7 +103,7 @@ function sniffImageType(bytes: Uint8Array): string {
   return "";
 }
 
-export function useSession(apiBase: string) {
+export function useSession(apiBase: string, sessionId?: string) {
   const [state, setState] = useState<SessionState>("INITIALIZING");
   const [hello, setHello] = useState<Hello | null>(null);
   const [connected, setConnected] = useState(false);
@@ -307,7 +306,12 @@ export function useSession(apiBase: string) {
     audioRef.current = ctx;
     await ctx.resume();
 
-    const url = apiBase.replace(/^http/, "ws") + "/session";
+    // The session id travels as a query parameter, which is how the candidate's link reaches
+    // the runtime: the record it names carries the agent, and the agent carries everything
+    // else. Without it the runtime falls back to its environment, which is fine for the
+    // prototype and wrong for a real interview.
+    const query = sessionId ? `?session=${encodeURIComponent(sessionId)}` : "";
+    const url = apiBase.replace(/^http/, "ws") + "/session" + query;
     const socket = new WebSocket(url);
     socket.binaryType = "arraybuffer";
     socketRef.current = socket;
@@ -334,7 +338,7 @@ export function useSession(apiBase: string) {
       if (kind === KIND_VIDEO) void drawFrame(payload, epoch);
       else playAudio(payload, epoch);
     };
-  }, [apiBase, drawFrame, handleControl, playAudio]);
+  }, [apiBase, sessionId, drawFrame, handleControl, playAudio]);
 
   const disconnect = useCallback(() => {
     socketRef.current?.close();

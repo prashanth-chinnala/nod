@@ -22,21 +22,20 @@ pip install -e ".[dev,server]"
 uvicorn avatar.server:app
 ```
 
-Then open **<http://127.0.0.1:8000>** and press **Start session**.
+That serves JSON and a WebSocket, and nothing else — **there is no HTML here.** The
+interface lives in `apps/web`, which is a separate app on its own port:
 
-That works with **no credentials at all** — every default is a placeholder that needs no
+```bash
+pnpm install && pnpm dev          # from the repo root — console on :3000
+```
+
+Then open **<http://localhost:3000>**, create a session, and follow the candidate link.
+
+The API works with **no credentials at all** — every default is a placeholder that needs no
 key and no network. To hear a real voice and hold a real conversation, see
 [Configuration](#configuration).
 
-- **Starts speaking** → the session moves to `LISTENING`
-- **Stops speaking** → `THINKING`, then `SPEAKING` with audio and frames
-- **Starts speaking** again mid-answer → barge-in. Watch the epoch increment, the audio
-  cut off, the log fill with stale-frame drops, and the state return to `LISTENING`
-
-Every number on that page is measured. No simulated variant of the page is kept in the
-repo, so there is nothing that could be mistaken for it.
-
-To verify the same thing headlessly:
+To verify a whole session headlessly, with no browser at all:
 
 ```bash
 python scripts/smoke_session.py     # 17 assertions over a real socket
@@ -125,8 +124,8 @@ yourself rather than taking on trust:
 git ls-files | grep -E '^\.env'      # must print nothing
 ```
 
-For Colab, use **Colab Secrets** rather than a notebook cell — anything typed into a cell
-is saved inside the notebook file.
+If you run the model spike on a hosted notebook, put credentials in that platform's secret
+store rather than in a cell — anything typed into a cell is saved inside the `.ipynb`.
 
 ## What works today
 
@@ -208,19 +207,20 @@ src/avatar/
   audio/stt.py         Deepgram Nova. Transcribes; decides nothing
   transport/websocket.py   wire codec + Transport. No framework dependency.
   renderers/           build() registry + StubRenderer (no GPU, no deps)
-tests/                 225 tests, including the boundary enforcement
-scripts/               headless end-to-end verification
-web/index.html         the real client, measured numbers
-notebooks/             model spike harness, and running the server on a cloud GPU
+tests/                 553 tests, including the boundary enforcement
+scripts/               headless end-to-end verification, and the GPU model spike
+notebooks/             the model spike harness
 ```
+
+The interface is not here. `apps/web` is a Next.js app serving the console and the
+candidate-facing interview page; this app serves JSON and a WebSocket only.
 
 ## Documentation map
 
 | File | What it is |
 |---|---|
 | [PROCESS.md](PROCESS.md) | Architecture document, model-selection memo, build-vs-buy memo, and migration plan |
-| [notebooks/m0_musetalk_v2.ipynb](notebooks/m0_musetalk_v2.ipynb) | The model spike harness. Gates on imports, audits every checkpoint, and refuses to report fps without an output file |
-| [notebooks/run_on_colab.ipynb](notebooks/run_on_colab.ipynb) | Runs the server on a cloud GPU behind an HTTPS tunnel |
+| [notebooks/m0_musetalk_v2.ipynb](notebooks/m0_musetalk_v2.ipynb) | The model spike harness — the one remaining path to a real face. Gates on imports, audits every checkpoint, and refuses to report fps without an output file |
 
 ## The module boundary
 

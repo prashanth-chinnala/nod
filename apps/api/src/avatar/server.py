@@ -29,14 +29,12 @@ import contextlib
 import json
 import os
 from collections.abc import Mapping
-from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
 
-from avatar.agent_config import ResolvedAgent, resolve_agent
+from avatar.agent_config import ResolvedAgent, resolve_for_session
 from avatar.api import (
     agents,
     faces,
@@ -65,6 +63,7 @@ from avatar.mixer import FRAME_INTERVAL_MS, TARGET_FPS, FrameMixer
 from avatar.orchestrator import RENDER_LEAD_IN_FRAMES, SessionOrchestrator
 from avatar.renderers import build
 from avatar.state import State
+from avatar.store import store
 from avatar.telemetry import STAGE_TURN_DETECT, Telemetry
 from avatar.transport.websocket import WebSocketTransport
 
@@ -72,8 +71,6 @@ from avatar.transport.websocket import WebSocketTransport
 # `set -a && . ./.env && set +a` in front of it, and forgetting produced a session that
 # silently fell back to every placeholder -- no error, just quietly the wrong system.
 _FROM_ENV_FILE = load_env()
-
-WEB_DIR = Path(__file__).resolve().parents[2] / "web"
 
 FRAME_WIDTH = 256
 FRAME_HEIGHT = 144
@@ -185,11 +182,6 @@ for _resource in (agents, faces, guardrails, knowledge, pronunciations, sessions
     app.include_router(_resource.router)
 
 
-@app.get("/")
-async def index() -> FileResponse:
-    return FileResponse(WEB_DIR / "index.html")
-
-
 @app.get("/config")
 async def config() -> dict[str, object]:
     """
@@ -227,7 +219,8 @@ async def healthz() -> dict[str, str]:
 class BrowserSession:
     """One conversational session bound to one WebSocket."""
 
-    def __init__(self, socket: WebSocket) -> None:
+    def __init__(self, socket: WebSocket, *, session_id: str | None = None) -> None:
+        self._session_id = session_id
         self._socket = socket
         self._relay: asyncio.Queue[Mapping[str, object]] = asyncio.Queue(
             maxsize=RELAY_QUEUE_DEPTH
@@ -236,7 +229,14 @@ class BrowserSession:
         # Resolved once per session, not per turn: the retriever indexes its whole corpus
         # here, so a turn pays a scored lookup rather than re-reading documents from disk
         # inside the latency budget.
-        self._agent: ResolvedAgent = resolve_agent()
+        self._agent: ResolvedAgent = resolve_for_session(session_id)
+
+        # One turn's worth of telemetry, accumulated as stages complete and written to the
+        # session record when the turn ends. Held here rather than in the orchestrator because
+        # persistence is not a state-machine concern -- the orchestrator emits events and does
+        # not know a database exists.
+        self._turn: dict[str, Any] = {}
+        self._turns_written = 0
 
         self._telemetry = Telemetry()
         self._telemetry.subscribe(self._on_telemetry)
@@ -322,6 +322,9 @@ class BrowserSession:
                 await self._orchestrator.close()
             with contextlib.suppress(Exception):
                 await self._stt.aclose()
+            # A candidate who closes the tab mid-answer must still leave the turn behind:
+            # an abandoned interview is exactly the record worth having.
+            self._flush_turn()
 
     async def _receive_loop(self) -> None:
         while True:
@@ -492,10 +495,87 @@ class BrowserSession:
         with the event stream should lose readouts, not stall the render loop that
         is emitting them.
         """
+        self._accumulate(record)
         if record.get("event") not in RELAYED_EVENTS:
             return
         with contextlib.suppress(asyncio.QueueFull):
             self._relay.put_nowait(record)
+
+    def _accumulate(self, record: Mapping[str, object]) -> None:
+        """
+        Build up the current turn from the events already being emitted, and persist it when
+        the turn ends.
+
+        Reading the existing telemetry rather than adding write calls throughout the
+        orchestrator: the events are already the authority on what happened, so a second path
+        recording the same facts could disagree with the first, and the transcript would then
+        contradict the log. Nothing here can raise — instrumentation must never be able to end
+        a conversation, so every failure is swallowed deliberately.
+        """
+        event = record.get("event")
+        try:
+            if event == "heard":
+                # A new turn starts when the candidate's words arrive. Flush whatever the
+                # previous turn accumulated first, in case it was cut off before its own end.
+                self._flush_turn()
+                # Every field initialised, including the timings that may never arrive. A
+                # stage that did not complete must persist as an explicit null rather than an
+                # absent key: the console reads these positionally, and `undefined` where a
+                # number was expected renders as NaN instead of the honest dash.
+                self._turn = {
+                    "epoch": int(str(record.get("epoch", 0) or 0)),
+                    "heard": str(record.get("text", "")),
+                    "said": "",
+                    "transcribed": bool(record.get("transcribed")),
+                    "interrupted": False,
+                    "llm_ttft_ms": None,
+                    "tts_first_audio_ms": None,
+                    "first_frame_ms": None,
+                    "perceived_total_ms": None,
+                }
+            elif event == "said" and self._turn:
+                self._turn["said"] = str(self._turn.get("said", "")) + str(
+                    record.get("text", "")
+                )
+            elif event == "latency" and self._turn:
+                stage = str(record.get("stage", ""))
+                field = {
+                    "llm_ttft": "llm_ttft_ms",
+                    "tts_first_audio": "tts_first_audio_ms",
+                    "avatar_first_frame": "first_frame_ms",
+                    "perceived_total": "perceived_total_ms",
+                }.get(stage)
+                if field:
+                    self._turn[field] = float(str(record.get("ms", 0) or 0))
+            elif event == "stale_dropped" and self._turn:
+                self._turn["interrupted"] = True
+            elif event == "state_change" and self._turn:
+                # A turn is over when the machine leaves SPEAKING or CANCELLING. This is the
+                # trigger rather than `perceived_total`, which was the first attempt and was
+                # wrong: that stage only fires when the *client* reports having painted, so a
+                # client that never reports -- a headless driver, a candidate whose tab is
+                # backgrounded, anything mid-crash -- would persist no turns at all while the
+                # conversation looked completely normal. The state machine always transitions.
+                if str(record.get("from")) in ("SPEAKING", "CANCELLING"):
+                    self._flush_turn()
+        except Exception:  # pragma: no cover - instrumentation must never break a session
+            self._turn = {}
+
+    def _flush_turn(self) -> None:
+        """Append the accumulated turn to the session record, if there is one to append to."""
+        if not self._turn or not self._session_id:
+            self._turn = {}
+            return
+        turn, self._turn = self._turn, {}
+        try:
+            record = store.get("sessions", self._session_id)
+            if record.get("ended_at"):
+                return  # the record is closed; appending would claim the session continued
+            turns = [*(record.get("turns") or []), turn]
+            store.update("sessions", self._session_id, {"turns": turns})
+            self._turns_written += 1
+        except Exception:  # pragma: no cover - a write failure must not end the interview
+            return
 
     async def _send(self, payload: Mapping[str, object]) -> None:
         with contextlib.suppress(Exception):
@@ -503,5 +583,13 @@ class BrowserSession:
 
 
 @app.websocket("/session")
-async def session_socket(socket: WebSocket) -> None:
-    await BrowserSession(socket).run()
+async def session_socket(socket: WebSocket, session: str | None = None) -> None:
+    """
+    `?session=<id>` binds this socket to a stored session record.
+
+    That id is what the candidate's link carries, and it is how configuration reaches the
+    runtime without an environment variable: the record names an agent, and the agent names a
+    knowledge base, a lexicon, a guardrail and a face. `AVATAR_AGENT` remains as a fallback
+    for running the prototype with no console data, which the README promises still works.
+    """
+    await BrowserSession(socket, session_id=session).run()

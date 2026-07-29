@@ -73,6 +73,35 @@ class ResolvedAgent:
         return self.agent_id is not None
 
 
+def resolve_for_session(session_id: str | None, *, data: Store | None = None) -> ResolvedAgent:
+    """
+    Resolve configuration for a socket, preferring the session record over the environment.
+
+    This is what makes the candidate's link load-bearing. The link carries a session id; the
+    record names an agent; the agent names a knowledge base, a lexicon, a guardrail and a face.
+    Nothing about the conversation then depends on how the server process was started.
+
+    `AVATAR_AGENT` stays as a fallback, in that order, for two cases that both matter: running
+    the prototype against no console data at all — which the README promises works — and
+    pinning one agent for a scripted demo without minting a session first.
+
+    An unknown session id falls through to the environment rather than raising. The runtime
+    should not refuse to talk to a candidate because a record was deleted; it should hold the
+    conversation on whatever default is configured, and the missing record is visible in the
+    console rather than as a failed connection.
+    """
+    data = data or store
+    if session_id:
+        try:
+            record = data.get("sessions", session_id)
+        except NotFound:
+            record = {}
+        agent_id = record.get("agent_id")
+        if agent_id:
+            return resolve_agent(str(agent_id), data=data)
+    return resolve_agent(data=data)
+
+
 def resolve_agent(agent_id: str | None = None, *, data: Store | None = None) -> ResolvedAgent:
     """
     Load an agent and everything it references. Returns defaults when none is selected.

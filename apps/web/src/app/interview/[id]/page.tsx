@@ -42,7 +42,7 @@ const STAGE_LABELS: Array<[string, string, number | undefined]> = [
 export default function InterviewPage({ params }: { params: Promise<{ id: string }> }) {
   // `params` is a promise in Next 16; `use` unwraps it in a client component.
   const { id } = use(params);
-  const session = useSession(API);
+  const session = useSession(API, id);
   const { state, hello, connected, transcript, metrics, error } = session;
   const { connect, disconnect, say, send, startMic, stopMic, attachCanvas } = session;
   const [draft, setDraft] = useState("");
