@@ -82,20 +82,21 @@ export function Nav() {
       </div>
 
       {/*
-        The runtime is a separate process, and the console is useless if it is down. Linking
-        it here rather than hiding it in a settings page means the state of the thing being
-        configured is always one glance away.
+        The live session lives in this app, not on the runtime's own port. The plain-JS page
+        the API still serves at :8000 is kept as a minimal-dependency reference — the API's
+        README promises a clean clone reaches a running prototype with no build step — but the
+        product surface is here, so the console never sends anyone to another origin.
       */}
       <div className="border-t border-hair px-5 py-4">
-        <a
-          href="http://127.0.0.1:8000"
-          target="_blank"
-          rel="noreferrer"
-          className="block text-[12px] text-ink-mid hover:text-ink"
+        <Link
+          href="/sessions/new"
+          className="block rounded-lg border border-accent/45 bg-accent/12 px-3 py-2 text-center text-[12.5px] font-medium text-accent transition-colors hover:bg-accent/20"
         >
-          Open live session →
-        </a>
-        <p className="mt-1 text-[11px] text-ink-low">the runtime, on :8000</p>
+          Start a session
+        </Link>
+        <p className="mt-2 text-[11px] leading-relaxed text-ink-low">
+          Talk or type, then interrupt mid-answer
+        </p>
       </div>
     </nav>
   );
