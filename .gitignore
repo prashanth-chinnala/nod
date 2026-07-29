@@ -86,4 +86,9 @@ next-env.d.ts
 # `avatar.store`. Untracked because it is state, not source -- but the reason it is *ignored*
 # rather than merely untracked is that session records hold interview transcripts: what a
 # candidate said, verbatim. One `git add -A` from a demo run would publish them.
-apps/api/data/
+#
+# Unanchored on purpose. `AVATAR_DATA_DIR` defaults to a *relative* "data", so the store lands
+# wherever the process was started from -- and a uvicorn launched from the repo root put a real
+# session transcript in /data, which the anchored `apps/api/data/` rule did not cover and which
+# duly got committed. Matching the directory at any depth is the only version that holds.
+data/
