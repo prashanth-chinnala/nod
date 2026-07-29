@@ -250,13 +250,40 @@ def test_build_rejects_an_unknown_name() -> None:
         build_llm("some-model-that-does-not-exist")
 
 
+def test_missing_sdk_fails_with_an_actionable_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    The first thing a clean clone hits, and the one CI can actually exercise.
+
+    `anthropic` lives in the `[llm]` extra, so on a clean `pip install -e '.[dev]'` it is
+    absent — which is the state CI runs in. The adapter must name the extra to install
+    rather than surfacing a bare ImportError.
+    """
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    try:
+        import anthropic  # noqa: F401
+    except ImportError:
+        with pytest.raises(RuntimeError, match=r"\[llm\]"):
+            build_llm("anthropic")
+    else:
+        pytest.skip("the SDK is installed; the key path is covered by the next test")
+
+
 def test_missing_key_fails_with_an_actionable_message(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """
     The most common misconfiguration, and the SDK's own error does not mention where
     this project expects the key to live.
+
+    Requires the SDK, because the adapter checks for it first — and that order is correct:
+    a key is useless without the library. This test previously failed on a clean clone for
+    exactly that reason, asserting the key message while the SDK message was the right
+    answer. Skipping when the SDK is absent is honest; loosening the assertion to accept
+    either message would have let a real regression through.
     """
+    pytest.importorskip("anthropic", reason="key validation is unreachable without the SDK")
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
     with pytest.raises(RuntimeError, match="ANTHROPIC_API_KEY"):

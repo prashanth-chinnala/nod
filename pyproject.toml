@@ -63,8 +63,23 @@ files = ["src/avatar"]
 # CI installs only [dev], which has no web stack, so fastapi is absent when mypy
 # runs there. Suppressing the missing import keeps the type check on the modules
 # that matter rather than forcing a web dependency into CI to satisfy the linter.
+# CI installs only [dev], so every optional extra is absent when mypy runs there. Each of
+# these is imported inside the function that needs it, behind a try/except that raises an
+# actionable "pip install -e '.[extra]'" message -- so an unresolvable stub here is the
+# intended state, not a missing dependency. Listing them is what keeps the type check on
+# the orchestration layer that matters rather than forcing a web, ML, and vendor-SDK stack
+# into CI to satisfy the linter.
 [[tool.mypy.overrides]]
-module = ["fastapi.*", "starlette.*", "uvicorn.*", "torch.*"]
+module = [
+  "fastapi.*",
+  "starlette.*",
+  "uvicorn.*",
+  "torch.*",
+  "websockets.*",
+  "httpx.*",
+  "openai.*",
+  "anthropic.*",
+]
 ignore_missing_imports = true
 
 # Consequence of the above: with fastapi unresolved, its decorators are Any, and
