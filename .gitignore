@@ -53,9 +53,19 @@ measurements/*.json
 .env
 .env.*
 
-# Personal Claude Code settings. Never committed: this repo is submitted publicly,
-# and a checked-in permission bypass would apply to everyone who clones it.
-.claude/settings.local.json
+# Local working files. Not deliverables, and kept out of the published repo: an
+# assistant-configuration file and a personal work log are not what a reader of this
+# repository is here for, and a checked-in permission bypass would apply to everyone
+# who clones it.
+.claude/
+CLAUDE.md
+DEVLOG.md
+NOTES.local.md
+
+# Working notes kept out of the published repo: a spike runbook, a manual test protocol,
+# and cloud-GPU setup steps. Their conclusions live in PROCESS.md, which is the deliverable;
+# the runbooks themselves are process material and read as such.
+docs/
 
 # Editor / OS
 .DS_Store

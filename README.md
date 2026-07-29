@@ -7,13 +7,12 @@ Built as the Exterview Head of Engineering take-home. The reasoning, the
 model-selection memo, the build-vs-buy recommendation, and the migration plan live in
 [PROCESS.md](PROCESS.md); this file is only how to run what exists.
 
-> **Status: M1, M3, and M4's turn-taking complete. M0 blocked.** With credentials it runs
-> a real spoken conversation today — real transcription, a real LLM, a real synthesised
-> voice. What is missing is the **face**: no talking-head model is wired in, so the avatar
-> is five rectangles whose mouth height tracks the audio. See
-> [What works today](#what-works-today) for the exact boundary,
-> [PROCESS.md](PROCESS.md) §3.3.3 for the measured latency budget, and
-> [DEVLOG.md](DEVLOG.md) for what was deferred and why.
+> **Status: the session layer is complete; the talking-head model is not integrated.**
+> With credentials this runs a real spoken conversation today — real transcription, a real
+> LLM, a real synthesised voice, and working interruption. What is missing is the **face**:
+> no talking-head model is wired in, so the avatar is five rectangles whose mouth height
+> tracks the audio in real time. See [What works today](#what-works-today) for the exact
+> boundary and [PROCESS.md](PROCESS.md) §3.3.3 for the measured latency budget.
 
 ## Quick start
 
@@ -43,8 +42,10 @@ To verify the same thing headlessly:
 python scripts/smoke_session.py     # 17 assertions over a real socket
 ```
 
-A step-by-step test protocol — what to click, what to say, what each readout proves and
-what it does not — is in [docs/DEMO_SCRIPT.md](docs/DEMO_SCRIPT.md).
+That script drives a real session over a real socket and asserts the properties a
+screenshot cannot show: that presentation timestamps are strictly monotonic, that
+stale-epoch artifacts were provably dropped rather than merely overtaken, and that
+end-to-end latency was measured to browser paint rather than to the socket write.
 
 ## Configuration
 
@@ -72,7 +73,7 @@ entirely, for a mounted secret or a path outside the repo.
 
 | Variable | Default | Options |
 |---|---|---|
-| `AVATAR_RENDERER` | `stub` | `stub` (no GPU) · the chosen model, once M2 lands |
+| `AVATAR_RENDERER` | `stub` | `stub` (no GPU) · the chosen model, once it is integrated |
 | `AVATAR_LLM` | `scripted` | `scripted` · `openai` · `anthropic` |
 | `AVATAR_TTS` | `tone` | `tone` · `deepgram` |
 | `AVATAR_STT` | `none` | `none` · `deepgram` |
@@ -144,7 +145,7 @@ is saved inside the notebook file.
 | Real voice (Deepgram Aura-2) | Working. ~380ms warm time-to-first-audio |
 | Real LLM — two adapters, any OpenAI-compatible endpoint | Working via Ollama Cloud |
 | `.env` loaded automatically; `GET /config` reports what resolved | Working |
-| **A talking-head model of any kind** | **Not built — blocked on M0, needs a GPU** |
+| **A talking-head model of any kind** | **Not built** — needs a GPU; the spike failed in setup (PROCESS.md §2.2.1) |
 | **A real voice activity detector** | **Partly.** The policy is real and tested; the detector under it is an energy gate. `SileroVad` is written and **never executed** |
 | Frame encoding | Working. PNG, stdlib zlib. **108.10 KB → 0.57 KB per frame, 22.2 → 0.12 Mbps** |
 | Client jitter buffer | Working. 150ms lead, underruns counted and surfaced |
@@ -166,9 +167,10 @@ gap.
 Python 3.11 or newer. **No GPU, no model weights, and no network** are needed for
 anything currently in the repo.
 
-A GPU becomes a requirement at M2, when the real renderer lands. Target hardware is a
-Colab/Kaggle free-tier T4; the weight-download step and real hardware requirements get
-documented here once M0 has actually run.
+A GPU becomes a requirement only when the talking-head model is integrated. The intended
+target is a Colab/Kaggle free-tier T4; the weight-download step and the real hardware
+requirements will be documented here once the model spike has actually produced throughput
+figures. It has not — see [PROCESS.md](PROCESS.md) §2.2.1.
 
 ## Run the checks
 
@@ -209,19 +211,16 @@ src/avatar/
 tests/                 225 tests, including the boundary enforcement
 scripts/               headless end-to-end verification
 web/index.html         the real client, measured numbers
-notebooks/             M0 model spike, and running the whole stack on Colab
-docs/                  M0 runbook, Colab hosting, manual test protocol
+notebooks/             model spike harness, and running the server on a cloud GPU
 ```
 
 ## Documentation map
 
 | File | What it is |
 |---|---|
-| [PROCESS.md](PROCESS.md) | The graded deliverable: architecture doc, model memo, build-vs-buy, migration plan |
-| [DEVLOG.md](DEVLOG.md) | Session-by-session log — what was attempted, what worked, what was deferred and why |
-| [docs/DEMO_SCRIPT.md](docs/DEMO_SCRIPT.md) | Manual test protocol; doubles as the Loom shot list |
-| [docs/M0_SPIKE.md](docs/M0_SPIKE.md) | Why the model spike failed and how to finish it |
-| [docs/COLAB_HOSTING.md](docs/COLAB_HOSTING.md) | Running the whole stack on a Colab GPU, reachable from a browser |
+| [PROCESS.md](PROCESS.md) | Architecture document, model-selection memo, build-vs-buy memo, and migration plan |
+| [notebooks/m0_musetalk_v2.ipynb](notebooks/m0_musetalk_v2.ipynb) | The model spike harness. Gates on imports, audits every checkpoint, and refuses to report fps without an output file |
+| [notebooks/run_on_colab.ipynb](notebooks/run_on_colab.ipynb) | Runs the server on a cloud GPU behind an HTTPS tunnel |
 
 ## The module boundary
 

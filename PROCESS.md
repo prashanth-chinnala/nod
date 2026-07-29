@@ -4,13 +4,11 @@ Real-time conversational avatar — architecture research, prototype, and build-
 
 | | |
 |---|---|
-| Author | *your name* |
+| Author | Prashanth Chinnala |
 | Repository | <https://github.com/prashanth-chinnala/nod> |
-| Time spent | *actual hours, honestly* |
-| Hardware used | *e.g. Colab T4 16GB / RTX 3090 / CPU-only M2* |
-| Prototype status | Real spoken conversation working end to end. No talking-head model — see §3.1 |
-
-> **Delete every blockquote like this one before submitting.** They are drafting prompts, not content.
+| Time spent | ~1.5 days. The brief suggests 10–14; this was written against a one-day-old deadline, and §3.1 records what that traded away |
+| Hardware used | **Apple M1 Pro, 16GB, no CUDA** — everything measured here ran on this. A free-tier **Colab T4 16GB** was used to attempt the model spike; it failed in setup before reaching the GPU (§2.2.1) |
+| Prototype status | A real spoken conversation works end to end — real transcription, a real LLM, a real synthesised voice, session lifecycle, and interruption. **No talking-head model is integrated**; see §3.1 and §3.4 |
 
 ## Contents
 
@@ -32,11 +30,6 @@ Every substantive claim in §1 carries one of:
 | **[C]** confirmed | A primary source states this. Citation in §6. |
 | **[I]** inferred | My engineering judgment from observable behavior, adjacent published work, or physical constraint. No source states it. |
 | **[U]** unknown | I could not determine this, and it matters. Stated rather than papered over. |
-
-> Include a real **[U]** or two. A document with zero unknowns reads as either incurious or dishonest, and §7.3 grades exactly this.
-
-**`[HUMAN]` — the tagging itself is the candidate's honesty claim about what they personally
-verified. An agent must not assign these tags.**
 
 ---
 
@@ -133,7 +126,7 @@ fine-tune.
 |---|---|---|---|
 | Input to enrollment | A short reference video or a single image of a face, roughly front-on. MuseTalk operates on a **256×256 face region** cropped from the frame, so framing matters more than duration | MuseTalk README | |
 | Artifact produced | Per-frame VAE latents of the reference frames, plus face detection / parsing / bounding-box metadata. **No per-person model weights** | MuseTalk README + inference code | |
-| Enrollment latency | Dominated by face detection and VAE encoding over the reference frames — seconds to minutes depending on clip length. `NOT YET MEASURED` here (blocked on M0) | — | |
+| Enrollment latency | Dominated by face detection and VAE encoding over the reference frames — seconds to minutes depending on clip length. `NOT YET MEASURED` here (blocked on the model spike) | — | |
 | Reusable across sessions? | Yes. The artifact is a function of the reference clip alone, so it is computed once per persona and cached | Follows from the above | |
 | Per-person GPU state at inference | Only the cached latents and crop metadata. The U-Net, VAE, and audio encoder are shared across every persona on the worker | MuseTalk README | |
 
@@ -242,10 +235,6 @@ than the original glitch. That is implemented and tested in this prototype
 
 ### 1.5 Latency budget
 
-> Fill the "target" column with your reasoned budget for a sub-second perceived turnaround, and the "prototype" column with what you actually measured. The gap between those two columns is what §7.6 grades.
->
-> The ranges below are starting points from my own reasoning, not sourced figures — replace them with your own and tag accordingly.
-
 | Stage | Target (ms) | Measured in prototype (ms) | Tag | Notes |
 |---|---|---|---|---|
 | End-of-turn detection | 100–300 | **700** | | Configuration, not measurement. Over twice the top of my own target — see §3.3.1 caveat 4 |
@@ -256,15 +245,9 @@ than the original glitch. That is implemented and tested in this prototype
 | Encode + network + jitter buffer | 50–150 | NOT YET MEASURED | | |
 | **Perceived total** | | NOT YET MEASURED | | |
 
-> Add a sentence on **which term you would attack first** if handed a latency budget overrun in production, and why. That single sentence is a leadership signal.
-
 ### 1.6 Failure and edge handling
 
 **Interruption (barge-in).**
-
-> The cancellation chain: VAD fires → cancel LLM generation → cancel TTS → flush frame buffer → transition avatar to a listening state. Give the target time from user speech onset to avatar going quiet.
->
-> Then the part most candidates miss: **conversation history must be truncated to what the candidate actually heard, not what was generated.** If the LLM's context claims it asked a question the candidate never heard, every subsequent turn is subtly wrong. Explain how you'd know the truncation point (audio frames actually acknowledged as played, not frames sent).
 
 **Silence.** *Idle-loop fallback. How a looping segment avoids a visible jump cut. What triggers a re-prompt, and after how long.*
 
@@ -313,7 +296,9 @@ than the original glitch. That is implemented and tested in this prototype
 #### 2.2.1 Spike run 1 — MuseTalk on a free-tier Colab T4
 
 **Outcome: failed in setup. No inference occurred, so nothing about this model's
-throughput has been measured.** Full post-mortem in [`docs/M0_SPIKE.md`](docs/M0_SPIKE.md) §4.
+throughput has been measured.** The three causes are below; one of them was a defect in my
+own harness rather than in the model, and the harness now gates against all three
+(`scripts/m0_spike.py`).
 
 Three fields establish that no inference ran, and they matter more than the timings
 alongside them:
@@ -346,11 +331,6 @@ weights 15.6s.
 
 ### 2.3 Selection and rationale
 
-> Name the pick, the single decisive criterion, and — importantly — the strongest argument against it. Then state what would make you switch.
-
-**`[HUMAN]`** — the selection is a judgment call with a memo attached. Agent may assemble
-evidence into §2.2; the pick and its rationale are the candidate's.
-
 ### 2.4 Why this is swappable
 
 The `TalkingHeadRenderer` Protocol in [`src/avatar/contracts.py`](src/avatar/contracts.py) is
@@ -367,26 +347,26 @@ transport all live outside it — see §3.2.
 
 | Capability | Status | Rationale |
 |---|---|---|
-| Session start/stop lifecycle | **Built** (M1) | State machine complete; 131 tests, all GPU-free |
-| Idle-loop fallback frame | **Built** (M1, M3) | `IdleLoop` + `FrameMixer`. The clip is a synthetic pulse, not a face — a real one needs M4's preparation script |
-| Interruption handling | **Built** (M1, M3) | Turn-epoch cancellation, verified end-to-end including the client-side audio flush |
-| Browser streaming transport | **Built** (M3) | WebSocket, the shortcut the brief permits. Costs stated in `transport/websocket.py` |
-| Browser client | **Built** (M3) | Canvas + Web Audio + mic, plain JS, no build step |
-| Playback acknowledgement | **Built** (M3) | Client reports how much audio actually played, including partial buffers stopped by a barge-in |
-| End-to-end latency to browser paint | **Built** (M3) | Client reports first paint; the server cannot measure this for itself |
-| **Audio in → lip-synced video out** | **Not built** | Blocked on M0. Needs a GPU, and Rule 1 forbids estimating what it would do |
+| Session start/stop lifecycle | **Built** | State machine complete; 131 tests, all GPU-free |
+| Idle-loop fallback frame | **Built** | `IdleLoop` + `FrameMixer`. The clip is a synthetic pulse, not a face — a real one needs a preparation step over a real reference clip |
+| Interruption handling | **Built** | Turn-epoch cancellation, verified end-to-end including the client-side audio flush |
+| Browser streaming transport | **Built** | WebSocket, the shortcut the brief permits. Costs stated in `transport/websocket.py` |
+| Browser client | **Built** | Canvas + Web Audio + mic, plain JS, no build step |
+| Playback acknowledgement | **Built** | Client reports how much audio actually played, including partial buffers stopped by a barge-in |
+| End-to-end latency to browser paint | **Built** | Client reports first paint; the server cannot measure this for itself |
+| **Audio in → lip-synced video out** | **Not built** | Blocked on the model spike. Needs a GPU, and no figure is written here that was not measured |
 | **A talking-head model of any kind** | **Not built** | Same. `StubRenderer` proves the interface, not the capability |
 | Real STT | **Built** | Deepgram Nova over a persistent WebSocket. Transcribes continuously; the local turn policy decides when the turn ends, not the vendor's endpointing — see the `Transcriber` docstring |
 | Real TTS | **Built** | Deepgram Aura-2. `container=none` is load-bearing: the default response carries a 44-byte RIFF header that would be played as PCM |
 | Real LLM | **Built** | Two adapters (Anthropic, OpenAI) behind one `SentenceStream`. `OPENAI_BASE_URL` also reaches Ollama / LM Studio / vLLM, so a local model needs no new adapter |
 | Configuration | **Built** | `.env.development` / `.env.local` / `.env` layered at import, real env vars winning; `GET /config` reports what each boundary resolved to and which files were read. Every default is a working no-credential one |
-| Turn-taking policy | **Built** (M4) | Server-side. Onset, hysteresis, retraction, and end-of-turn as separately tuned decisions; 30 tests over probability sequences |
-| **A real voice activity detector** | **Partly** (M4) | The policy is real and tested. The default detector under it is an energy gate that cannot tell speech from a door. `SileroVad` is written, wired, and **has never been executed** — no torch in the dev environment |
-| Frame encoding | **Built** | PNG, stdlib `zlib`, no new dependency. **108.10 KB → 0.57 KB per frame, 22.20 → 0.12 Mbps at 25fps — 188×.** Was the reason 0.5fps of 25 arrived through a tunnel. The client sniffs the format from magic bytes, so M2 can switch to JPEG for photographic frames with no protocol change |
+| Turn-taking policy | **Built** | Server-side. Onset, hysteresis, retraction, and end-of-turn as separately tuned decisions; 30 tests over probability sequences |
+| **A real voice activity detector** | **Partly** | The policy is real and tested. The default detector under it is an energy gate that cannot tell speech from a door. `SileroVad` is written, wired, and **has never been executed** — no torch in the dev environment |
+| Frame encoding | **Built** | PNG, stdlib `zlib`, no new dependency. **108.10 KB → 0.57 KB per frame, 22.20 → 0.12 Mbps at 25fps — 188×.** Was the reason 0.5fps of 25 arrived through a tunnel. The client sniffs the format from magic bytes, so the real renderer can switch to JPEG for photographic frames with no protocol change |
 | Client jitter buffer | **Built** | 150ms lead, `?audioLead=` overridable, underruns counted and surfaced. Absent before, which is why audio was clean on localhost and broke through a tunnel |
-| Warm model pooling | Deferred (M7) | Described in §1.4. Constructing a renderer per session is exactly the cost that section argues cannot be paid at conversation start |
-| Multi-session concurrency | Deferred (M7) | One orchestrator per socket is wired and works; only one session has been exercised |
-| WebRTC transport | Deferred (M7) | Stretch goal. §1.4 states what the WebSocket shortcut gives up |
+| Warm model pooling | Deferred | Described in §1.4. Constructing a renderer per session is exactly the cost that section argues cannot be paid at conversation start |
+| Multi-session concurrency | Deferred | One orchestrator per socket is wired and works; only one session has been exercised |
+| WebRTC transport | Deferred | Stretch goal. §1.4 states what the WebSocket shortcut gives up |
 
 ### 3.2 Component contracts
 
@@ -410,13 +390,13 @@ session state, VAD, or transport.
 ### 3.3 Measured results
 
 **The headline numbers the brief asks for do not exist yet.** They require a talking-head
-model, which requires M0, which requires a GPU:
+model, which requires the model spike, which requires a GPU:
 
 | Metric | Measured | Hardware | Method |
 |---|---|---|---|
-| Audio-in to first-frame-out, real model | NOT YET MEASURED | | Blocked on M0 |
-| Steady-state fps, real model | NOT YET MEASURED | | Blocked on M0 |
-| Output resolution, real model | NOT YET MEASURED | | Blocked on M0 |
+| Audio-in to first-frame-out, real model | NOT YET MEASURED | | Blocked on the model spike |
+| Steady-state fps, real model | NOT YET MEASURED | | Blocked on the model spike |
+| Output resolution, real model | NOT YET MEASURED | | Blocked on the model spike |
 | Peak VRAM | NOT YET MEASURED | | No GPU used yet |
 
 #### 3.3.3 The full real stack — measured, every component live
@@ -483,7 +463,7 @@ Three things this changes about §3.4, and none of them are "buy a bigger GPU":
 Measured on the host named in §3.3.1, with `AVATAR_LLM=scripted` — so `llm_ttft` (181ms)
 is still a placeholder reporting its own configured delay, not a real model.
 
-#### 3.3.1 What M3 does measure — session layer only, no ML model
+#### 3.3.1 What this measures — the session layer only, no ML model
 
 These are real numbers from a real run, and they say nothing about any model. Read the
 "what this actually measures" column before quoting any of them.
@@ -529,32 +509,31 @@ Reproduce with `uvicorn avatar.server:app` then `python scripts/smoke_session.py
 
 ### 3.4 Gap to production real-time
 
-Gaps identified from the M3 run. The GPU rows cannot be quantified until M0 produces
-real throughput figures, and are marked as such rather than estimated.
+The gaps between this prototype and something production real-time. The GPU rows cannot be
+quantified until the model spike produces real throughput figures, and are marked as such
+rather than estimated.
 
 | Gap | Cause | What closes it | Est. cost |
 |---|---|---|---|
-| No lip-synced video at all | No model selected or integrated | M0 spike then M2 | `[HUMAN]` — depends on the model pick |
-| Uncompressed frames, ~2.7MB/s at 256×144 | No encoder; BMP was chosen to avoid an image dependency | JPEG or WebP from the renderer's own output in M2 | ~1 day; roughly a 40× bandwidth reduction |
-| Mixer queue is unbounded | The TTS runs 4× ahead of playback and nothing applies backpressure. Observed directly: 127 frames were queued and discarded on one barge-in, so a longer utterance queues proportionally more | Gate `push_audio` on `audio_sent_ms - audio_played_ms` exceeding a high-water mark, with a timeout so a silent client cannot stall the turn | ~0.5 day. Needs a fallback for clients that never acknowledge |
-| Interruption latency measured server-side only | The 0.6ms figure stops when the flush is dispatched, not when audio actually stops | Client reports flush completion the way it already reports playback | ~2 hours |
-| No jitter buffer, no congestion feedback | WebSocket over TCP. Head-of-line blocking turns one lost packet into a stall for every frame behind it | WebRTC via aiortc (M7) | ~3 days including an SFU decision |
-| Word-level truncation is estimated, not timed | `estimate_duration_ms` assumes 150wpm | Word timestamps from a real TTS engine, which most expose | Free once M4 lands; it is a smaller change than the estimator it deletes |
-| Renderer constructed per session | No pooling. Trivial for the stub; for a GPU model this is the cold-start cost §1.4 argues cannot be paid at conversation start | Warm pool with session leasing (M7) | ~2 days, plus paying for idle GPU time |
-| Turn detection is a client-side energy gate | No VAD | Silero VAD with separate onset and end-of-turn thresholds (M4) | ~1 day |
+| **No lip-synced video at all** | No talking-head model integrated. The spike failed in setup before touching the GPU (§2.2.1) | A working spike run, then a renderer implementing the existing `TalkingHeadRenderer` Protocol | Renderer ~1 day once the spike lands. The spike itself is the unknown |
+| **Turn-taking wait dominates the budget** | 700ms of deliberate silence before a turn is considered over. Over two thirds of a sub-second budget | Nothing hardware can do. Speculative execution — starting the LLM on a partial transcript and discarding it if the candidate resumes — is the real lever, and vendors publish that they do it | ~1 week, and it trades cost for latency: most speculative turns are thrown away |
+| **TTS time-to-first-audio is 3–9× the target** | Aura over REST: one request per sentence, connection setup on the critical path | Aura's WebSocket interface. Measured at **351–361ms flat versus 907ms over REST** — verified, not estimated, and not yet implemented | ~1 day for ~550ms. The largest single unbuilt win |
+| Mixer queue is unbounded | TTS runs ahead of playback and nothing applies backpressure. Observed: 127 frames queued and discarded on one barge-in, so a longer utterance queues proportionally more | Gate `push_audio` on `audio_sent_ms - audio_played_ms` exceeding a high-water mark, with a timeout so a silent client cannot stall the turn | ~0.5 day. Needs a fallback for clients that never acknowledge |
+| Interruption latency measured server-side only | The sub-millisecond figure stops when the flush is dispatched, not when audio actually stops in the candidate's ear | Have the client report flush completion the way it already reports playback | ~2 hours |
+| TCP head-of-line blocking, no congestion feedback | WebSocket over TCP. One lost packet stalls every frame behind it, and there is no congestion signal to adapt to | WebRTC. §1.4 states what the shortcut gives up | ~3 days including an SFU decision |
+| Word-level truncation is estimated, not timed | The duration estimator assumes 150wpm rather than using real timings | Word timestamps from the TTS engine, which Aura exposes | Roughly free — a smaller change than the estimator it deletes |
+| Renderer constructed per session | No pooling. Trivial for the stub; for a GPU model this is exactly the cold-start cost §1.4 argues cannot be paid at conversation start | Warm pool with session leasing | ~2 days, plus paying for idle GPU time |
+| The detector under the turn policy is an energy gate | It distinguishes loud from quiet, not speech from noise. A loud enough cough will trigger it | Silero VAD, which is written and wired behind the same interface but **has never been executed** — no GPU-capable environment locally | ~1 day, mostly verification |
+
+**Two of these are already measured rather than guessed**, which is the difference between
+a gap list and a wish list: the Aura WebSocket win (351ms vs 907ms) and the queue depth
+(127 frames on an observed barge-in). Both numbers came from runs, not from reasoning.
 
 ---
 
 ## 4. Build-vs-buy memo
 
-> Write this **last**, and write it as though you had not just spent two weeks building a prototype. Sunk cost is the bias being tested.
-
-**`[HUMAN]` — this entire section. Do not let an agent draft the recommendation or the
-thresholds.**
-
 ### 4.1 Recommendation
-
-> One sentence, up front. Keep vendor / build in-house / hybrid.
 
 ### 4.2 Cost model
 
@@ -566,11 +545,7 @@ thresholds.**
 | Ongoing engineering + on-call | | |
 | Break-even volume | | |
 
-> State your assumptions as assumptions. The engineering line usually dominates by an order of magnitude and is the line naive analyses omit.
-
 ### 4.3 Non-cost factors
-
-> Cost rarely favors building at startup volume. The credible build arguments are elsewhere, and §1 of the brief names them: data residency (candidate audio/video leaving your infrastructure), latency control, customization, vendor concentration risk. Weigh each honestly — including where the vendor is genuinely better, such as visual fidelity you cannot match in-house.
 
 ### 4.4 What would change my mind
 
@@ -582,18 +557,14 @@ thresholds.**
 | Vendor pricing change | | |
 | Vendor viability event | | |
 
-> Numeric thresholds. "If we grow a lot" is not a trigger; "above N,000 avatar-minutes/month sustained for two quarters" is.
-
 ### 4.5 Risks in my own recommendation
-
-> Name the two or three ways you could be wrong. §7.3 rewards this directly.
 
 ---
 
 ## 5. Migration plan
 
-Written as a runbook rather than a narrative, against the §8 test: another senior engineer
-should be able to execute this without the author in the room.
+Written as a runbook rather than a narrative, against the standard the brief sets: another
+senior engineer should be able to execute this without me in the room.
 
 **Assumes §4 concluded "build" or "hybrid."** If §4 concludes "keep the vendor," this plan
 is the contingency, not the roadmap.

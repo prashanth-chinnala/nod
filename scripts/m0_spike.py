@@ -24,7 +24,7 @@ What it does, in order, and it refuses to skip a step:
   7. Measure the output. Refuse to print an fps number if no video exists.
 
 Steps 4, 5, and 7 are the gates run 1 lacked, and each one corresponds to a way that run
-produced plausible-looking numbers that measured nothing. See `docs/M0_SPIKE.md`.
+produced plausible-looking numbers that measured nothing. See PROCESS.md 2.2.1.
 """
 
 from __future__ import annotations
