@@ -56,6 +56,8 @@ export default function InterviewPage({ params }: { params: Promise<{ id: string
     unblockAudio,
     attachVideo,
     attachAudio,
+    attachSelf,
+    publishing,
   } = useRtc(API, id);
   const [draft, setDraft] = useState("");
   const [micOn, setMicOn] = useState(false);
@@ -154,7 +156,7 @@ export default function InterviewPage({ params }: { params: Promise<{ id: string
             action={
               <div className="flex items-center gap-2">
                 <Chip status={rtcVideo ? "ok" : "neutral"}>
-                  {rtcVideo ? "webrtc" : "websocket"}
+                  {rtcVideo ? (publishing ? "webrtc · two-way" : "webrtc · receive only") : "websocket"}
                 </Chip>
                 <Chip status={STATE_TONE[state]}>{state.toLowerCase()}</Chip>
               </div>
@@ -190,6 +192,26 @@ export default function InterviewPage({ params }: { params: Promise<{ id: string
                 {/* Audio is a separate element: the video is muted so the WebSocket path's Web
                     Audio scheduling and the WebRTC track can never both play the same speech. */}
                 <audio ref={attachAudio} autoPlay />
+
+                {/* The candidate's own camera, inset. Muted and mirrored, because both are what
+                    every video call does and their absence is immediately uncanny: unmuted
+                    would echo their own voice back, and unmirrored makes raising your right
+                    hand look like your left. Mounted always, hidden until publishing, for the
+                    same reason as the interviewer's video -- attaching a track to an element
+                    that does not exist yet silently does nothing. */}
+                <video
+                  ref={attachSelf}
+                  autoPlay
+                  playsInline
+                  muted
+                  aria-label="Your camera"
+                  className={[
+                    "absolute right-3 bottom-3 w-1/4 min-w-28 rounded-lg border border-hair-strong",
+                    "bg-black object-cover shadow-lg",
+                    publishing ? "" : "hidden",
+                  ].join(" ")}
+                  style={{ transform: "scaleX(-1)" }}
+                />
               </div>
               {!connected ? (
                 <div className="absolute inset-0 grid place-items-center bg-base/80 text-[12.5px] text-ink-mid">
@@ -297,7 +319,11 @@ export default function InterviewPage({ params }: { params: Promise<{ id: string
       <Card>
         <CardHeader
           title="Measured this session"
-          hint="Every figure comes from a real run. Targets are the reasoned budget, not achieved numbers — the gap is the point."
+          hint={
+            rtcVideo
+              ? "First-frame and end-to-end read as dashes on the WebRTC path, and that is honest rather than broken — see below."
+              : "Every figure comes from a real run. Targets are the reasoned budget, not achieved numbers — the gap is the point."
+          }
         />
         <div className="grid grid-cols-2 divide-hair sm:grid-cols-3 lg:grid-cols-5">
           {STAGE_LABELS.map(([key, label, target]) => {
@@ -316,6 +342,22 @@ export default function InterviewPage({ params }: { params: Promise<{ id: string
             );
           })}
         </div>
+        {rtcVideo ? (
+          <div className="border-t border-hair px-5 py-3">
+            <p className="max-w-3xl text-[11.5px] leading-relaxed text-ink-mid">
+              {/* Said plainly rather than left as dashes that look like "not yet". A number
+                  nobody can source is worse than an absent one. */}
+              <span className="text-warn">Not measurable over WebRTC as built.</span> The
+              server-side stages above are still real. <span className="text-ink">First
+              frame</span> and <span className="text-ink">end-to-end</span> were reported by the
+              canvas client, which stamped the moment it painted a frame carrying a turn epoch. A
+              WebRTC video track carries no epoch, so a paint cannot be attributed to a turn —
+              correlating them needs the epoch sent over the data channel and matched to
+              <code className="mx-1 font-mono">requestVideoFrameCallback</code>, which is real
+              work and not yet done. Switch off the SFU to measure them.
+            </p>
+          </div>
+        ) : null}
         <div className="grid grid-cols-2 border-t border-hair sm:grid-cols-3 lg:grid-cols-5">
           <Metric label="Client fps" value={metrics.fps} status={metrics.fps >= 20 ? "ok" : "neutral"} />
           <Metric label="Turn epoch" value={metrics.epoch} target="increments on every barge-in" />

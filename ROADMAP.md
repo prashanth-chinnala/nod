@@ -379,3 +379,25 @@ what this is, why it matters, and the single action that fills it.
 
 Item 1 is the one I would not skip. It turns the most fragile part of the live demo into
 something you control, for two hours of work.
+
+---
+
+## Running the SFU locally
+
+```bash
+docker run -d --name nod-livekit \
+  -p 7880:7880 -p 7881:7881 -p 7882:7882/udp \
+  -e LIVEKIT_KEYS="devkey: secret_that_is_long_enough_for_livekit" \
+  livekit/livekit-server:latest --dev --bind 0.0.0.0 --node-ip 127.0.0.1
+```
+
+**`--node-ip 127.0.0.1` is not optional and cost an hour to find.** Without it the SFU
+advertises Docker's bridge address (`172.17.0.2`) as its ICE candidate. Signalling then
+succeeds over the mapped WebSocket port, the browser reports *"connected to LiveKit Server"*,
+and the peer connection immediately fails — presenting as `connecting → disconnected` with
+`DisconnectReason 0` (unknown) and, in the room, repeated joins for the same identity.
+
+Every symptom points at the application: the token is valid, the room is right, both
+participants appear in the server log, and the agent publishes both tracks. Nothing points at
+ICE. The tell is that the Python SDK works from the host while the browser does not — the
+Python client falls back to TCP on 7881, and browsers are stricter.

@@ -21,12 +21,12 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  Room,
   RoomEvent,
   Track,
   type RemoteTrack,
   type RemoteParticipant,
   type RemoteTrackPublication,
-  type Room,
 } from "livekit-client";
 
 export type RtcCredentials = {
@@ -39,6 +39,8 @@ export type RtcCredentials = {
 };
 
 export type RtcState = {
+  /** Whether the candidate's own camera and mic are published to the room. */
+  publishing: boolean;
   /** Whether the SFU is configured at all. `false` means fall back to the socket. */
   available: boolean;
   connected: boolean;
@@ -50,6 +52,7 @@ export type RtcState = {
 };
 
 const IDLE: RtcState = {
+  publishing: false,
   available: false,
   connected: false,
   hasVideo: false,
@@ -69,6 +72,10 @@ export function useRtc(apiBase: string, sessionId: string) {
   }, []);
   const attachAudio = useCallback((node: HTMLAudioElement | null) => {
     audioRef.current = node;
+  }, []);
+  const selfRef = useRef<HTMLVideoElement | null>(null);
+  const attachSelf = useCallback((node: HTMLVideoElement | null) => {
+    selfRef.current = node;
   }, []);
 
   const join = useCallback(async () => {
@@ -93,8 +100,10 @@ export function useRtc(apiBase: string, sessionId: string) {
       return;
     }
 
-    const { Room: LiveKitRoom } = await import("livekit-client");
-    const room = new LiveKitRoom({ adaptiveStream: true, dynacast: true });
+    // Statically imported. A dynamic `import()` here shared the module with the static
+    // `RoomEvent`/`Track` imports in principle, and in practice was the only place two
+    // instances could diverge -- not worth the code-splitting it bought for one small library.
+    const room = new Room({ adaptiveStream: true, dynacast: true });
     roomRef.current = room;
 
     const wanted = credentials.agent_identity ?? "avatar-agent";
@@ -138,6 +147,23 @@ export function useRtc(apiBase: string, sessionId: string) {
       await room.connect(credentials.url, credentials.token);
       await room.startAudio();
       setState((s) => ({ ...s, available: true, connected: true }));
+
+      // Publish the candidate's camera and mic. Two reasons, and the second is the one that
+      // matters: it makes the call two-way rather than the candidate watching a broadcast, and
+      // it puts their tracks in the room so egress records *both* sides. A recording with only
+      // the avatar in it is not a reviewable artifact of an interview.
+      //
+      // Failure here is not fatal. A candidate who declines the camera should still be
+      // interviewed -- audio and the typed path both still work -- so this degrades rather than
+      // aborting the join.
+      try {
+        await room.localParticipant.enableCameraAndMicrophone();
+        const camera = room.localParticipant.getTrackPublication(Track.Source.Camera);
+        if (camera?.track && selfRef.current) camera.track.attach(selfRef.current);
+        setState((s) => ({ ...s, publishing: true }));
+      } catch {
+        setState((s) => ({ ...s, publishing: false }));
+      }
     } catch (cause) {
       setState({
         ...IDLE,
@@ -171,5 +197,5 @@ export function useRtc(apiBase: string, sessionId: string) {
     [],
   );
 
-  return { ...state, join, leave, unblockAudio, attachVideo, attachAudio };
+  return { ...state, join, leave, unblockAudio, attachVideo, attachAudio, attachSelf };
 }
