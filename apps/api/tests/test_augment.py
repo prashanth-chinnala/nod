@@ -163,7 +163,9 @@ def test_a_term_is_respelled() -> None:
 
 def test_matching_is_case_insensitive_but_replacement_is_literal() -> None:
     """Operators type the term however they think of it; the respelling is what they wrote."""
-    assert apply_lexicon("NGINX and Nginx", [("nginx", "engine ex")]) == "engine ex and engine ex"
+    applied = apply_lexicon("NGINX and Nginx", [("nginx", "engine ex")])
+
+    assert applied == "engine ex and engine ex"
 
 
 def test_a_substring_is_not_matched() -> None:
@@ -205,7 +207,9 @@ def test_a_blank_term_is_ignored_rather_than_matching_everywhere() -> None:
 
 def test_regex_metacharacters_in_a_term_are_literal() -> None:
     """Operators type product names, not patterns. "C++" or "." must not compile as regex."""
-    assert apply_lexicon("we use C++ daily", [("C++", "see plus plus")]) == "we use see plus plus daily"
+    applied = apply_lexicon("we use C++ daily", [("C++", "see plus plus")])
+
+    assert applied == "we use see plus plus daily"
 
 
 def test_punctuation_around_a_term_survives() -> None:
