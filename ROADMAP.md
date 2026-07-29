@@ -37,17 +37,41 @@ that can be demoed end to end — a real face driven by a real voice, configured
 console, with a knowledge base, and honest numbers throughout. `main` holds the assessment
 deliverable; this branch is the product.
 
-| | State |
+| Roadmap item | Est. | State |
+|---|---|---|
+| Text chat + two-sided transcript | 2 h | **Done.** Verified live — a typed answer produced a follow-up quoting "40,000 corrupted records" |
+| Monorepo — `apps/api` + `apps/web`, pnpm, two CI jobs | — | **Done.** 534 API tests green; web builds, typechecks, lints |
+| Console shell — tokens, 9 primitives, grouped nav | 1.5 d | **Done** |
+| JSON resource store, atomic writes | — | **Done** |
+| Knowledge base v1 — retrieval | 1 d | **Done.** BM25 + Chroma Cloud behind one Protocol, 22 tests |
+| Pronunciations — lexicon | 2 h | **Done.** 19 tests, including `C++` / `C#` / `.NET` / `Node.js` |
+| Agents CRUD | 2 d | **Done** — router, tests, page. Turn-taking params exposed |
+| Faces + prep queue | 1.5 d | **Done** against the placeholder renderer. Real prep needs a GPU |
+| Knowledge management UI | 2 d | **Done** — incl. the interactive retrieval tester |
+| Tools | 2 d | **CRUD done.** Not yet callable mid-turn — see the gap below |
+| Guardrails | 1.5 d | **CRUD + `/check` done.** Not yet enforced mid-turn |
+| Sessions and transcripts | 1.5 d | **CRUD + page done.** The runtime does not write records yet |
+| MuseTalk renderer behind the Protocol | — | **Written, never executed.** 27 GPU-free tests |
+| Design and polish pass | 2 d | Partial — primitives and tokens exist, no dedicated pass |
+
+### The gap that matters, stated plainly
+
+**The console configures things the runtime does not yet consult.** Every resource has an
+API, tests, and a page; the live conversation currently reads none of them. A knowledge base
+can be created and its retrieval tested in the UI, and the interviewer still will not use it
+until the wiring below lands. That distinction is easy to lose behind a row of green ticks,
+so it gets its own heading.
+
+| Wiring | State |
 |---|---|
-| Text chat + two-sided transcript | **Done.** Verified live: a typed answer produced a follow-up quoting "40,000 corrupted records" |
-| Monorepo — `apps/api` + `apps/web`, pnpm workspaces, two CI jobs | **Done.** 252 API tests green from the new location; web builds, typechecks, lints |
-| MuseTalk renderer behind the Protocol | **Done, unexecuted.** 27 GPU-free tests. Needs a working spike before it renders anything |
-| Console shell — tokens, primitives, nav | **Done** |
-| JSON store for console resources | **Done** |
-| Agents · Faces · Knowledge · Tools · Guardrails · Pronunciations · Sessions | **In progress** |
-| Knowledge retrieval wired into the prompt | Next |
-| Pronunciations applied before TTS | Next |
-| A real face rendering end to end | **Blocked on a GPU spike run** |
+| Retrieval → the prompt | In progress. Decorator on `SentenceStream`, no orchestrator change |
+| Pronunciation → TTS | Module done, decorator written, not yet constructed in `server.py` |
+| Guardrails → the turn | Not started. Input check before the LLM, output check before TTS |
+| Tools → a call loop | Not started. **The only item that changes the orchestrator** |
+| Sessions ← the runtime | Not started. `heard`/`said`/latency exist as telemetry; nothing persists them |
+| An agent selected per session | Not started. The socket ignores `agent_id`; config comes from env vars |
+| Console overview page at `/` | Not started |
+| A real face | **Blocked on a GPU spike run** |
 
 ### Decisions changed since the first draft
 
