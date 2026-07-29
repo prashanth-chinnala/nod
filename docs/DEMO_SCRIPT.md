@@ -3,8 +3,8 @@
 Also the shot list for the Loom. Six tests; each names what to do, exactly what to watch,
 and — the part that matters — **what it proves and what it does not**.
 
-Everything on the page is measured. The page at `/mockup` is the one with invented
-numbers; keep them straight when recording.
+Everything on the page is measured. No simulated variant of it remains in the repo, so
+there is nothing to mistake for it while recording.
 
 ## Before you start
 

@@ -34,8 +34,8 @@ key and no network. To hear a real voice and hold a real conversation, see
 - **Starts speaking** again mid-answer → barge-in. Watch the epoch increment, the audio
   cut off, the log fill with stale-frame drops, and the state return to `LISTENING`
 
-Every number on that page is measured. The one at `/mockup` is the design reference with
-invented values, kept for comparison.
+Every number on that page is measured. No simulated variant of the page is kept in the
+repo, so there is nothing that could be mistaken for it.
 
 To verify the same thing headlessly:
 
@@ -146,7 +146,8 @@ is saved inside the notebook file.
 | `.env` loaded automatically; `GET /config` reports what resolved | Working |
 | **A talking-head model of any kind** | **Not built — blocked on M0, needs a GPU** |
 | **A real voice activity detector** | **Partly.** The policy is real and tested; the detector under it is an energy gate. `SileroVad` is written and **never executed** |
-| **Frame encoding (JPEG/WebP)** | **Not built (M2).** Uncompressed BMP, ~2.7MB/s |
+| Frame encoding | Working. PNG, stdlib zlib. **108.10 KB → 0.57 KB per frame, 22.2 → 0.12 Mbps** |
+| Client jitter buffer | Working. 150ms lead, underruns counted and surfaced |
 
 The headline numbers the brief asks for — first-frame latency and fps for a real
 talking-head model — read `NOT YET MEASURED` in [PROCESS.md](PROCESS.md) §3.3, because
@@ -205,12 +206,11 @@ src/avatar/
   audio/stt.py         Deepgram Nova. Transcribes; decides nothing
   transport/websocket.py   wire codec + Transport. No framework dependency.
   renderers/           build() registry + StubRenderer (no GPU, no deps)
-tests/                 199 tests, including the boundary enforcement
+tests/                 225 tests, including the boundary enforcement
 scripts/               headless end-to-end verification
 web/index.html         the real client, measured numbers
-web/mockup.html        design mockup, simulated numbers
 notebooks/             M0 model spike, and running the whole stack on Colab
-docs/                  M0 how-to, Colab hosting, manual test protocol
+docs/                  M0 runbook, Colab hosting, manual test protocol
 ```
 
 ## Documentation map
@@ -219,9 +219,8 @@ docs/                  M0 how-to, Colab hosting, manual test protocol
 |---|---|
 | [PROCESS.md](PROCESS.md) | The graded deliverable: architecture doc, model memo, build-vs-buy, migration plan |
 | [DEVLOG.md](DEVLOG.md) | Session-by-session log — what was attempted, what worked, what was deferred and why |
-| [IMPLEMENTATION_GUIDE.md](IMPLEMENTATION_GUIDE.md) | Milestone plan and the decisions not to re-litigate |
 | [docs/DEMO_SCRIPT.md](docs/DEMO_SCRIPT.md) | Manual test protocol; doubles as the Loom shot list |
-| [docs/M0_HOW_TO.md](docs/M0_HOW_TO.md) | Why the model spike failed and how to finish it |
+| [docs/M0_SPIKE.md](docs/M0_SPIKE.md) | Why the model spike failed and how to finish it |
 | [docs/COLAB_HOSTING.md](docs/COLAB_HOSTING.md) | Running the whole stack on a Colab GPU, reachable from a browser |
 
 ## The module boundary

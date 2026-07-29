@@ -64,7 +64,7 @@ cell is saved inside the notebook file.
 
 ## Step 2 — M0: make the model actually render (yours, ~1 hour)
 
-`notebooks/m0_musetalk_v2.ipynb`, diagnosis in `docs/M0_HOW_TO.md`. Three fixes over run 1,
+`notebooks/m0_musetalk_v2.ipynb`, diagnosis in `docs/M0_SPIKE.md`. Three fixes over run 1,
 one of which was my bug (a missing `--version v15`).
 
 The bar is one rendered `.mp4` plus real numbers. The notebook refuses to print an fps

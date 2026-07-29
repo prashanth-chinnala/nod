@@ -153,12 +153,6 @@ async def index() -> FileResponse:
     return FileResponse(WEB_DIR / "index.html")
 
 
-@app.get("/mockup")
-async def mockup() -> FileResponse:
-    """The design mockup, with simulated numbers. Kept reachable for reference."""
-    return FileResponse(WEB_DIR / "mockup.html")
-
-
 @app.get("/config")
 async def config() -> dict[str, object]:
     """

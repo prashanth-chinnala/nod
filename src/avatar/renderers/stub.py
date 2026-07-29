@@ -78,7 +78,7 @@ GROUND: RGB = (18, 27, 34)
 HEAD: RGB = (86, 116, 134)
 EYE: RGB = (24, 34, 42)
 MOUTH: RGB = (224, 164, 88)
-"""Amber, matching the 'speaking' state colour in the client and the mockup."""
+"""Amber, matching the 'speaking' state colour in the client."""
 
 
 def _rms(pcm: bytes) -> float:

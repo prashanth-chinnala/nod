@@ -175,7 +175,7 @@ verified. An agent must not assign these tags.**
 #### 2.2.1 Spike run 1 — MuseTalk on a free-tier Colab T4
 
 **Outcome: failed in setup. No inference occurred, so nothing about this model's
-throughput has been measured.** Full triage in [`docs/M0_TRIAGE.md`](docs/M0_TRIAGE.md).
+throughput has been measured.** Full post-mortem in [`docs/M0_SPIKE.md`](docs/M0_SPIKE.md) §4.
 
 Three fields establish that no inference ran, and they matter more than the timings
 alongside them:
