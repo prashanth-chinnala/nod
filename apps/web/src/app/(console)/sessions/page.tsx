@@ -148,9 +148,17 @@ export default function SessionsPage() {
                     </Chip>
                   </Cell>
                   <Cell right>
-                    <Button onClick={() => setOpenId(session.id === openId ? null : session.id)}>
-                      {session.id === openId ? "Hide" : "Inspect"}
-                    </Button>
+                    <span className="flex justify-end gap-2">
+                      {/* Two different questions, so two controls. "Inspect" expands the stage
+                          timings inline for scanning several sessions; "Report" is the page you
+                          send to whoever has to make a decision. */}
+                      <Button onClick={() => setOpenId(session.id === openId ? null : session.id)}>
+                        {session.id === openId ? "Hide" : "Inspect"}
+                      </Button>
+                      <Link href={`/sessions/${session.id}`}>
+                        <Button variant="primary">Report</Button>
+                      </Link>
+                    </span>
                   </Cell>
                 </Row>
               );

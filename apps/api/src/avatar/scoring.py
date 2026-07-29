@@ -208,19 +208,30 @@ def transcript_text(turns: Sequence[Mapping[str, Any]]) -> str:
     something different depending on whether they were asked. Turns whose transcription failed
     are marked rather than dropped, because a session where the candidate spoke and nothing was
     captured must not read as one where they said nothing.
+
+    **`heard` before `said`, which is the order the turn happened in.** A turn record is opened
+    by the candidate finishing an answer and then accumulates the interviewer's reply to it, so
+    within one record the answer precedes the question that follows it. This emitted `said`
+    first, which inverted every pair: the judge read each interviewer reply *above* the answer
+    it was replying to, so read linearly the candidate appeared to ignore every question and
+    answer the previous one. Nothing errored and every rating stayed plausible, which is exactly
+    why it survived a first review -- the transcript looked like a transcript.
+
+    The consequence is that a turn's question introduces the *next* turn's answer, so the reply
+    that closes the interview has no answer beneath it. That is a true rendering of the record
+    rather than a gap to paper over.
     """
     lines: list[str] = []
     for turn in turns:
+        answered = str(turn.get("heard") or "").strip()
+        if answered:
+            if turn.get("transcribed", True):
+                lines.append(f"Candidate: {answered}")
+            else:
+                lines.append(f"Candidate: [speech detected, not transcribed] {answered}")
         asked = str(turn.get("said") or "").strip()
         if asked:
             lines.append(f"Interviewer: {asked}")
-        answered = str(turn.get("heard") or "").strip()
-        if not answered:
-            continue
-        if turn.get("transcribed", True):
-            lines.append(f"Candidate: {answered}")
-        else:
-            lines.append(f"Candidate: [speech detected, not transcribed] {answered}")
     return "\n".join(lines)
 
 

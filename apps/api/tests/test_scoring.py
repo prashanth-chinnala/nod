@@ -292,6 +292,31 @@ def test_transcript_includes_the_questions() -> None:
     assert "Candidate: We used Kafka." in text
 
 
+def test_transcript_is_in_the_order_the_turn_happened() -> None:
+    """
+    Within a turn record the answer comes first and the interviewer's reply to it second, which
+    is the order the runtime writes them in.
+
+    This emitted `said` before `heard`, inverting every pair -- so the judge read each reply
+    above the answer it was replying to, and read linearly the candidate appeared to ignore
+    every question and answer the previous one. Nothing errored and the ratings stayed
+    plausible, which is precisely why it survived being looked at once: a transcript in the
+    wrong order still reads like a transcript.
+    """
+    text = transcript_text(
+        [
+            turn("Six years on backend.", "Tell me about scaling a dataset."),
+            turn("We partitioned per tenant.", "How did you pick the partition key?"),
+        ]
+    )
+    assert text.splitlines() == [
+        "Candidate: Six years on backend.",
+        "Interviewer: Tell me about scaling a dataset.",
+        "Candidate: We partitioned per tenant.",
+        "Interviewer: How did you pick the partition key?",
+    ]
+
+
 def test_untranscribed_speech_is_marked_not_dropped() -> None:
     """
     A session where the candidate spoke and nothing was captured must not read as one where they
