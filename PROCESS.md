@@ -124,11 +124,11 @@ fine-tune.
 
 | Question | Answer | Evidence | Tag |
 |---|---|---|---|
-| Input to enrollment | A short reference video or a single image of a face, roughly front-on. MuseTalk operates on a **256×256 face region** cropped from the frame, so framing matters more than duration | MuseTalk README | |
-| Artifact produced | Per-frame VAE latents of the reference frames, plus face detection / parsing / bounding-box metadata. **No per-person model weights** | MuseTalk README + inference code | |
-| Enrollment latency | Dominated by face detection and VAE encoding over the reference frames — seconds to minutes depending on clip length. `NOT YET MEASURED` here (blocked on the model spike) | — | |
-| Reusable across sessions? | Yes. The artifact is a function of the reference clip alone, so it is computed once per persona and cached | Follows from the above | |
-| Per-person GPU state at inference | Only the cached latents and crop metadata. The U-Net, VAE, and audio encoder are shared across every persona on the worker | MuseTalk README | |
+| Input to enrollment | A short reference video or a single image of a face, roughly front-on. MuseTalk operates on a **256×256 face region** cropped from the frame, so framing matters more than duration | MuseTalk README, read directly | **[C]** for MuseTalk. **[I]** that vendors accept similar input |
+| Artifact produced | Per-frame VAE latents of the reference frames, plus face detection / parsing / bounding-box metadata. **No per-person model weights** | MuseTalk README + inference code | **[C]** for MuseTalk. **[I]** for vendors — a per-person-weights design is possible and would change their cost structure |
+| Enrollment latency | Dominated by face detection and VAE encoding over the reference frames — seconds to minutes depending on clip length. `NOT YET MEASURED` here (blocked on the model spike) | Not measured | **[U]** — I did not run it, and vendors do not publish enrollment timings |
+| Reusable across sessions? | Yes. The artifact is a function of the reference clip alone, so it is computed once per persona and cached | Follows from the above | **[I]** — a deduction from the artifact being identity-agnostic, not a documented statement |
+| Per-person GPU state at inference | Only the cached latents and crop metadata. The U-Net, VAE, and audio encoder are shared across every persona on the worker | MuseTalk README | **[C]** for MuseTalk. **[I]** for vendors |
 
 **The serving consequence, stated plainly:** because identity is data rather than weights,
 one warm GPU worker can serve any persona without reloading a model. That is what makes a
@@ -151,14 +151,14 @@ space and the reasoning is worth more than the answer. The bar: ~25–30fps sust
 first frame inside a sub-second turn budget that STT, LLM, and TTS have already spent most
 of.
 
-| Class | Example work | Why it survives or dies |
-|---|---|---|
-| Full generative video diffusion | Sora-class, Stable Video Diffusion | **Dies on throughput by orders of magnitude.** Generating a whole talking human per frame solves a vastly larger problem than needed, and nothing in this class runs at 25fps. Also uncontrollable: no guarantee the identity stays stable across a 20-minute interview |
-| Audio-conditioned latent diffusion, multi-step | Diffusion talking-head research generally | **Dies on the step count.** *N* denoising steps per frame multiplies per-frame cost by *N*. At 25fps there is a ~40ms budget per frame; multi-step diffusion is nowhere near it |
-| Motion-space diffusion + neural render | **Ditto** (Ant Group, ACM MM 2025) | **Survives, with an operational cost.** Diffuses in a compact *motion* space rather than pixel space, cuts denoising from **50 steps to 10**, and compiles the DiT to **TensorRT**. Explicitly built for streaming and low first-frame delay. The TensorRT engines are GPU-specific, which is a real deployment constraint |
-| Latent-space mouth inpainting, single-step | **MuseTalk** | **Survives, and is the cheapest.** Borrows the Stable Diffusion v1.4 U-Net architecture but **is not a diffusion model** — it inpaints the mouth region in VAE latent space in a **single step**. Claims **30fps+ on a V100** at a 256×256 face region |
-| 3D rig driven by visemes | Classical game-engine avatars | **Survives on latency, dies on realism.** Viseme-driven rigs are trivially real-time and fully controllable, but look animated rather than photographic — the wrong product for an interview meant to feel human |
-| 3D Gaussian splatting / NeRF per-identity | Per-identity neural head research | **Dies on enrollment, not inference.** Inference can be fast, but each identity needs its own trained representation — minutes to hours of per-person GPU work. That breaks the "upload a reference clip, interview in seconds" product shape and reintroduces the per-person-weights cost §1.2 rejected |
+| Class | Example work | Why it survives or dies | Tag |
+|---|---|---|---|
+| Full generative video diffusion | Sora-class, Stable Video Diffusion | **Dies on throughput by orders of magnitude.** Generating a whole talking human per frame solves a vastly larger problem than needed, and nothing in this class runs at 25fps. Also uncontrollable: no guarantee the identity stays stable across a 20-minute interview | **[I]** |
+| Audio-conditioned latent diffusion, multi-step | Diffusion talking-head research generally | **Dies on the step count.** *N* denoising steps per frame multiplies per-frame cost by *N*. At 25fps there is a ~40ms budget per frame; multi-step diffusion is nowhere near it | **[I]** — the 40ms budget is arithmetic; the conclusion is judgment |
+| Motion-space diffusion + neural render | **Ditto** (Ant Group, ACM MM 2025) | **Survives, with an operational cost.** Diffuses in a compact *motion* space rather than pixel space, cuts denoising from **50 steps to 10**, and compiles the DiT to **TensorRT**. Explicitly built for streaming and low first-frame delay. The TensorRT engines are GPU-specific, which is a real deployment constraint | **[C]** — the 50→10 steps and TensorRT are stated in the paper and repo |
+| Latent-space mouth inpainting, single-step | **MuseTalk** | **Survives, and is the cheapest.** Borrows the Stable Diffusion v1.4 U-Net architecture but **is not a diffusion model** — it inpaints the mouth region in VAE latent space in a **single step**. Claims **30fps+ on a V100** at a 256×256 face region | **[C]** — the repo states all three, including "NOT a diffusion model". **Unverified by me**: the spike never ran |
+| 3D rig driven by visemes | Classical game-engine avatars | **Survives on latency, dies on realism.** Viseme-driven rigs are trivially real-time and fully controllable, but look animated rather than photographic — the wrong product for an interview meant to feel human | **[I]** |
+| 3D Gaussian splatting / NeRF per-identity | Per-identity neural head research | **Dies on enrollment, not inference.** Inference can be fast, but each identity needs its own trained representation — minutes to hours of per-person GPU work. That breaks the "upload a reference clip, interview in seconds" product shape and reintroduces the per-person-weights cost §1.2 rejected | **[I]** |
 
 **What survives** is a narrow band: *single- or few-step generation, in a compact latent or
 motion space, over a small region of the frame, conditioned on precomputed identity
@@ -167,7 +167,7 @@ recognising that it is smaller is the actual insight.
 
 #### 1.3.1 Two sub-claims that separate a surface answer from a real one
 
-**Sub-claim A — most of the frame is replayed, not generated.**
+**Sub-claim A — most of the frame is replayed, not generated. [C] for MuseTalk, [I] for vendors.**
 
 The strong inference is that production systems synthesise only the **mouth / lower-face
 region** and composite it onto pre-recorded body footage, rather than generating a whole
@@ -184,7 +184,7 @@ How to verify it from observed vendor output, without any inside access:
   schedule, not the sentence's
 
 **Sub-claim B — the audio conditioning signal is self-supervised speech encoder features,
-not raw waveform or bare mel spectrograms.**
+not raw waveform or bare mel spectrograms. [C] for MuseTalk, [I] for vendors.**
 
 This has a strong primary-source anchor in open source: MuseTalk encodes audio with a
 frozen **`whisper-tiny`** model and fuses those embeddings into the U-Net's image
@@ -293,15 +293,20 @@ measurably the wrong diagnosis for this pipeline.
 
 ### 2.1 Criteria and weights
 
+Weighted before running anything, so the criteria could not be reverse-engineered from
+whichever model happened to work. The weights are the argument: two of them are hard gates
+rather than scores, because no amount of quality compensates for a licence that forbids the
+use case.
+
 | Criterion | Weight | Why it matters here |
 |---|---|---|
-| Achievable fps on accessible hardware | | Real-time is the point |
-| First-frame latency | | Distinct from throughput — a model can hit 30fps and still have a slow first frame |
-| License, code **and** weights | | These differ, often materially |
-| Streaming-native vs. batch | | A batch model cannot be made streaming inside this time-box |
-| Output quality at the target resolution | | Bounded — §4 puts fidelity out of scope |
-| Maintenance health | | Commits, issue response, releases |
-| Setup fragility | | §6 requires a clean-clone build. **Evidence: MuseTalk's `download_weights.sh` and `pip install` both exited 0 without installing the model — see §2.2.1** |
+| **License, code and weights** | **Gate** | Not a score. A model that cannot be used commercially is not a candidate, whatever it scores elsewhere — and code and weight licences differ, often materially |
+| **Streaming-native vs. batch** | **Gate** | Also not a score. A batch model cannot be made streaming inside this time-box; that is a research project, not an integration |
+| Achievable fps on accessible hardware | 30% | Real-time is the point, and "accessible" means the free-tier T4 actually available — not a rented A100 |
+| First-frame latency | 25% | Distinct from throughput, and more important here. A model can hit 30fps and still have a slow first frame, and in a conversation the first frame is what the candidate waits for |
+| Setup fragility | 20% | Weighted this heavily *because* the brief requires a clean-clone build, and it turned out to be the criterion that actually decided the outcome. Evidence: MuseTalk's `download_weights.sh` and `pip install` **both exited 0 without installing the model** — see §2.2.1 |
+| Maintenance health | 15% | Commits, issue response, releases. A dead project is a liability the moment a CUDA version moves |
+| Output quality at target resolution | 10% | Deliberately lowest. The brief puts production-grade visual fidelity explicitly out of scope, so weighting it higher would be optimising for something not being assessed |
 
 ### 2.2 Candidates evaluated
 
@@ -349,6 +354,66 @@ Setup timings to the point of failure, which are real: clone 1.6s, install 13.0s
 weights 15.6s.
 
 ### 2.3 Selection and rationale
+
+**The pick: MuseTalk — and it has not been made to run.** Both halves of that sentence are
+the answer, and separating them is the honest version of this section.
+
+**The decisive criterion was licence, and it eliminated the field before performance was
+considered.** Wav2Lip is the best-known model in this category and its terms are
+unambiguous: *"This repository can only be used for personal/research/non-commercial
+purposes"*, and because the weights are trained on LRS2, *"any form of commercial use is
+strictly prohibited."* For a candidate-interview product that is the end of the
+conversation — no fps figure could rescue it. MuseTalk is MIT for the code and its weights
+are *"available for any purpose, even commercially."* That is the difference between a
+model you can ship and a model you can demo.
+
+**Among the two that clear both gates**, MuseTalk over Ditto, on operability rather than
+architecture:
+
+| | MuseTalk | Ditto |
+|---|---|---|
+| Approach | Single-step latent inpainting, mouth region only | Motion-space diffusion, 10 denoising steps |
+| Published throughput | 30fps+ on a V100 | Real-time, low first-frame delay by design |
+| Runtime | Plain PyTorch | **TensorRT 8.6.1, GPU-specific prebuilt engines** |
+| Licence | MIT + commercial weights | Apache-2.0 |
+
+Ditto's TensorRT requirement is the deciding factor and it cuts against it. Engines are
+compiled per GPU architecture, and an ephemeral Colab runtime hands out a different GPU
+between sessions — so the engine built in one session may not load in the next. That
+directly fights the clean-clone requirement. MuseTalk being plain PyTorch means no build
+step that has to match the hardware.
+
+#### The strongest argument against my own pick
+
+**Ditto is the better architecture for this problem, and I did not choose it.** It is built
+for streaming with explicitly low first-frame delay; MuseTalk's real-time path is documented
+but is not the design centre. In a world where I controlled the hardware — a fixed GPU
+class, engines compiled once in CI — I think Ditto is the right call, and the reason I
+didn't pick it is a property of my *hardware access*, not of the model. That is a weaker
+justification than a technical one and I would rather say so than dress it up.
+
+**The second argument against is more damaging: MuseTalk did not run.** Its documented stack
+pins Python 3.10, torch 2.0.1+cu118, and mmcv 2.0.1; the current free Colab runtime is
+Python 3.12, for which no `mmcv==2.0.1` wheels exist. So I picked the model that scored best
+on setup fragility, and then setup fragility is precisely what defeated it. There is an
+uncomfortable reading of that: perhaps my weighting was right and my *assessment* of
+MuseTalk against it was wrong — MIT licensing and plain PyTorch made it look operable, and a
+pinned OpenMMLab stack that no longer installs is exactly the fragility the criterion was
+meant to catch.
+
+**What is unmeasured, stated plainly:** I have no fps number, no VRAM figure, and no
+first-frame latency for any talking-head model. §3.3's model rows say `NOT YET MEASURED`
+because that is what they are. The selection is therefore made on licence, published
+figures, and architecture — not on anything I observed on my own hardware.
+
+#### What would make me switch
+
+| Trigger | Threshold | Switch to |
+|---|---|---|
+| MuseTalk under Python 3.10 (condacolab) still fails | One more timeboxed attempt | Ditto, accepting the TensorRT cost |
+| Measured throughput below real time on a T4 | < 15fps at 256×256 | Ditto, or drop resolution and report it |
+| Deployment target becomes a fixed GPU class | Any commitment to owned or reserved hardware | **Ditto** — the objection above evaporates the moment engines can be compiled once |
+| A newer model clears both gates with a simpler runtime | Published real-time on a T4, commercial weights | Re-run this comparison. The field moves fast enough that a decision this old deserves re-testing |
 
 ### 2.4 Why this is swappable
 
@@ -554,29 +619,103 @@ a gap list and a wish list: the Aura WebSocket win (351ms vs 907ms) and the queu
 
 ### 4.1 Recommendation
 
+**Keep the vendor for the rendering stage. Build the orchestration layer in-house, starting
+now.** That is the hybrid, and the split is not a hedge — it falls directly out of what I
+measured.
+
+The single strongest reason: **I built a slice of this, and the model was never the
+bottleneck.** A full turn measures 2.7–5.8s against a sub-second target, and the three
+dominant terms are the end-of-turn policy, LLM time-to-first-token, and TTS. Set the
+renderer to zero and roughly 2.6–5.7s remains. So the part a vendor sells is the part that
+was never the problem, and the part that *is* the problem — turn-taking, cancellation,
+history truncation, pipelining — is code the vendor's API does not write for you and cannot.
+
+Building the renderer to replace a working vendor would be spending the scarcest engineering
+capacity on the least-broken component.
+
 ### 4.2 Cost model
+
+**Every figure below is an assumption, not a quote.** I have no vendor contract and did not
+run a GPU, so the numbers are order-of-magnitude reasoning. They are stated so they can be
+argued with, and the conclusion is deliberately insensitive to all of them except the last
+row.
 
 | Line item | Buy | Build |
 |---|---|---|
-| Per-minute marginal cost | | |
-| GPU capacity (incl. idle in warm pool) | | |
-| Engineering to first production traffic | | |
-| Ongoing engineering + on-call | | |
-| Break-even volume | | |
+| Per-minute marginal cost | Assume ~$0.10–0.30/min at list. Scales linearly and forever | GPU time only. A T4-class instance at ~$0.35–0.50/hr serving 2–3 concurrent sessions ≈ **$0.003–0.005/min** — one to two orders of magnitude lower |
+| GPU capacity incl. idle in a warm pool | $0 — someone else's problem | **This is the line naive analyses omit.** §1.4 argues cold-loading at session start is unaffordable, so a warm pool is mandatory, and a warm pool means paying for idle GPUs. At interview-traffic burstiness, assume **50–70% idle**, so effective cost is 2–3× the figure above |
+| Engineering to first production traffic | ~2–4 weeks of integration | **3–6 engineer-months.** The renderer is the small part. The rest: warm pooling with session leasing, WebRTC transport, GPU autoscaling, per-session isolation, a quality bar measurable without a human, and the shadow-mode comparison harness in §5 |
+| Ongoing engineering + on-call | Near zero. Vendor absorbs model upgrades, CUDA drift, capacity | **0.5–1 FTE indefinitely.** A pager that did not exist before, plus a model that ages and a CUDA/TensorRT stack that moves underneath it |
+| Break-even volume | — | Marginal cost favours building almost immediately. **Fully loaded, break-even is somewhere above ~50,000–100,000 avatar-minutes/month sustained** — and the engineering line dominates so heavily that the exact per-minute rate barely moves it |
+
+**The honest reading of this table:** the per-minute comparison flatters building by one to
+two orders of magnitude and is *the wrong number to decide on*. At startup volume the
+engineering and on-call lines dwarf the entire vendor bill. If the current spend is a few
+thousand dollars a month, building cannot pay for itself on cost — an engineer-month costs
+more than a year of the vendor.
+
+**So a cost-driven "build" is only credible above roughly 50–100k minutes/month sustained.**
+Below that, anyone arguing to build on cost grounds has not costed the engineering.
 
 ### 4.3 Non-cost factors
 
+Cost does not favour building at startup volume, so if the answer is ever "build", the reason
+lives here. Weighed honestly, including where the vendor wins.
+
+| Factor | Weight | Assessment |
+|---|---|---|
+| **Data residency** | **Highest** | Candidate audio and video leaving our infrastructure is the one factor that can force this decision regardless of cost. Interview recordings are sensitive personal data, and a single enterprise client with a contractual residency requirement converts this from an optimisation into a blocker. **This is the strongest build argument and it is not economic.** |
+| Latency control | High, but **not** in the vendor's favour or against it | I measured this and it changed my mind mid-analysis. The terms I would need to attack are STT, LLM, TTS and the turn policy — **all of which I already control** in the hybrid. Owning the renderer would buy control over the term that is not the problem |
+| Customisation | Medium | Persona control, turn-taking behaviour, interview-specific interruption policy. Almost all of it lives in orchestration, which the hybrid already owns. Genuinely renderer-specific customisation is a narrow set |
+| Vendor concentration risk | Medium | A single vendor for a core product surface is real exposure — pricing power, roadmap divergence, acquisition, shutdown. Mitigated substantially by the boundary in §3.2: the interface exists, so the switching cost is bounded and known rather than open-ended |
+| **Visual fidelity** | **Where the vendor is genuinely better** | Stated plainly: a funded team iterating full-time on one model will beat what I can build, and MuseTalk at a 256×256 face region is not close to a vendor's output. The brief puts fidelity out of scope for the *prototype*; it is emphatically not out of scope for a product a candidate is judged through |
+| Time to market | Vendor | Weeks against engineer-months. If the avatar channel is still being validated commercially, building first is optimising a bet not yet won |
+
 ### 4.4 What would change my mind
+
+Numeric, and each one is checkable rather than a feeling.
 
 | Trigger | Threshold | Direction |
 |---|---|---|
-| Volume | | |
-| Contractual data-residency requirement | | |
-| Vendor p95 latency | | |
-| Vendor pricing change | | |
-| Vendor viability event | | |
+| **Volume** | Above **75,000 avatar-minutes/month sustained for two consecutive quarters** | → **Build the renderer.** Two quarters, because a single spike is a seasonal hiring cycle, not a trend |
+| **Contractual data-residency requirement** | **Any single signed enterprise client** requiring candidate media to stay in our infrastructure or a named region | → **Build immediately, regardless of volume.** This is the one trigger that overrides the cost model entirely |
+| **Vendor p95 latency** | p95 utterance-to-utterance above **1.5s**, measured by us on our traffic, sustained a month | → Build. Note the emphasis: **measured by us.** The published ~600ms is a marketing figure I have not verified |
+| **Vendor pricing change** | Any increase above **30%**, or a move to a model that penalises our burst pattern | → Re-run §4.2 with real quotes. A 30% rise on a small bill is still a small bill |
+| **Vendor viability event** | Acquisition, a funding event implying a strategy change, or two P1 incidents in a quarter | → Activate the §5 shadow-mode plan as a **contingency**, whether or not we intend to cut over. The escape hatch has to be tested before it is needed |
+| **A model clears both gates with a trivial runtime** | Published real-time on a T4, commercial weights, no compiled runtime, and it installs from a clean clone | → Revisit. The 3–6 engineer-month estimate is dominated by serving infrastructure, but a genuinely drop-in model moves the renderer line enough to re-run the case |
 
 ### 4.5 Risks in my own recommendation
+
+Three ways I could be wrong, in the order I think they are most likely.
+
+**1. I may be over-weighting my own measurements.** My latency numbers come from free-tier
+infrastructure — `gpt-oss:20b` on Ollama Cloud's free tier produced an LLM time-to-first-token
+between 1.6 and 4.7 seconds. A paid low-latency endpoint plausibly cuts that to 300–500ms.
+If every non-renderer term shrinks that far, the renderer becomes a much larger fraction of
+the remaining budget, and "the model was never the bottleneck" weakens considerably. **My
+central claim is measured, but it is measured on the cheapest possible stack**, and that is a
+real threat to it.
+
+**2. The hybrid may be the worst of both worlds operationally.** I have argued the split is
+clean because the boundary is clean — but we would be running the orchestration on-call
+burden *and* paying vendor per-minute rates, with a network hop between the two adding
+latency I have not measured. A vendor's integrated pipeline may beat a split one precisely
+because it is not split. I have no measurement either way, and that is a gap in this
+recommendation rather than a point in its favour.
+
+**3. Sunk cost is pushing me toward "build" more than I would like.** I spent a day and a
+half on the orchestration layer and I am recommending keeping it. That is exactly the bias
+this exercise is testing. The check I applied: would I recommend building the orchestration
+if I had *not* written it? I think yes — because the alternative is accepting a vendor's
+turn-taking policy and interruption semantics, and interruption behaviour is product-defining
+for interviews. But I hold that less confidently than the rest of this memo, and someone
+should push on it.
+
+**One thing I would want before committing either way**, and which I could not do here: a
+measured p95 of the vendor's actual latency on our own traffic, and a real quote at our real
+volume. Both of the load-bearing numbers in §4.2 are assumptions, and §5's preconditions put
+observability on the vendor path first precisely so that this decision gets made on measured
+data rather than on this memo.
 
 ---
 
