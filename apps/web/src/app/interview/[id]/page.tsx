@@ -1,55 +1,61 @@
 "use client";
 
 /**
- * The live interview. Video on the left, conversation on the right, instrumentation beneath.
+ * The candidate's interview room. Two screens: a device check, then a call.
  *
- * Laid out the way the thing is actually used rather than the way the data is shaped: a
- * candidate watches a face and reads what was said, so those get the space, and the telemetry
- * that makes the system provable sits below the fold where it does not compete.
+ * **What was removed, and why it mattered.** This page used to carry "Starts speaking", "Stops
+ * speaking", "Stream mic" and a full latency panel. Every one of those is developer
+ * instrumentation, and putting it in front of a candidate does two bad things: it asks them to
+ * operate the turn-taking machinery the server-side detector exists to handle, and it shows them
+ * a measurement panel belonging to whoever reviews the interview. Turn detection is server-side
+ * and tested — the candidate should just talk. The telemetry did not disappear; it belongs on the
+ * operator's session view, where the person who cares about a p95 can see it.
  *
- * The instrumentation is on the same page as the conversation on purpose. "The avatar reacted
- * immediately" is an assertion; a turn epoch incrementing beside a transcript bubble going
- * dashed is evidence, and a demo that has to switch tabs to show it convinces nobody.
+ * **Why a pre-join screen rather than joining on load.** Someone about to be recorded answering
+ * questions deserves to see their own camera, confirm it works, and read what is about to happen
+ * before any of it starts. It is also the only honest place to say the session is recorded —
+ * joining immediately means the first thing they learn about the camera is that it was already on.
+ *
+ * **Why it is dark and chromeless.** A candidate is nervous, and every extra control is one more
+ * thing to worry about getting wrong. The console's sidebar is deliberately absent here: this is
+ * the only page in the app a non-operator ever sees.
  */
 
-import { use, useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { use, useCallback, useEffect, useRef, useState } from "react";
 
-import { Button, Card, CardHeader, Chip, Field, Input, Metric, Page, type Status } from "@/components/ui";
-import { AUDIO_LEAD_MS, useSession, type SessionState } from "@/lib/session";
+import { Button, Chip } from "@/components/ui";
+import { useSession, type SessionState } from "@/lib/session";
 import { useRtc } from "@/lib/rtc";
 
 const API = process.env.NEXT_PUBLIC_API_BASE ?? "http://127.0.0.1:8000";
 
-/** Session state maps onto the semantic palette, matching the runtime's own colours. */
-const STATE_TONE: Record<SessionState, Status> = {
-  INITIALIZING: "neutral",
-  IDLE: "neutral",
-  LISTENING: "info",
-  THINKING: "info",
-  SPEAKING: "warn",
-  CANCELLING: "info",
-  CLOSED: "neutral",
+/**
+ * What the candidate is told, in their terms rather than the state machine's.
+ *
+ * `CANCELLING` reads as "Listening" on purpose: from the candidate's side, interrupting means the
+ * interviewer starts listening. Showing them the internal name of a cancellation would be
+ * accurate and useless.
+ */
+const STATUS: Record<SessionState, { label: string; tone: "ok" | "info" | "warn" | "neutral" }> = {
+  INITIALIZING: { label: "Connecting", tone: "neutral" },
+  IDLE: { label: "Ready", tone: "neutral" },
+  LISTENING: { label: "Listening", tone: "info" },
+  THINKING: { label: "Thinking", tone: "info" },
+  SPEAKING: { label: "Speaking", tone: "warn" },
+  CANCELLING: { label: "Listening", tone: "info" },
+  CLOSED: { label: "Ended", tone: "neutral" },
 };
 
-const STAGE_LABELS: Array<[string, string, number | undefined]> = [
-  ["turn_detect", "End-of-turn", 300],
-  ["llm_ttft", "LLM first token", 500],
-  ["tts_first_audio", "Voice first audio", 300],
-  ["avatar_first_frame", "First frame", 150],
-  ["perceived_total", "End-to-end, to paint", 1000],
-];
-
 export default function InterviewPage({ params }: { params: Promise<{ id: string }> }) {
-  // `params` is a promise in Next 16; `use` unwraps it in a client component.
   const { id } = use(params);
   const session = useSession(API, id);
-  const { state, hello, connected, transcript, metrics, error } = session;
-  const { connect, disconnect, say, send, startMic, stopMic, attachCanvas } = session;
-  // Destructured rather than read through the object: a hook's returned object counts as ref
-  // access during render under React's rules, and property reads in JSX would trip it.
+  const { state, connected, transcript, error } = session;
+  const { connect, disconnect, say, startMic, stopMic, attachCanvas, setLocalPlayback } = session;
   const {
     hasVideo: rtcVideo,
+    hasAudio: rtcAudio,
+    publishing,
     audioBlocked,
     join: joinRtc,
     leave: leaveRtc,
@@ -57,324 +63,427 @@ export default function InterviewPage({ params }: { params: Promise<{ id: string
     attachVideo,
     attachAudio,
     attachSelf,
-    publishing,
   } = useRtc(API, id);
+
+  const [joined, setJoined] = useState(false);
+  const [micOn, setMicOn] = useState(true);
+  const [showCaptions, setShowCaptions] = useState(true);
   const [draft, setDraft] = useState("");
-  const [micOn, setMicOn] = useState(false);
+  const [devicesReady, setDevicesReady] = useState<boolean | null>(null);
+  const previewRef = useRef<HTMLVideoElement | null>(null);
+  const previewStream = useRef<MediaStream | null>(null);
   const scroller = useRef<HTMLDivElement | null>(null);
 
-  // Follow the conversation as it grows. Without this the newest turn is off-screen exactly
-  // when someone is watching for it.
+  // The pre-join preview runs entirely locally: nothing is published until Join is pressed.
+  useEffect(() => {
+    if (joined) return;
+    let cancelled = false;
+    void navigator.mediaDevices
+      .getUserMedia({ video: true, audio: true })
+      .then((stream) => {
+        if (cancelled) {
+          stream.getTracks().forEach((track) => track.stop());
+          return;
+        }
+        previewStream.current = stream;
+        if (previewRef.current) previewRef.current.srcObject = stream;
+        setDevicesReady(true);
+      })
+      .catch(() => setDevicesReady(false));
+    return () => {
+      cancelled = true;
+      previewStream.current?.getTracks().forEach((track) => track.stop());
+      previewStream.current = null;
+    };
+  }, [joined]);
+
   useEffect(() => {
     scroller.current?.scrollTo({ top: scroller.current.scrollHeight });
   }, [transcript]);
 
-  async function toggleMic() {
+  // One voice. The runtime tees the same speech down both transports, so whichever path is
+  // playing over WebRTC must silence the other — otherwise the candidate hears the interviewer
+  // twice, a few hundred milliseconds apart, which reads as a broken model rather than a
+  // duplicated track. WebRTC wins because it is the one with a real jitter buffer.
+  useEffect(() => {
+    setLocalPlayback(!rtcAudio);
+  }, [rtcAudio, setLocalPlayback]);
+
+  const join = useCallback(async () => {
+    // Release the preview first. Holding the camera open in two places makes the published track
+    // fail on some machines, and that failure presents as a camera that simply does not work.
+    previewStream.current?.getTracks().forEach((track) => track.stop());
+    previewStream.current = null;
+    setJoined(true);
+    void connect();
+    void joinRtc();
+    // The microphone starts with the call, because there is no button for it. Asking a candidate
+    // to announce when they begin and stop speaking is asking them to do the detector's job.
+    try {
+      await startMic();
+      setMicOn(true);
+    } catch {
+      setMicOn(false);
+    }
+  }, [connect, joinRtc, startMic]);
+
+  const leave = useCallback(() => {
+    stopMic();
+    disconnect();
+    void leaveRtc();
+    setJoined(false);
+  }, [disconnect, leaveRtc, stopMic]);
+
+  const toggleMic = useCallback(() => {
     if (micOn) {
       stopMic();
       setMicOn(false);
       return;
     }
-    try {
-      await startMic();
-      setMicOn(true);
-    } catch {
-      /* permission denied — the mic-uploaded metric staying at 0 is the tell */
-    }
+    void startMic().then(() => setMicOn(true));
+  }, [micOn, startMic, stopMic]);
+
+  /* ------------------------------------------------------------- pre-join */
+
+  if (!joined) {
+    return (
+      <div className="mx-auto flex min-h-dvh max-w-2xl flex-col justify-center px-8 py-12">
+        <Link
+          href="/"
+          aria-label="nod — go to the console"
+          className="mb-8 flex w-fit items-center gap-2 text-[14px] font-semibold tracking-tight text-ink hover:text-accent"
+        >
+          <NodMark />
+          nod
+        </Link>
+        <h1 className="text-[24px] font-semibold tracking-tight text-ink">
+          You are about to start your interview
+        </h1>
+        <p className="mt-2.5 text-[13.5px] leading-relaxed text-ink-mid">
+          An interviewer will ask about your experience and follow up on what you say. Speak
+          normally — it works out when you have finished, and you can interrupt it mid-question.
+        </p>
+
+        <div className="mt-7 overflow-hidden rounded-xl border border-hair bg-glass">
+          <div className="aspect-video w-full bg-black">
+            <video
+              ref={previewRef}
+              autoPlay
+              playsInline
+              muted
+              aria-label="Your camera preview"
+              className="size-full object-cover"
+              // Mirrored, like every video call. Unmirrored makes raising your right hand look
+              // like your left, which is subtly disorienting on your own image.
+              style={{ transform: "scaleX(-1)" }}
+            />
+          </div>
+          <div className="flex flex-wrap items-center gap-3 border-t border-hair px-5 py-4">
+            <Chip
+              status={devicesReady === true ? "ok" : devicesReady === false ? "warn" : "neutral"}
+            >
+              {devicesReady === true
+                ? "camera and mic ready"
+                : devicesReady === false
+                  ? "no camera or mic"
+                  : "checking devices"}
+            </Chip>
+            <div className="ml-auto">
+              <Button variant="primary" onClick={() => void join()}>
+                Join interview
+              </Button>
+            </div>
+          </div>
+        </div>
+
+        {/* Said before the camera is ever published, not after. */}
+        <p className="mt-4 text-[12px] leading-relaxed text-ink-low">
+          This session is recorded — video, audio and a transcript — and reviewed by a person.
+          {devicesReady === false
+            ? " No camera or microphone was found, but you can still take the interview by typing."
+            : ""}
+        </p>
+      </div>
+    );
   }
 
+  /* ----------------------------------------------------------------- call */
+
+  const status = STATUS[state];
+
   return (
-    <Page
-      title="Interview"
-      lede="Talk or type your answers. You can interrupt mid-question — the interviewer stops immediately and will not pretend you heard the rest."
-      action={
-        <div className="flex gap-2">
-          {connected ? (
-            <Button
-              variant="danger"
-              onClick={() => {
-                disconnect();
-                void leaveRtc();
-              }}
-            >
-              End session
-            </Button>
-          ) : (
-            <Button
-              variant="primary"
-              onClick={() => {
-                void connect();
-                // Both legs, deliberately. WebRTC carries the media when an SFU is present;
-                // the socket carries the microphone, the transcript and the telemetry either
-                // way, and is the whole transport when there is no SFU.
-                void joinRtc();
-              }}
-            >
-              Start session
-            </Button>
-          )}
-          <Link href="/sessions"><Button>All sessions</Button></Link>
+    <div className="flex min-h-dvh flex-col bg-base">
+      <header className="flex items-center gap-3 border-b border-hair px-6 py-3">
+        {/* The way out. The room has no sidebar by design, and without this the only exit was the
+            browser's back button — which leaves the room without ever calling `leave()`, so the
+            mic keeps publishing and the session never ends. This tears down first, then navigates. */}
+        <Link
+          href="/"
+          onClick={leave}
+          aria-label="nod — leave and go to the console"
+          title="Leave and go to the console"
+          className="flex items-center gap-2 text-[14px] font-semibold tracking-tight text-ink hover:text-accent"
+        >
+          <NodMark />
+          nod
+        </Link>
+        <span className="h-4 w-px bg-hair-strong" aria-hidden="true" />
+        <span className="text-[13px] text-ink-mid">Interview</span>
+        <Chip status={status.tone}>{status.label}</Chip>
+        {rtcVideo ? (
+          <Chip status="ok">{publishing ? "two-way" : "receive only"}</Chip>
+        ) : null}
+        <div className="ml-auto">
+          <Button onClick={() => setShowCaptions((on) => !on)}>
+            {showCaptions ? "Hide captions" : "Show captions"}
+          </Button>
         </div>
-      }
-    >
-      <p className="-mt-4 mb-2 font-mono text-[11px] text-ink-low">session {id}</p>
+      </header>
 
       {error ? (
-        <Card className="border-bad/40 bg-bad/5">
-          <div className="px-5 py-4">
-            <p className="text-[13px] font-medium text-bad">Cannot reach the runtime</p>
-            <p className="mt-1.5 text-[12.5px] leading-relaxed text-ink-mid">{error}</p>
-          </div>
-        </Card>
+        <div className="border-b border-bad/40 bg-bad/5 px-6 py-3">
+          <p className="text-[12.5px] text-bad">{error}</p>
+        </div>
       ) : null}
 
       {audioBlocked ? (
-        <Card className="border-warn/40 bg-warn/5">
-          <div className="flex flex-wrap items-center gap-3 px-5 py-4">
-            <p className="min-w-0 flex-1 text-[12.5px] leading-relaxed text-ink-mid">
-              <span className="text-warn">The browser blocked audio playback.</span> Video plays
-              and the mouth moves, so this looks like broken audio rather than a policy that
-              needs one click to satisfy.
-            </p>
-            <Button variant="primary" onClick={() => void unblockAudio()}>
-              Enable audio
-            </Button>
-          </div>
-        </Card>
+        <div className="flex flex-wrap items-center gap-3 border-b border-warn/40 bg-warn/5 px-6 py-3">
+          <p className="min-w-0 flex-1 text-[12.5px] text-ink-mid">
+            Your browser blocked sound. The interviewer is speaking and you cannot hear it.
+          </p>
+          <Button variant="primary" onClick={() => void unblockAudio()}>
+            Enable sound
+          </Button>
+        </div>
       ) : null}
 
-      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_380px]">
-        {/* ---------------------------------------------------------- video */}
-        <Card>
-          <CardHeader
-            title="Interviewer"
-            hint={
-              hello
-                ? `${hello.renderer} · ${hello.frame_width}×${hello.frame_height} · target ${hello.target_fps}fps`
-                : "not connected"
-            }
-            action={
-              <div className="flex items-center gap-2">
-                <Chip status={rtcVideo ? "ok" : "neutral"}>
-                  {rtcVideo ? (publishing ? "webrtc · two-way" : "webrtc · receive only") : "websocket"}
-                </Chip>
-                <Chip status={STATE_TONE[state]}>{state.toLowerCase()}</Chip>
-              </div>
-            }
+      <main className="flex min-h-0 flex-1 flex-col gap-4 p-6 lg:flex-row">
+        <div className="relative min-h-72 flex-1 overflow-hidden rounded-xl border border-hair bg-black">
+          {/* Both surfaces mounted, one hidden: attaching a track to an element that does not
+              exist yet silently does nothing, and that failure looks exactly like black video. */}
+          <video
+            ref={attachVideo}
+            autoPlay
+            playsInline
+            muted
+            aria-label="Interviewer"
+            className={rtcVideo ? "size-full object-contain" : "hidden"}
           />
-          <div className="p-5">
-            <div className="relative overflow-hidden rounded-lg border border-hair bg-black">
-              {/* Fixed aspect so the panel does not jump when the renderer's size changes. */}
-              <div className="aspect-video w-full">
-                {/* Two surfaces, one shown at a time. The WebRTC <video> is preferred when the
-                    SFU is delivering a track; the canvas is the WebSocket path's renderer and
-                    also the fallback. Both are always mounted rather than swapped, because
-                    attaching a track to an element that does not exist yet silently does
-                    nothing — and that failure looks exactly like a black video. */}
-                <video
-                  ref={attachVideo}
-                  autoPlay
-                  playsInline
-                  muted
-                  aria-label="Interviewer video"
-                  className={rtcVideo ? "size-full object-contain" : "hidden"}
-                />
-                <canvas
-                  ref={attachCanvas}
-                  width={256}
-                  height={144}
-                  aria-label="Interviewer video"
-                  className={rtcVideo ? "hidden" : "size-full object-contain"}
-                  // Nearest-neighbour: the placeholder renders 256×144 flat rectangles, and
-                  // smoothing them into a blur hides whether the mouth is actually moving.
-                  style={{ imageRendering: "pixelated" }}
-                />
-                {/* Audio is a separate element: the video is muted so the WebSocket path's Web
-                    Audio scheduling and the WebRTC track can never both play the same speech. */}
-                <audio ref={attachAudio} autoPlay />
+          <canvas
+            ref={attachCanvas}
+            width={256}
+            height={144}
+            aria-label="Interviewer"
+            className={rtcVideo ? "hidden" : "size-full object-contain"}
+            style={{ imageRendering: "pixelated" }}
+          />
+          {/* Separate element, and the video is muted, so the WebSocket path's Web Audio
+              scheduling and the WebRTC track can never both play the same speech. */}
+          <audio ref={attachAudio} autoPlay />
 
-                {/* The candidate's own camera, inset. Muted and mirrored, because both are what
-                    every video call does and their absence is immediately uncanny: unmuted
-                    would echo their own voice back, and unmirrored makes raising your right
-                    hand look like your left. Mounted always, hidden until publishing, for the
-                    same reason as the interviewer's video -- attaching a track to an element
-                    that does not exist yet silently does nothing. */}
-                <video
-                  ref={attachSelf}
-                  autoPlay
-                  playsInline
-                  muted
-                  aria-label="Your camera"
-                  className={[
-                    "absolute right-3 bottom-3 w-1/4 min-w-28 rounded-lg border border-hair-strong",
-                    "bg-black object-cover shadow-lg",
-                    publishing ? "" : "hidden",
-                  ].join(" ")}
-                  style={{ transform: "scaleX(-1)" }}
-                />
-              </div>
-              {!connected ? (
-                <div className="absolute inset-0 grid place-items-center bg-base/80 text-[12.5px] text-ink-mid">
-                  Press Start session
-                </div>
-              ) : null}
-            </div>
+          <video
+            ref={attachSelf}
+            autoPlay
+            playsInline
+            muted
+            aria-label="You"
+            className={[
+              "absolute right-4 bottom-4 w-1/5 min-w-32 rounded-lg border border-hair-strong",
+              "bg-black object-cover shadow-xl",
+              publishing ? "" : "hidden",
+            ].join(" ")}
+            style={{ transform: "scaleX(-1)" }}
+          />
 
-            <div className="mt-4 flex flex-wrap items-center gap-2">
-              <Button disabled={!connected} onClick={() => send({ type: "speech_start" })}>
-                Starts speaking
-              </Button>
-              <Button
-                disabled={!connected}
-                onClick={() =>
-                  send({ type: "end_of_turn", transcript: "[candidate finished speaking]" })
-                }
-              >
-                Stops speaking
-              </Button>
-              <Button
-                variant={micOn ? "primary" : "ghost"}
-                disabled={!connected}
-                onClick={() => void toggleMic()}
-              >
-                {micOn ? "Mic on — server detects turns" : "Stream mic"}
-              </Button>
-              {hello ? (
-                <span className="nums ml-auto text-[11.5px] text-ink-low">
-                  end-of-turn after {hello.end_of_turn_silence_ms}ms silence
-                </span>
-              ) : null}
+          {!connected ? (
+            <div className="absolute inset-0 grid place-items-center text-[12.5px] text-ink-mid">
+              Connecting…
             </div>
+          ) : null}
+
+          {/* The controls a call has, and no others. Mute is a real need — a dog barks, someone
+              walks in. Announcing the start and end of your own turns is not. */}
+          <div className="absolute bottom-4 left-1/2 flex -translate-x-1/2 items-center gap-2.5 rounded-full border border-hair-strong bg-base/85 p-2 backdrop-blur">
+            <CallButton
+              label={micOn ? "Mute microphone" : "Unmute microphone"}
+              tone={micOn ? "neutral" : "danger"}
+              onClick={toggleMic}
+              icon={micOn ? <MicIcon /> : <MicOffIcon />}
+            />
+            <CallButton label="Leave interview" tone="danger" onClick={leave} icon={<EndIcon />} />
           </div>
-        </Card>
+        </div>
 
-        {/* ----------------------------------------------------- conversation */}
-        <Card className="flex min-h-0 flex-col">
-          <CardHeader
-            title="Conversation"
-            hint="What the interviewer was actually given, and what it said back"
-          />
-          <div ref={scroller} className="flex-1 space-y-2.5 overflow-y-auto px-5 py-4" style={{ maxHeight: 420 }}>
-            {transcript.length === 0 ? (
-              <p className="py-8 text-center text-[12.5px] text-ink-low">
-                No turns yet. Start the session, then type below or stream your microphone.
+        {showCaptions ? (
+          <aside className="flex max-h-[70vh] min-h-0 w-full flex-col rounded-xl border border-hair bg-glass lg:max-h-none lg:w-96">
+            <div className="border-b border-hair px-5 py-3">
+              <p className="text-[13px] font-medium text-ink">Captions</p>
+              <p className="mt-0.5 text-[11.5px] text-ink-low">
+                What was heard, and what the interviewer said
               </p>
-            ) : null}
-            {transcript.map((line, index) => (
-              <div
-                key={`${line.who}-${line.id}-${index}`}
-                className={[
-                  "max-w-[85%] rounded-xl border px-3 py-2 text-[12.5px] leading-relaxed",
-                  line.who === "candidate"
-                    ? line.empty
-                      ? // A turn the transcriber produced no words for. Shown rather than
-                        // omitted, because the interviewer's next question cannot follow up on
-                        // something it never received, and that is invisible otherwise.
-                        "ml-auto border-dashed border-warn bg-transparent italic text-warn"
-                      : "ml-auto border-accent/30 bg-accent/10 text-ink"
-                    : "border-hair bg-glass-raise text-ink",
-                  line.interrupted ? "border-dashed opacity-75" : "",
-                ].join(" ")}
-              >
-                <span className="mb-1 block text-[10px] tracking-[0.07em] uppercase text-ink-low">
-                  {line.who === "candidate"
-                    ? line.empty
-                      ? "you — nothing transcribed"
-                      : "you"
-                    : "interviewer"}
-                </span>
-                {line.text}
-                {line.interrupted ? " …" : ""}
-              </div>
-            ))}
-          </div>
-
-          <form
-            className="flex gap-2 border-t border-hair px-5 py-4"
-            onSubmit={(event) => {
-              event.preventDefault();
-              say(draft);
-              setDraft("");
-            }}
-          >
-            <Field label="">
-              <Input
+            </div>
+            <div ref={scroller} className="flex-1 space-y-2.5 overflow-y-auto px-5 py-4">
+              {transcript.length === 0 ? (
+                <p className="py-6 text-center text-[12.5px] text-ink-low">Say hello to begin.</p>
+              ) : null}
+              {transcript.map((line, index) => (
+                <div
+                  key={`${line.who}-${line.id}-${index}`}
+                  className={[
+                    "max-w-[90%] rounded-xl border px-3 py-2 text-[12.5px] leading-relaxed",
+                    line.who === "candidate"
+                      ? line.empty
+                        ? // Shown rather than hidden: the interviewer cannot follow up on
+                          // something it never received, and that is invisible otherwise.
+                          "ml-auto border-dashed border-warn bg-transparent italic text-warn"
+                        : "ml-auto border-accent/30 bg-accent/10 text-ink"
+                      : "border-hair bg-glass-raise text-ink",
+                    line.interrupted ? "border-dashed opacity-75" : "",
+                  ].join(" ")}
+                >
+                  <span className="mb-1 block text-[10px] tracking-[0.07em] uppercase text-ink-low">
+                    {line.who === "candidate"
+                      ? line.empty
+                        ? "you — not heard"
+                        : "you"
+                      : "interviewer"}
+                  </span>
+                  {line.text}
+                  {line.interrupted ? " …" : ""}
+                </div>
+              ))}
+            </div>
+            {/* Typing stays as an accessibility path and as the fallback when a microphone
+                fails — secondary to speaking rather than a peer of it. */}
+            <form
+              className="flex gap-2 border-t border-hair px-5 py-4"
+              onSubmit={(event) => {
+                event.preventDefault();
+                say(draft);
+                setDraft("");
+              }}
+            >
+              <input
                 value={draft}
                 onChange={(event) => setDraft(event.target.value)}
-                disabled={!connected}
-                placeholder="Type an answer — no microphone needed"
-                aria-label="Type an answer to the interviewer"
+                placeholder="Or type your answer"
+                aria-label="Type your answer"
+                className="min-w-0 flex-1 rounded-lg border border-hair-strong bg-base px-3 py-2 text-[13px] text-ink placeholder:text-ink-low"
               />
-            </Field>
-            <div className="self-end">
-              {/* Enabled while speaking, deliberately: sending then is a barge-in, which is
-                  the same thing talking over it does. */}
-              <Button type="submit" variant="primary" disabled={!connected}>Send</Button>
-            </div>
-          </form>
-        </Card>
-      </div>
-
-      {/* --------------------------------------------------------- telemetry */}
-      <Card>
-        <CardHeader
-          title="Measured this session"
-          hint={
-            rtcVideo
-              ? "First-frame and end-to-end read as dashes on the WebRTC path, and that is honest rather than broken — see below."
-              : "Every figure comes from a real run. Targets are the reasoned budget, not achieved numbers — the gap is the point."
-          }
-        />
-        <div className="grid grid-cols-2 divide-hair sm:grid-cols-3 lg:grid-cols-5">
-          {STAGE_LABELS.map(([key, label, target]) => {
-            const value = metrics.stages[key];
-            const over = target !== undefined && value !== undefined && value > target;
-            return (
-              <div key={key} className="border-t border-hair">
-                <Metric
-                  label={label}
-                  value={value === undefined ? "—" : Math.round(value)}
-                  unit={value === undefined ? undefined : "ms"}
-                  target={target ? `target < ${target}ms` : undefined}
-                  status={value === undefined ? "neutral" : over ? "bad" : "ok"}
-                />
-              </div>
-            );
-          })}
-        </div>
-        {rtcVideo ? (
-          <div className="border-t border-hair px-5 py-3">
-            <p className="max-w-3xl text-[11.5px] leading-relaxed text-ink-mid">
-              {/* Said plainly rather than left as dashes that look like "not yet". A number
-                  nobody can source is worse than an absent one. */}
-              <span className="text-warn">Not measurable over WebRTC as built.</span> The
-              server-side stages above are still real. <span className="text-ink">First
-              frame</span> and <span className="text-ink">end-to-end</span> were reported by the
-              canvas client, which stamped the moment it painted a frame carrying a turn epoch. A
-              WebRTC video track carries no epoch, so a paint cannot be attributed to a turn —
-              correlating them needs the epoch sent over the data channel and matched to
-              <code className="mx-1 font-mono">requestVideoFrameCallback</code>, which is real
-              work and not yet done. Switch off the SFU to measure them.
-            </p>
-          </div>
+              <Button type="submit" disabled={!connected}>
+                Send
+              </Button>
+            </form>
+          </aside>
         ) : null}
-        <div className="grid grid-cols-2 border-t border-hair sm:grid-cols-3 lg:grid-cols-5">
-          <Metric label="Client fps" value={metrics.fps} status={metrics.fps >= 20 ? "ok" : "neutral"} />
-          <Metric label="Turn epoch" value={metrics.epoch} target="increments on every barge-in" />
-          <Metric label="Audio acked" value={metrics.audioAckedMs} unit="ms" target="drives history truncation" />
-          <Metric
-            label="Audio underruns"
-            value={metrics.underruns}
-            target={`${AUDIO_LEAD_MS}ms jitter buffer`}
-            status={metrics.underruns > 0 ? "warn" : "ok"}
-          />
-          <Metric
-            label="Speech probability"
-            value={metrics.speechProbability === null ? "—" : metrics.speechProbability.toFixed(2)}
-            target={hello ? `${hello.vad} detector` : undefined}
-          />
-        </div>
-      </Card>
-    </Page>
+      </main>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------- call controls */
+
+/**
+ * A round icon button, the shape every video call uses.
+ *
+ * Icon-only, but never label-less: `aria-label` carries the name for a screen reader and `title`
+ * shows it on hover, because a bare glyph is only obvious to someone who already knows the
+ * convention. The mic is the one control whose *state* must be readable at a glance, so muted is
+ * both a different icon and a different colour rather than colour alone — someone who cannot
+ * distinguish red from grey still sees the slash.
+ *
+ * `size-11` rather than something smaller: this is the one thing on the page a nervous candidate
+ * may need to hit quickly, and 44px is the smallest comfortable touch target.
+ */
+function CallButton({
+  label,
+  icon,
+  tone,
+  onClick,
+}: {
+  label: string;
+  icon: React.ReactNode;
+  tone: "neutral" | "danger";
+  onClick: () => void;
+}) {
+  const style =
+    tone === "danger"
+      ? "border-bad/40 bg-bad/15 text-bad hover:bg-bad/25"
+      : "border-hair-strong bg-glass-raise text-ink hover:border-ink-low hover:bg-glass";
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={label}
+      title={label}
+      className={`grid size-11 place-items-center rounded-full border transition-colors ${style}`}
+    >
+      {icon}
+    </button>
+  );
+}
+
+/*
+  Inline SVG rather than an icon package. Three icons do not justify a dependency, and inlining
+  means they inherit `currentColor` from the button's tone with no configuration.
+*/
+
+const STROKE = {
+  width: 18,
+  height: 18,
+  viewBox: "0 0 24 24",
+  fill: "none",
+  stroke: "currentColor",
+  strokeWidth: 1.8,
+  strokeLinecap: "round",
+  strokeLinejoin: "round",
+} as const;
+
+function MicIcon() {
+  return (
+    <svg {...STROKE} aria-hidden="true">
+      <path d="M12 3.5a2.75 2.75 0 0 0-2.75 2.75v5a2.75 2.75 0 0 0 5.5 0v-5A2.75 2.75 0 0 0 12 3.5Z" />
+      <path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21" />
+    </svg>
+  );
+}
+
+function MicOffIcon() {
+  return (
+    <svg {...STROKE} aria-hidden="true">
+      <path d="M9.25 6.25a2.75 2.75 0 0 1 5.5 0v5c0 .35-.07.69-.18 1M12 14.75A2.75 2.75 0 0 1 9.25 12" />
+      <path d="M5.5 11a6.5 6.5 0 0 0 10.1 5.4M12 17.5V21" />
+      {/* The slash is the whole point — it reads as muted without relying on the colour. */}
+      <path d="M4 4l16 16" />
+    </svg>
+  );
+}
+
+/**
+ * The nod mark: a head dipping in acknowledgement, which is what the product is named for.
+ *
+ * Two strokes rather than a glyph, so it holds at 18px and inherits `currentColor` — the same
+ * reason the call icons are inline.
+ */
+function NodMark() {
+  return (
+    <svg width={17} height={17} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.7" opacity="0.35" />
+      <path
+        d="M7.5 10.5c1.6 2.4 3.1 3.6 4.5 3.6s2.9-1.2 4.5-3.6"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function EndIcon() {
+  /* A handset rotated down: the universal hang-up, and unmistakably not "call". */
+  return (
+    <svg {...STROKE} aria-hidden="true">
+      <path d="M15.5 12.7c-.6-.35-.86-1.08-.6-1.72l.5-1.24a9.6 9.6 0 0 0-6.8 0l.5 1.24c.26.64 0 1.37-.6 1.72l-1.7 1a1.4 1.4 0 0 1-1.87-.42l-1.2-1.8a1.4 1.4 0 0 1 .2-1.8 12.6 12.6 0 0 1 17.34 0 1.4 1.4 0 0 1 .2 1.8l-1.2 1.8a1.4 1.4 0 0 1-1.87.42Z" />
+    </svg>
   );
 }

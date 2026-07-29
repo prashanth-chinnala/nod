@@ -115,6 +115,20 @@ export function useSession(apiBase: string, sessionId?: string) {
   const socketRef = useRef<WebSocket | null>(null);
   const audioRef = useRef<AudioContext | null>(null);
   const cursorRef = useRef(0); // next free moment on the audio clock; 0 = no run in progress
+  /**
+   * Everything this path plays goes through one gain node, so playback can be silenced without
+   * changing the scheduling.
+   *
+   * That distinction is the whole reason it exists. When WebRTC is up, the runtime tees the same
+   * speech down both transports and the candidate hears the interviewer twice, slightly offset —
+   * which sounds like a broken model rather than a duplicated track. The obvious fix, dropping
+   * the socket's audio chunks, breaks something quieter: `audio_played` acks are emitted from
+   * `onended`, and the server truncates conversation history to *acknowledged* audio. Stop
+   * scheduling and the acks stop, so the server believes the candidate heard nothing and replays
+   * context it already said. Muting keeps the clock and the acks exactly as they were and removes
+   * only the duplicate sound.
+   */
+  const gainRef = useRef<GainNode | null>(null);
   const scheduledRef = useRef<Array<{ src: AudioBufferSourceNode; at: number; dur: number }>>([]);
   const drawingRef = useRef(false);
   const paintedEpochRef = useRef(0);
@@ -170,7 +184,7 @@ export function useSession(apiBase: string, sessionId?: string) {
 
     const src = ctx.createBufferSource();
     src.buffer = buffer;
-    src.connect(ctx.destination);
+    src.connect(gainRef.current ?? ctx.destination);
 
     const now = ctx.currentTime;
     let startAt: number;
@@ -304,6 +318,10 @@ export function useSession(apiBase: string, sessionId?: string) {
     const Ctx = window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
     const ctx = audioRef.current ?? new Ctx({ sampleRate: 16000 });
     audioRef.current = ctx;
+    if (!gainRef.current) {
+      gainRef.current = ctx.createGain();
+      gainRef.current.connect(ctx.destination);
+    }
     await ctx.resume();
 
     // The session id travels as a query parameter, which is how the candidate's link reaches
@@ -384,6 +402,18 @@ export function useSession(apiBase: string, sessionId?: string) {
     micRef.current = { stream, node };
   }, []);
 
+  /**
+   * Whether this path's audio is audible. Called with `false` once WebRTC audio is attached, so
+   * one voice is heard rather than two. Ramped rather than set: an instantaneous gain change on a
+   * playing buffer is a discontinuity, and a discontinuity is a click.
+   */
+  const setLocalPlayback = useCallback((audible: boolean) => {
+    const ctx = audioRef.current;
+    const gain = gainRef.current;
+    if (!ctx || !gain) return;
+    gain.gain.setTargetAtTime(audible ? 1 : 0, ctx.currentTime, 0.015);
+  }, []);
+
   const stopMic = useCallback(() => {
     micRef.current?.node.disconnect();
     micRef.current?.stream.getTracks().forEach((track) => track.stop());
@@ -406,6 +436,6 @@ export function useSession(apiBase: string, sessionId?: string) {
 
   return {
     state, hello, connected, transcript, metrics, error,
-    attachCanvas, connect, disconnect, say, send, startMic, stopMic,
+    attachCanvas, connect, disconnect, say, send, startMic, stopMic, setLocalPlayback,
   };
 }
