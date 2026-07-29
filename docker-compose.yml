@@ -1,0 +1,110 @@
+# The media plane: an SFU, a recorder, and the message bus they find each other on.
+#
+# Why this file exists at all. `livekit-server --dev` is a single binary and enough to hold a call,
+# which is why the WebRTC work was done against it. Recording is not part of that binary --
+# `livekit-egress` is a separate service that joins the room as a headless Chrome instance,
+# composites the participants, and writes a file. Until this file existed, the runtime could ask
+# for a recording and nothing was listening, so `recording.status` could only ever honestly say
+# `requested`.
+#
+# **Why Redis, since a dev SFU does not need one.** It is not a database here and nothing is
+# persisted in it. Egress is a *worker*: it starts up, advertises itself, and waits to be given
+# jobs. The SFU and the worker are separate processes that have to find each other and hand work
+# across, and LiveKit does that over a Redis pub/sub bus rather than by direct addressing -- which
+# is what lets you run six recorders on six machines without telling the SFU where any of them
+# are. `--dev` mode skips it precisely because a lone SFU has nobody to talk to. Add a second
+# service and the bus becomes load-bearing: with no Redis the egress worker starts, registers with
+# nothing, and the SFU accepts every egress request into a queue no worker is reading. That
+# failure is silent, which is the whole reason `recording.py` refuses to call a successful request
+# a recording.
+#
+# Credentials come from .env.development, the same file the runtime reads, so the SFU and the
+# runtime cannot disagree about the key pair and nothing secret is tracked. That means the
+# --env-file flag is not optional:
+#
+#   docker compose --env-file .env.development up -d
+#   docker compose --env-file .env.development logs -f egress
+#   docker compose --env-file .env.development down
+#
+# The API and the console are deliberately NOT in here. They are what you are editing; running
+# them in a container would put a rebuild between every change and the demo. This is the
+# infrastructure a developer wants running and stops thinking about.
+
+services:
+  redis:
+    image: redis:7-alpine
+    # No volume. Losing this is losing nothing -- it holds worker registrations and in-flight job
+    # handoffs, both of which are rebuilt the moment the services reconnect. A volume here would
+    # imply state worth keeping and invite someone to back it up.
+    command: redis-server --save "" --appendonly no
+    # Deliberately not published to the host. Only the SFU and the recorder talk to it, both on
+    # this compose network by service name -- publishing it would collide with any Redis a
+    # developer already runs (it did, immediately) and expose an unauthenticated instance for no
+    # reason.
+    expose:
+      - "6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  livekit:
+    image: livekit/livekit-server:latest
+    # `--config` rather than `--dev`, because --dev hardcodes a key pair AND disables the Redis
+    # bus, and the bus is exactly what is being added.
+    # `--node-ip` rather than a value in the mounted config, because the correct address is this
+    # machine's LAN IP and that file is tracked. It has to be one address both the host browser
+    # and the egress *container* can reach; loopback is not, and the recorder fails silently on it.
+    # Find yours with `ipconfig getifaddr en0` and put it in .env.development.
+    command: --config /etc/livekit.yaml --node-ip ${LIVEKIT_NODE_IP:-127.0.0.1}
+    volumes:
+      - ./infra/livekit.yaml:/etc/livekit.yaml:ro
+    environment:
+      # The key pair, from .env.development. Kept out of the mounted config file because that file
+      # is tracked; LiveKit reads this in the same "key: secret" form the yaml would have used.
+      LIVEKIT_KEYS: "${LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET}"
+    # Host networking on Linux would be simpler, but this has to work on macOS where the Docker
+    # VM has no host network. Explicit ports plus a UDP range instead.
+    ports:
+      - "7880:7880" # signalling (WebSocket) and the API the runtime calls
+      - "7881:7881" # TCP fallback for ICE
+      # RTP. Narrow on purpose: LiveKit's default range is 10,000 ports and Docker Desktop
+      # publishes each through its own userland proxy, which takes minutes to start. 51 is far
+      # more than a few local sessions needs. 51000 rather than the 50000 tried first, because
+      # something on this machine already held 50075 -- checked for a free block rather than
+      # guessing a second time.
+      - "51000-51050:51000-51050/udp"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  egress:
+    image: livekit/egress:latest
+    environment:
+      # Egress takes its whole configuration as one YAML blob in an env var rather than a file.
+      # `insecure: true` is here because the SFU is plain ws:// on a loopback network; it must not
+      # survive contact with a real deployment.
+      EGRESS_CONFIG_BODY: |
+        redis:
+          address: redis:6379
+        api_key: ${LIVEKIT_API_KEY}
+        api_secret: ${LIVEKIT_API_SECRET}
+        ws_url: ws://livekit:7880
+        insecure: true
+        log_level: info
+    # The recorder is headless Chrome compositing video. It needs a large /dev/shm or it crashes
+    # partway through with an out-of-memory that reads as a codec fault, and it needs SYS_ADMIN
+    # for Chrome's sandbox. Both are documented requirements rather than guesses.
+    shm_size: 1gb
+    cap_add:
+      - SYS_ADMIN
+    volumes:
+      # Where the finished file lands. Bind-mounted to the repo so a recording is inspectable
+      # without docker cp -- and `recordings/` is gitignored, because these are interviews.
+      - ./recordings:/out
+    depends_on:
+      redis:
+        condition: service_healthy
+      livekit:
+        condition: service_started

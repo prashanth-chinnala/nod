@@ -236,3 +236,28 @@ change to one `RendererConfig` value, and that too is a test.
 
 If CI ever needs a GPU package in order to import, a boundary has been broken. Fix the
 boundary; do not add the dependency.
+
+## Recording an interview
+
+Recording is a property of the LiveKit room, not code in this repo — but it needs a recorder to be
+running, which the SFU binary does not include. `docker-compose.yml` brings up the three pieces:
+the SFU, an egress worker, and the Redis bus they find each other over.
+
+```bash
+docker compose --env-file .env.development up -d      # SFU + egress + redis
+AVATAR_RECORD=1 uvicorn avatar.server:app --reload    # recording is opt-in
+```
+
+Finished files land in `recordings/` (gitignored — they are interviews). A 1m37s two-way call
+produced a 7.0 MB MP4: H.264 1280x720 at 30fps, AAC 44.1kHz stereo.
+
+Two settings are not optional and both fail silently if wrong:
+
+- **`--env-file .env.development`** — the SFU takes its key pair from there, so it and the runtime
+  cannot disagree, and nothing secret is tracked.
+- **`LIVEKIT_NODE_IP`** — the address the SFU advertises for media. It must be reachable by the
+  browser *and* by the egress container, so loopback does not work: to a container, `127.0.0.1` is
+  itself. Use your LAN address (`ipconfig getifaddr en0`).
+
+`AVATAR_RECORD` is off by default. Recording an interview has consent and retention consequences
+and should not switch itself on because an SFU happens to be configured.

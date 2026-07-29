@@ -92,3 +92,7 @@ next-env.d.ts
 # session transcript in /data, which the anchored `apps/api/data/` rule did not cover and which
 # duly got committed. Matching the directory at any depth is the only version that holds.
 data/
+
+# Finished recordings, bind-mounted out of the egress container. Interviews, in video form -- the
+# same reason `data/` is ignored, only larger and harder to un-publish.
+recordings/

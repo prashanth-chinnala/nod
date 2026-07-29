@@ -21,6 +21,7 @@ must be visible in a list rather than needing a log grep.
 
 from __future__ import annotations
 
+import contextlib
 from typing import Annotated, Any
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, status
@@ -137,6 +138,20 @@ async def rtc_credentials(session_id: str) -> dict[str, Any]:
     Returns `available: false` rather than a 500 when LiveKit is not configured. WebRTC is
     opt-in and a clean clone has no SFU, so the client must be able to fall back to the
     WebSocket transport rather than treat it as an outage.
+
+    **The room is created here, before the token is minted, and that ordering is the whole
+    point.** LiveKit auto-creates a room for whoever arrives first, and an auto-created room
+    carries no egress configuration — so recording depends on the room existing *with* its
+    config before anybody joins. `transport/livekit.py` also calls `ensure_room`, and for a
+    while that was the only call, which was wrong in a way that produced no error: the
+    candidate's browser fetches this token and connects immediately, while the agent's transport
+    is still starting, so the browser won a race by about a second and the SFU logged
+    `CreateRoom` on a room that already existed. Every interview reported `requested` and no
+    file was ever written.
+
+    This endpoint is the correct gate because it is the last thing that happens before a
+    participant can join: no token without a room. The transport's call stays, idempotent, for
+    the case where no browser ever asks — a headless or socket-only session.
     """
     _load(session_id)
     try:
@@ -147,12 +162,24 @@ async def rtc_credentials(session_id: str) -> dict[str, Any]:
         return {"available": False, "detail": str(exc)}
 
     room = f"session-{session_id}"
+
+    from avatar.transport.recording import ensure_room
+
+    # Awaited, not backgrounded: the token in this response admits the bearer to the room, so
+    # returning before the room exists would reopen the race this call exists to close.
+    recording = await ensure_room(room)
+    with contextlib.suppress(NotFound):  # _load above already proved the session exists
+        store.update(COLLECTION, session_id, {"recording": recording})
+
     return {
         "available": True,
         "url": url,
         "room": room,
         "token": room_token(room, f"candidate-{session_id}", name="Candidate"),
         "agent_identity": "avatar-agent",
+        # Reported back so the client knows whether it is being recorded from the same response
+        # that lets it join, rather than having to ask separately.
+        "recording": recording,
     }
 
 

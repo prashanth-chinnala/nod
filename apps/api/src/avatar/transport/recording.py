@@ -16,15 +16,26 @@ runs before the agent connects. It is idempotent -- creating a room that exists 
 existing one -- but the ordering is load-bearing and stated here because the failure is silent:
 join first and the interview records nothing, with no error anywhere.
 
-**What is honestly not verified.** Egress is a separate service from the SFU. It needs the
-`livekit-egress` binary and a Redis instance, and neither is present in this development
-environment -- `livekit-server --dev` runs the SFU alone. So the request below has never been
-observed producing a file. Every part of it that can be checked without one has been: the
-request is constructed and asserted against in tests, the room is created with the config
-attached, and a missing egress service is reported as a stored reason rather than an exception.
-The line between those two states is the whole point of `recording_status`, and the honest
-reading of this module today is "wired, unverified end to end" -- see PROCESS.md rather than
-assuming a recording exists.
+**Verified end to end, and here is what that took.** `docker-compose.yml` runs the SFU, an
+egress worker and the Redis bus they find each other over. Against that stack a real interview
+produced `session-<id>-<time>.mp4`: 7,048,686 bytes, 1m37s, H.264 1280x720 at 30fps with AAC
+44.1kHz stereo, matched to its room by egress's own manifest. Two ordering bugs stood between
+the code and that file, and both failed silently:
+
+  The room has to exist *before a join token is issued*, not before the agent connects. The
+  candidate's browser fetches its token and joins about a second ahead of the agent's transport,
+  so the transport's `ensure_room` was always the second caller -- the SFU had already
+  auto-created the room without egress, and `CreateRoom` on an existing room does not retrofit a
+  config. Every session reported `requested` and no file was written. `sessions.py` now creates
+  the room in the token endpoint.
+
+  The SFU must advertise an address the *recorder* can reach. `node_ip: 127.0.0.1` is right for
+  a browser on the host and means "itself" inside the egress container, so Chrome finished
+  signalling, received no media, saw an empty room and reported "Start signal not received". The
+  host's LAN address satisfies both.
+
+**What is still not verified from here.** This process never opens the file. `status` therefore
+stays `requested` even now -- see `ensure_room`.
 
 Nothing here is on the conversation's critical path. A room is created once per session, before
 the first turn.
@@ -35,14 +46,19 @@ from __future__ import annotations
 import os
 from typing import Any
 
-RECORDINGS_DIR = os.environ.get("AVATAR_RECORDINGS_DIR", "recordings")
+RECORDINGS_DIR = os.environ.get("AVATAR_RECORDINGS_DIR", "/out")
 """
-Where a local recording lands, relative to the egress service's own working directory.
+Where a recording lands -- **a path inside the egress container**, not on this machine.
 
-Local files by default rather than S3, so the credential-free path stays credential-free. That
-is also the configuration least likely to be right in production: a file on the egress
-container's disk disappears when it restarts, and the fix is one of the `s3`/`gcp`/`azure`
-fields on the same output object rather than a change here.
+Worth stating plainly because it is the easiest thing here to get wrong: this string is never
+opened by this process. It is handed to the egress service, which resolves it in its own
+filesystem. `/out` is where `docker-compose.yml` bind-mounts ./recordings, so a relative path
+would write into the container and vanish with it while looking entirely correct from here.
+
+Local files rather than S3 keeps the credential-free path credential-free, and it is also the
+configuration least likely to be right in production -- a file on a recorder's disk disappears
+when it restarts. The fix is one of the `s3`/`gcp`/`azure` fields on the same output object
+rather than a change here.
 """
 
 
@@ -103,9 +119,11 @@ async def ensure_room(room: str) -> dict[str, Any]:
       `unavailable`  requested, but the room could not be created with it -- reason attached
       `requested`    the room exists with an egress config, and the SFU owns it from here
 
-    `requested` is deliberately not called `recording`. Nothing here observes a file being
-    written; claiming a recording exists because a request succeeded is exactly the kind of
-    unverified assertion this project's first rule prohibits.
+    `requested` is deliberately not called `recording`, and stays that way now that files are
+    known to be produced. Nothing in this process opens the file: the SFU accepts an egress
+    config whether or not a worker is registered to act on it, and the two ordering bugs
+    described at the top of this module both presented as a successful request with no
+    recording. A status that claimed more than the code checked would have hidden both.
     """
     if not recording_enabled():
         return {

@@ -1,0 +1,42 @@
+# SFU configuration for local development with a recorder attached.
+#
+# This replaces `livekit-server --dev`. That flag is convenient and does two things at once: it
+# hardcodes the devkey/secret pair, and it runs the SFU standalone with no message bus. The second
+# half is what had to go -- egress is a separate worker process, and the SFU hands it jobs over
+# Redis, so the bus has to be configured.
+#
+# **No credentials in this file.** It is tracked, and a key pair committed to a repo is a key pair
+# that outlives every intention about it. The SFU takes them from `LIVEKIT_KEYS` instead, which
+# compose interpolates from `.env.development` -- the same file the runtime already reads, so the
+# two cannot drift and neither has to be told about the other.
+
+port: 7880
+
+rtc:
+  tcp_port: 7881
+  # Narrow, and matched to the range published in docker-compose.yml. LiveKit's default is 10,000
+  # UDP ports; Docker Desktop publishes each one through a separate userland proxy, which takes
+  # minutes to start and pins a CPU. 51 ports is far more than a handful of local sessions needs.
+  port_range_start: 51000
+  port_range_end: 51050
+  use_external_ip: false
+  # `node_ip` is NOT set here. It is passed as `--node-ip` from docker-compose.yml, because the
+  # right value is machine-specific and this file is tracked.
+  #
+  # Why it cannot be 127.0.0.1, which was the first answer and is wrong: the SFU advertises one
+  # address for media, and two very different clients have to reach it. A browser on the host
+  # reaches loopback fine. The egress recorder is a *container*, and to it 127.0.0.1 is itself --
+  # so Chrome completed signalling, received no media, saw an empty room, and reported
+  # "Start signal not received". Same class as the earlier 172.17.0.2 diagnosis, inverted: the
+  # value that fixed the browser broke the recorder.
+  #
+  # The host's LAN address satisfies both -- published ports make it reachable from the host, and
+  # it routes out of the Docker VM back to the host from a container.
+
+redis:
+  # Service name, resolved on the compose network. Nothing is persisted here: it carries worker
+  # registration and job handoff, both rebuilt on reconnect.
+  address: redis:6379
+
+logging:
+  level: info
