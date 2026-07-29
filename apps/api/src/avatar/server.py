@@ -36,6 +36,7 @@ from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
+from avatar.agent_config import ResolvedAgent, resolve_agent
 from avatar.api import (
     agents,
     faces,
@@ -58,6 +59,7 @@ from avatar.audio.vad import FRAME_MS, build_vad
 from avatar.config import load_env, loaded_files
 from avatar.contracts import RendererConfig
 from avatar.idle import placeholder_idle_loop
+from avatar.knowledge.augment import with_knowledge, with_pronunciation
 from avatar.llm_anthropic import build_llm
 from avatar.mixer import FRAME_INTERVAL_MS, TARGET_FPS, FrameMixer
 from avatar.orchestrator import RENDER_LEAD_IN_FRAMES, SessionOrchestrator
@@ -231,6 +233,11 @@ class BrowserSession:
             maxsize=RELAY_QUEUE_DEPTH
         )
 
+        # Resolved once per session, not per turn: the retriever indexes its whole corpus
+        # here, so a turn pays a scored lookup rather than re-reading documents from disk
+        # inside the latency budget.
+        self._agent: ResolvedAgent = resolve_agent()
+
         self._telemetry = Telemetry()
         self._telemetry.subscribe(self._on_telemetry)
 
@@ -259,8 +266,11 @@ class BrowserSession:
             ),
             mixer=self._mixer,
             transport=self._transport,
-            llm=build_llm(LLM_NAME),
-            tts=build_tts(TTS_NAME),
+            # Both boundaries are wrapped rather than the orchestrator being changed:
+            # retrieval augments the prompt, a lexicon rewrites text before synthesis, and
+            # neither is a session-lifecycle concern. The state machine cannot tell.
+            llm=with_knowledge(build_llm(LLM_NAME), self._agent.retriever),
+            tts=with_pronunciation(build_tts(TTS_NAME), self._agent.lexicon),
             telemetry=self._telemetry,
         )
 
