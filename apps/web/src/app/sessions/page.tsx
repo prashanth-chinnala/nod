@@ -16,7 +16,9 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 
-import { Button, Card, CardHeader, Cell, Chip, Empty, Metric, Page, Row, Table } from "@/components/ui";
+import { Button, Card, CardHeader, Cell, Chip, Empty, Metric, Page, Row, Table,
+  num,
+} from "@/components/ui";
 
 const API = process.env.NEXT_PUBLIC_API_BASE ?? "http://127.0.0.1:8000";
 
@@ -122,7 +124,7 @@ export default function SessionsPage() {
             Run one and it will appear here.
           </Empty>
         ) : (
-          <Table head={["Started", "Agent", "Turns", "Barge-ins", "Worst end-to-end", "State", ""]}>
+          <Table head={["Started", "Agent", num("Turns"), num("Barge-ins"), num("Worst end-to-end"), "State", ""]}>
             {(sessions ?? []).map((session) => {
               const worst = worstTotal(session);
               return (
@@ -179,7 +181,7 @@ export default function SessionsPage() {
               status={(worstTotal(open) ?? 0) > 1000 ? "bad" : "ok"}
             />
           </div>
-          <Table head={["#", "Heard", "Said", "LLM", "Voice", "Frame", "End-to-end"]}>
+          <Table head={["#", "Heard", "Said", num("LLM"), num("Voice"), num("Frame"), num("End-to-end")]}>
             {open.turns.map((turn, index) => (
               <Row key={`${turn.epoch}-${index}`}>
                 <Cell mono dim>{turn.epoch}</Cell>

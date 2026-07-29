@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import math
 import re
+import time
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from typing import Annotated, Any
@@ -409,3 +410,72 @@ def query_knowledge(kb_id: str, body: QueryRequest, data: StoreDep) -> list[Retr
     """
     record = _load(data, kb_id)
     return rank(record.get("chunks") or [], body.query, body.top_k)
+
+
+@router.post("/{kb_id}/embed")
+def embed_knowledge(kb_id: str, data: StoreDep) -> dict[str, Any]:
+    """
+    Push this base's documents into Chroma Cloud, so semantic retrieval can use them.
+
+    **Explicitly an action rather than a side effect of upload.** Embedding is not free and it
+    is not always wanted: the measured cost of a Chroma query is **408ms**, against a turn that
+    already runs 2.7-5.8s for a sub-second target, and the first call downloads a ~79MB ONNX
+    model because Chroma embeds client-side. Uploading a document should not silently commit an
+    operator to that. So it is a button, and the response reports what it cost.
+
+    What this buys, and it is real: matching a paraphrase that shares no words with the
+    document. Keyword scoring cannot do that, and on a large or varied corpus it is the
+    difference between retrieving the right paragraph and retrieving nothing. On one job
+    description it is not worth 408ms a turn, which is why the default retriever stays
+    keyword-based even after this has run.
+
+    Failure is reported rather than raised as a 500. A missing credential or an unreachable
+    vector store is a configuration problem the operator can fix from the same screen, and a
+    stack trace in a browser console is a worse way to learn it.
+    """
+    record = _load(data, kb_id)
+    documents = [
+        document
+        for document in (record.get("documents") or [])
+        if str(document.get("text") or "").strip()
+    ]
+    if not documents:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="nothing to embed: upload a document first",
+        )
+
+    from avatar.knowledge.chroma import ChromaRetriever
+
+    started = time.perf_counter()
+    try:
+        retriever = ChromaRetriever(collection=f"nod_{kb_id}")
+        chunks = 0
+        for document in documents:
+            chunks += retriever.index(
+                f"{kb_id}:{document.get('id', '')}",
+                str(document["text"]),
+                source=str(document.get("filename") or ""),
+            )
+    # Broad on purpose: a missing credential, an unreachable store, and a client-library
+    # change are all the same thing to an operator -- something to fix on this screen -- and a
+    # stack trace in a browser console is a worse way to learn any of them.
+    except Exception as exc:
+        return {
+            "embedded": False,
+            "detail": f"{type(exc).__name__}: {exc}",
+            "collection": f"nod_{kb_id}",
+        }
+
+    elapsed_ms = round((time.perf_counter() - started) * 1000)
+    return {
+        "embedded": True,
+        "collection": f"nod_{kb_id}",
+        "documents": len(documents),
+        "chunks": chunks,
+        "elapsed_ms": elapsed_ms,
+        # Returned so the console can say what switching to semantic retrieval would cost per
+        # turn, rather than presenting it as free.
+        "retriever_env": "AVATAR_RETRIEVER=chroma",
+        "measured_query_ms": 408,
+    }

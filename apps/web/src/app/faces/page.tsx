@@ -32,6 +32,7 @@ import {
   Row,
   Table,
   type Status,
+  num,
 } from "@/components/ui";
 
 const API = "http://127.0.0.1:8000";
@@ -208,7 +209,7 @@ export default function FacesPage() {
             shows up here once it has actually been measured.
           </Empty>
         ) : (
-          <Table head={["Name", "Status", "Enrollment", "Frames", "Updated (UTC)", ""]}>
+          <Table head={["Name", "Status", num("Enrollment"), num("Frames"), "Updated (UTC)", ""]}>
             {faces.map((face) => (
               <Row key={face.id}>
                 <Cell>

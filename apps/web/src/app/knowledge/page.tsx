@@ -30,6 +30,7 @@ import {
   Row,
   Select,
   Table,
+  num,
 } from "@/components/ui";
 
 /*
@@ -220,7 +221,7 @@ export default function KnowledgePage() {
             .
           </Empty>
         ) : (
-          <Table head={["Name", "Documents", "Chunks", "Characters", "Updated"]}>
+          <Table head={["Name", num("Documents"), num("Chunks"), num("Characters"), "Updated"]}>
             {bases.map((base) => (
               <Row key={base.id}>
                 <Cell>
@@ -355,7 +356,7 @@ export default function KnowledgePage() {
               </div>
             ) : (
               <div className="border-t border-hair">
-                <Table head={["Rank", "Score", "Document", "Chunk"]}>
+                <Table head={[num("Rank"), num("Score"), "Document", "Chunk"]}>
                   {hits.map((hit, index) => (
                     <Row key={`${hit.document_id}-${index}`}>
                       <Cell mono dim>

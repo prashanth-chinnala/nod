@@ -129,11 +129,22 @@ export function Button({
 
 /* ------------------------------------------------------------------ tables */
 
+/**
+ * A column heading. A bare string is a left-aligned text column; `{ label, align: "right" }`
+ * is a numeric one.
+ *
+ * Alignment lives on the header rather than being inferred, because the header and its cells
+ * have to agree and nothing else can enforce that. They did not agree before this existed:
+ * numeric cells were right-aligned via `<Cell right>` while every header stayed left, so a
+ * count sat visibly adrift from the word naming it — the wider the column, the worse the gap.
+ */
+export type Column = string | { label: string; align?: "left" | "right" };
+
 export function Table({
   head,
   children,
 }: {
-  head: readonly string[];
+  head: readonly Column[];
   children: ReactNode;
 }) {
   return (
@@ -141,24 +152,34 @@ export function Table({
       <table className="w-full min-w-full border-collapse text-[13px]">
         <thead>
           <tr>
-            {head.map((h) => (
-              <th
-                key={h}
-                scope="col"
-                className={cx(
-                  "border-b border-hair px-5 py-2.5 text-left",
-                  "text-[11px] font-medium tracking-[0.06em] uppercase text-ink-low",
-                )}
-              >
-                {h}
-              </th>
-            ))}
+            {head.map((column) => {
+              const { label, align } =
+                typeof column === "string" ? { label: column, align: "left" as const } : column;
+              return (
+                <th
+                  key={label}
+                  scope="col"
+                  className={cx(
+                    "border-b border-hair px-5 py-2.5",
+                    align === "right" ? "text-right" : "text-left",
+                    "text-[11px] font-medium tracking-[0.06em] uppercase text-ink-low",
+                  )}
+                >
+                  {label}
+                </th>
+              );
+            })}
           </tr>
         </thead>
         <tbody>{children}</tbody>
       </table>
     </div>
   );
+}
+
+/** Shorthand for a numeric column, so call sites stay readable. */
+export function num(label: string): Column {
+  return { label, align: "right" };
 }
 
 export function Row({ children }: { children: ReactNode }) {

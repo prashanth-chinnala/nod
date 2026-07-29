@@ -214,7 +214,7 @@ export default function NewSessionPage() {
                 </p>
                 {/* Resolved names, not ids. An operator about to send a candidate a link needs
                     to recognise the knowledge base, and `kb_47912396` is unrecognisable. */}
-                <Table head={["Component", "Resolved to", ""]}>
+                <Table head={["Component", "Resolved to", { label: "", align: "right" as const }]}>
                   <Row>
                     <Cell dim>Model</Cell>
                     <Cell mono>{agent.llm_model || agent.llm_provider || "adapter default"}</Cell>

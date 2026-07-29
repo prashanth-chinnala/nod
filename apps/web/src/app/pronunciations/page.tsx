@@ -29,6 +29,7 @@ import {
   Page,
   Row,
   Table,
+  num,
 } from "@/components/ui";
 
 const API = "http://127.0.0.1:8000";
@@ -253,7 +254,7 @@ export default function PronunciationsPage() {
               : "Every TTS voice mispronounces nginx, PostgreSQL, and Kubernetes. Name a lexicon above, add those three terms, and the interviewer stops sounding like it has never worked here."}
           </Empty>
         ) : (
-          <Table head={["Name", "Terms", "Updated", ""]}>
+          <Table head={["Name", num("Terms"), "Updated", ""]}>
             {lexicons.map((lexicon) => (
               <Row key={lexicon.id}>
                 <Cell>
