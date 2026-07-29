@@ -299,22 +299,14 @@
         <span class="num" id="db" style="font-size:11.5px;color:var(--ink-mid)">off</span>
       </div>
 
-      <p class="disclosure">
-        <strong>No model loaded.</strong> Those five rectangles are the stub renderer —
-        the mouth height is computed from the actual amplitude of each frame's 40ms of
-        audio, which is what makes audio-driven video visible. A talking-head model
-        lands in M2, behind the same interface. The voice is a synthesised tone, not
-        speech.
-      </p>
-      <p class="disclosure">
-        <strong>Turn detection is real; the detector is not.</strong> Tick the mic box
-        and your speech drives the state machine — onset, retraction, and end-of-turn
-        are decided server-side by a tested policy with separately tuned thresholds.
-        The default detector underneath it is an <em>energy gate</em>, so it will
-        trigger on a door as readily as on a voice. Run with
-        <code>AVATAR_VAD=silero</code> for a real one. There is no transcriber, so a
-        turn carries its duration instead of words.
-      </p>
+      <!--
+        Generated from the server's `hello` rather than written here. These captions were
+        hardcoded once and went stale the moment real speech-to-text and a real voice were
+        wired in: the page went on claiming "there is no transcriber" and "the voice is a
+        synthesised tone" while both were live. A caveat that is wrong is worse than no
+        caveat, because a reader who checks one and finds it false stops trusting the rest.
+      -->
+      <p class="disclosure" id="caveats">Connecting…</p>
     </div>
 
     <div class="panel readouts">
@@ -332,6 +324,7 @@
         <div class="row"><span class="k">Audio acked</span><span class="v" id="acked">0 ms</span></div>
         <div class="row"><span class="k">Audio underruns</span><span class="v" id="under">0</span></div>
         <div class="row"><span class="k">Speech probability</span><span class="v" id="prob">—</span></div>
+        <div class="row"><span class="k">Heard (sent to the LLM)</span><span class="v" id="heard">—</span></div>
         <div class="row"><span class="k">Mic uploaded</span><span class="v" id="mic-sent">0 KB</span></div>
         <div class="row"><span class="k">Received</span><span class="v" id="bytes">0 KB</span></div>
       </div>
@@ -473,6 +466,59 @@ function log(event, detail, cls) {
 
 const canvas = el("canvas");
 const ctx2d = canvas.getContext("2d", { alpha: false });
+
+// Build the page's honest caveats from what the server actually resolved, so a component
+// that gets wired in cannot leave a stale disclaimer behind. Each entry states the gap and
+// what closes it; a boundary running a real implementation contributes nothing, because a
+// caveat about something that works is noise.
+function describeCaveats(h) {
+  const gaps = [];
+
+  if (h.renderer === "stub") {
+    gaps.push(
+      "<strong>No talking-head model is loaded.</strong> Those five rectangles are the " +
+      "placeholder renderer — mouth height is computed from the real amplitude of each " +
+      "frame's 40ms of audio, which is what makes audio-driven video visible at all. " +
+      "It is not a face, and the brief puts visual fidelity out of scope."
+    );
+  }
+  if (h.tts === "tone") {
+    gaps.push(
+      "<strong>The voice is a synthesised tone, not speech.</strong> Its timing and " +
+      "chunking are real; set <code>AVATAR_TTS=deepgram</code> for an actual voice."
+    );
+  }
+  if (h.stt === "none") {
+    gaps.push(
+      "<strong>Nothing is transcribing you.</strong> A turn carries its duration instead " +
+      "of words, so the interviewer cannot follow up on an answer — it has not been given " +
+      "one. Set <code>AVATAR_STT=deepgram</code>."
+    );
+  }
+  if (h.llm === "scripted") {
+    gaps.push(
+      "<strong>The questions are canned.</strong> A fixed list, cycled — it is not " +
+      "reading your answers. Set <code>AVATAR_LLM=openai</code> or " +
+      "<code>anthropic</code>."
+    );
+  }
+  if (h.vad === "energy") {
+    gaps.push(
+      "<strong>The turn-taking policy is real; the detector under it is not.</strong> " +
+      "Onset, retraction, and end-of-turn are decided server-side by a tested policy with " +
+      "separately tuned thresholds — but the default detector is an <em>energy gate</em>, " +
+      "so it triggers on a door as readily as on a voice. " +
+      "<code>AVATAR_VAD=silero</code> is a real one."
+    );
+  }
+
+  if (!gaps.length) {
+    return "<strong>Every boundary is running a real implementation.</strong> " +
+      "Renderer, LLM, voice, transcription, and voice-activity detection are all live. " +
+      "Every number on this page is measured.";
+  }
+  return gaps.join("</p><p class=\"disclosure\">");
+}
 
 // Read the format off the bytes rather than trusting a declaration. The renderer behind
 // the Protocol chooses its own encoding -- the stub emits PNG, and a photographic model
@@ -680,6 +726,7 @@ function handleControl(message) {
     case "hello":
       hello = message;
       el("renderer").textContent = message.renderer;
+      el("caveats").innerHTML = describeCaveats(message);
       canvas.width = message.frame_width;
       canvas.height = message.frame_height;
       log("hello", `${message.renderer} · vad:${message.vad} · ${message.target_fps}fps · ` +
@@ -753,6 +800,22 @@ function handleEvent(message) {
       if (message.stage === "interrupt_to_silent") {
         log("interrupt", `${message.ms.toFixed(1)}ms from speech onset to avatar quiet`, "drop");
       }
+      break;
+
+    case "heard":
+      // What the LLM was actually given. Shown because its absence was a real defect:
+      // when the transcript comes back empty the interviewer still asks a plausible
+      // question, it just ignores the answer -- which reads as the model being stupid
+      // rather than as speech-to-text having returned nothing at all.
+      el("heard").textContent = message.text;
+      el("heard").style.color = message.transcribed ? "" : "var(--warn, #E0A458)";
+      log(
+        message.transcribed ? "heard" : "no-transcript",
+        message.transcribed
+          ? `"${message.text}"`
+          : `${message.text} — the LLM got no words, so its next question cannot follow up`,
+        message.transcribed ? "" : "drop",
+      );
       break;
 
     case "stale_dropped":

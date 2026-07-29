@@ -180,6 +180,24 @@ class Telemetry:
         self.increment("stale_dropped", kind=kind)
         self._emit("stale_dropped", kind=kind, stale_epoch=stale_epoch, current_epoch=current)
 
+    def heard(self, text: str, *, epoch: int, transcribed: bool) -> None:
+        """
+        What the transcriber produced for a turn, and whether it produced anything.
+
+        This exists because its absence was a real defect. The transcript is the input to
+        the LLM, and it was going into conversation history without ever being logged or
+        shown -- so an empty transcript was indistinguishable from a working one. The
+        visible symptom was an interviewer that asked a reasonable-sounding question with
+        no relation to the answer just given, which reads as "the model is ignoring me"
+        when the actual fault is upstream and total: no words reached the model at all.
+
+        `transcribed=False` marks the fallback path, where a turn is known to have
+        contained speech but no text came back. That case must be loud, because the
+        conversation continues plausibly without it and nothing else reveals the gap.
+        """
+        self.increment("heard", transcribed=str(transcribed).lower())
+        self._emit("heard", text=text, epoch=epoch, transcribed=transcribed)
+
     def frame_repeated(self, *, total: int) -> None:
         self.increment("frames_repeated")
         self._emit("frame_repeated", total=total)

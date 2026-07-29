@@ -235,15 +235,34 @@ than the original glitch. That is implemented and tested in this prototype
 
 ### 1.5 Latency budget
 
-| Stage | Target (ms) | Measured in prototype (ms) | Tag | Notes |
+Measured on an Apple M1 Pro, 16GB, no GPU, over **three consecutive end-to-end runs** with
+every component real — Deepgram Nova transcribing, `gpt-oss:20b` via Ollama Cloud, Deepgram
+Aura-2 speaking, the placeholder renderer. Three runs is a small sample and the spread is
+reported rather than averaged away, because the spread is the finding: the LLM term varies
+by **2.9×** run to run, and a mean would hide that.
+
+| Stage | Target (ms) | Measured (ms) — 3 runs | Tag | Notes |
 |---|---|---|---|---|
-| End-of-turn detection | 100–300 | **700** | | Configuration, not measurement. Over twice the top of my own target — see §3.3.1 caveat 4 |
-| Speech-to-text finalize | 50–150 | NOT YET MEASURED | | Streaming, so mostly already done incrementally |
-| LLM time-to-first-token | 200–500 | NOT YET MEASURED | | Only TTFT matters, not total generation |
-| TTS time-to-first-audio | 100–300 | **893** cold / **~400** warm | | Deepgram Aura-2, real. 3–9x over my target. See §3.3.2 |
-| Avatar first frame | 50–150 | NOT YET MEASURED | | |
-| Encode + network + jitter buffer | 50–150 | NOT YET MEASURED | | |
-| **Perceived total** | | NOT YET MEASURED | | |
+| End-of-turn detection | 100–300 | **700** (fixed) | | Configuration, not measurement. Over twice the top of my own target, and deliberately so — see §3.3.1 |
+| Speech-to-text finalize | 50–150 | **~0 observed** | | Streaming over a persistent socket, so the transcript is finalised by the time the silence window elapses. This term is hidden *inside* the 700ms above rather than added to it |
+| LLM time-to-first-token | 200–500 | **1,645 / 2,942 / 4,724** | | `gpt-oss:20b` on Ollama Cloud's free tier. **3–9× over target and the least predictable term in the budget.** A paid low-latency endpoint is the fix; this is not a model-architecture problem |
+| TTS time-to-first-audio | 100–300 | **869 / 956 / 889** | | Deepgram Aura-2 over REST. Remarkably stable, and ~3× over target. Aura's WebSocket interface measured **351–361ms** — verified, not built (§3.4) |
+| Avatar first frame | 50–150 | **2,656 / 4,136 / 5,782** | | Placeholder renderer, so this is *not* a model figure: it is the LLM plus TTS plus a few ms. A real model adds to it |
+| Encode + network + jitter buffer | 50–150 | **20–25** | | Loopback, so this is a floor, not a realistic figure. PNG encode plus socket plus decode plus paint. Across a real network the client's 150ms jitter buffer is added on top |
+| **Perceived total** | **< 1,000** | **2,679 / 4,161 / 5,802** | | Turn start to this page finishing `drawImage`, reported by the browser. **3–6× the target** |
+
+**Which term I would attack first, and why it is not the obvious one.** The LLM is the
+largest and worst-behaved term, but the *cheapest* real win is TTS: swapping Aura REST for
+its WebSocket interface is measured at ~550ms for about a day's work, with no quality
+trade-off. The LLM term is bigger but the fix is commercial rather than engineering — pay
+for a low-latency endpoint. The 700ms end-of-turn window is the second largest single term
+and **no amount of hardware touches it**; it is a conversational judgment, and the only real
+attack on it is speculative execution, which trades wasted compute for latency.
+
+**The conclusion this table exists to support:** a full turn is **2.7–5.8s** against a
+sub-second target, and **none of the three dominant terms is the renderer.** Subtract the
+renderer entirely — set it to zero — and roughly 2.6–5.7s remains. "We need more GPU" is
+measurably the wrong diagnosis for this pipeline.
 
 ### 1.6 Failure and edge handling
 

@@ -376,9 +376,15 @@ class BrowserSession:
             # flight -- that gap is the documented cost of keeping turn detection local
             # rather than delegating it to the STT vendor's endpointing.
             transcript = self._stt.take_transcript()
-            await self._orchestrator.on_end_of_turn(
-                transcript or f"[{event.speech_ms}ms of speech, no transcript]"
+            heard = transcript or f"[{event.speech_ms}ms of speech, no transcript]"
+            # Emitted before the turn starts, so the log shows what the LLM was given and
+            # not merely what it replied. Without this an empty transcript is invisible:
+            # the interviewer still asks a plausible question, it just has nothing to do
+            # with the answer, and that looks like a model problem rather than an STT one.
+            self._telemetry.heard(
+                heard, epoch=self._orchestrator.epoch, transcribed=bool(transcript)
             )
+            await self._orchestrator.on_end_of_turn(heard)
 
     # -- background pumps ---------------------------------------------------
 
