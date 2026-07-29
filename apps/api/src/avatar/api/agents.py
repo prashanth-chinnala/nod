@@ -1,23 +1,22 @@
 """
 CRUD for the Agent — the object every other console resource hangs off.
 
-**Why the turn-taking numbers are validated here and not only in `TurnDetector`.** The
-detector already refuses an inverted hysteresis pair at construction, which is the right
-place for the invariant and the wrong place to *discover* it: construction happens when a
-candidate connects, so a bad pair stored through this API surfaces as a session that dies
-at start rather than as a form that would not save. Rejecting the same shape at write time
-puts the failure in front of the operator who caused it, while there is still a form open.
+**Why the turn-taking numbers are validated here and not only in `TurnDetector`.** The detector
+already refuses an inverted hysteresis pair at construction, which is the right place for the
+invariant and the wrong place to *discover* it: construction happens when a candidate connects,
+so a bad pair stored through this API surfaces as a session that dies at start rather than as a
+form that would not save. Rejecting the same shape at write time puts the failure in front of
+the operator who caused it, while there is still a form open.
 
-**Why the defaults are imported rather than typed out.** They are the runtime's own
-constants. A literal `0.6` here would drift from `audio.turn_detection` the first time a
-threshold is tuned, and the console would then be confidently describing a policy the
-server does not run.
+**Why the defaults are imported rather than typed out.** They are the runtime's own constants. A
+literal `0.6` here would drift from `audio.turn_detection` the first time a threshold is tuned,
+and the console would then be confidently describing a policy the server does not run.
 
-**Why records go back to the client exactly as the store wrote them.** A response model
-would filter every read through this file's idea of an Agent, so a field written by a
-newer build would vanish from the console while still sitting on disk — a partial deploy
-would look like data loss. The store is the authority on what an agent is; this module is
-the authority on what may be written.
+**Why records go back to the client exactly as the store wrote them.** A response model would
+filter every read through this file's idea of an Agent, so a field written by a newer build
+would vanish from the console while still sitting on disk — a partial deploy would look like
+data loss. The store is the authority on what an agent is; this module is the authority on what
+may be written.
 """
 
 from __future__ import annotations
@@ -67,9 +66,9 @@ class TurnTaking(BaseModel):
     The turn-taking policy for one agent, mirroring `TurnDetector`'s parameters.
 
     Exposed as configuration rather than hidden behind server defaults because
-    `end_of_turn_silence_ms` is the largest single term in the measured latency budget and
-    is a conversational judgment, not a technical one — no hardware makes it smaller, so
-    the person tuning the interview has to be able to see and move it.
+    `end_of_turn_silence_ms` is the largest single term in the measured latency budget and is a
+    conversational judgment, not a technical one — no hardware makes it smaller, so the person
+    tuning the interview has to be able to see and move it.
     """
 
     # A typo'd key is worse than a rejection: it would be stored, never read, and the
@@ -91,8 +90,8 @@ class TurnTaking(BaseModel):
 
         Equal thresholds are rejected as well as inverted ones, which is stricter than the
         detector: with no gap, the probability dip inside an ordinary word drops below the
-        release bar the moment it stops clearing the onset bar, so the turn ends mid-word.
-        A config with no hysteresis at all has no reason to reach disk.
+        release bar the moment it stops clearing the onset bar, so the turn ends mid-word. A
+        config with no hysteresis at all has no reason to reach disk.
         """
         if self.release_probability >= self.onset_probability:
             raise ValueError(
@@ -130,11 +129,11 @@ class AgentUpdate(BaseModel):
     """
     A partial update. Only the keys present in the request body are touched.
 
-    `turn_taking` is replaced whole rather than merged field-by-field, because the
-    hysteresis invariant spans two fields: merging `release_probability` alone against a
-    stored `onset_probability` could only be checked after the merge, which would put the
-    rule in a second place and give it a second chance to be forgotten. Sending the whole
-    object keeps `TurnTaking` the single authority on whether a pair is legal.
+    `turn_taking` is replaced whole rather than merged field-by-field, because the hysteresis
+    invariant spans two fields: merging `release_probability` alone against a stored
+    `onset_probability` could only be checked after the merge, which would put the rule in a
+    second place and give it a second chance to be forgotten. Sending the whole object keeps
+    `TurnTaking` the single authority on whether a pair is legal.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -184,12 +183,12 @@ async def update_agent(agent_id: str, body: AgentUpdate) -> dict[str, Any]:
     """
     Merge the keys that were sent.
 
-    `exclude_unset` is what makes this a patch rather than a replace: without it, every
-    field the client omitted would arrive as its default and quietly overwrite a tuned
-    value. Note the one thing this cannot express — the store's merge drops `None`, so a
-    nullable field such as `face_id` cannot be cleared back to null through here. That is
-    a limitation of the store's merge, not a decision made here, and inventing a sentinel
-    to work around it would put two ideas of "empty" into the data.
+    `exclude_unset` is what makes this a patch rather than a replace: without it, every field
+    the client omitted would arrive as its default and quietly overwrite a tuned value. It is
+    also what makes clearing work: `exclude_unset` distinguishes "not sent" from "sent as null",
+    so sending `{"rubric_id": null}` detaches a rubric while omitting the key leaves it alone.
+    The store used to drop nulls, which collapsed those two and made a nullable field impossible
+    to clear — a console picker offering "none" would have appeared to work and changed nothing.
     """
     try:
         return store.update(COLLECTION, agent_id, body.model_dump(exclude_unset=True))
@@ -202,9 +201,9 @@ async def delete_agent(agent_id: str) -> None:
     """
     Hard delete, and deliberately not cascading.
 
-    Sessions reference an agent id; erasing those references to keep the data tidy would
-    rewrite history, and a transcript that no longer says which agent produced it is worth
-    less than a dangling id.
+    Sessions reference an agent id; erasing those references to keep the data tidy would rewrite
+    history, and a transcript that no longer says which agent produced it is worth less than a
+    dangling id.
     """
     try:
         store.delete(COLLECTION, agent_id)

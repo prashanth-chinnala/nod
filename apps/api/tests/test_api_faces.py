@@ -460,10 +460,12 @@ def test_a_failed_face_can_be_prepared_again(
     after fixing the clip must reach ready — a 409 here would force a delete and lose the
     record's history.
 
-    Also pins a documented wart rather than leaving it to be discovered: the store's merge
-    drops `None`, so the previous `failure_reason` survives the successful run. `status` is the
-    authority, and the console shows a reason only on a failed row. Anyone tempted to "fix"
-    this by writing a second empty value should read the note in `prepare_face` first.
+    Also asserts that the previous `failure_reason` is gone. It used to survive a successful
+    retry, because the store dropped nulls and so the field could not be unset -- leaving a
+    record that read `ready` while still carrying the reason it failed two attempts ago. That
+    was safe only for as long as every reader checked `status` first, which is a rule a record
+    should not need. The store now writes nulls, so the record simply stops contradicting
+    itself.
     """
 
     class FlakyRenderer:
@@ -484,7 +486,7 @@ def test_a_failed_face_can_be_prepared_again(
 
     assert retried["status"] == "ready"
     assert retried["enrollment_ms"] is not None
-    assert retried["failure_reason"] == "OSError: could not open reference clip"
+    assert retried["failure_reason"] is None
 
 
 def test_prepare_refuses_a_face_already_preparing(client: TestClient, store: Store) -> None:

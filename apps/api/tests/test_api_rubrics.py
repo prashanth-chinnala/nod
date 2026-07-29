@@ -199,3 +199,25 @@ def test_agent_without_a_rubric_gets_an_inactive_plan(
     agent = client.post("/agents", json={"name": "Plain"}).json()
     resolved = resolve_agent(agent["id"], data=Store(tmp_path))  # type: ignore[arg-type]
     assert resolved.plan.active is False
+
+
+def test_a_rubric_can_be_detached_from_an_agent(client: TestClient) -> None:
+    """
+    Sending `rubric_id: null` clears it; omitting the key leaves it alone.
+
+    Both halves matter and they used to be the same request. The store dropped nulls, so
+    "detach" silently did nothing — which would have made the console's picker offer a "none"
+    option that appeared to work and changed nothing. `exclude_unset` is what distinguishes
+    them, so this asserts the distinction rather than just the clear.
+    """
+    rubric = client.post("/rubrics", json=BACKEND).json()
+    agent = client.post(
+        "/agents", json={"name": "Interviewer", "rubric_id": rubric["id"]}
+    ).json()
+
+    # Omitting the key must not disturb it.
+    untouched = client.patch(f"/agents/{agent['id']}", json={"name": "Renamed"}).json()
+    assert untouched["rubric_id"] == rubric["id"]
+
+    detached = client.patch(f"/agents/{agent['id']}", json={"rubric_id": None}).json()
+    assert detached["rubric_id"] is None

@@ -2,21 +2,21 @@
 A JSON-file-backed store for console resources.
 
 **Why not a database.** Every resource here is a handful of small documents edited by one
-operator: agents, faces, knowledge bases, tools, guardrails, pronunciations. Postgres would
-add a service to run, a migration tool, and a connection pool to tune, in exchange for
-guarantees nothing here needs. A directory of JSON files is inspectable with `cat`, diffable
-in git, and survives a process restart — which is the entire requirement.
+operator: agents, faces, knowledge bases, tools, guardrails, pronunciations. Postgres would add
+a service to run, a migration tool, and a connection pool to tune, in exchange for guarantees
+nothing here needs. A directory of JSON files is inspectable with `cat`, diffable in git, and
+survives a process restart — which is the entire requirement.
 
 **What this deliberately is not.** No concurrent-writer safety beyond a whole-file atomic
-replace, no transactions across collections, no query language. The moment two operators
-edit simultaneously, or a collection grows past a few thousand rows, this should be replaced
-rather than extended. Writing that down now is cheaper than discovering the boundary later:
-the `Store` surface is small enough that swapping the backing for SQL is a contained change.
+replace, no transactions across collections, no query language. The moment two operators edit
+simultaneously, or a collection grows past a few thousand rows, this should be replaced rather
+than extended. Writing that down now is cheaper than discovering the boundary later: the `Store`
+surface is small enough that swapping the backing for SQL is a contained change.
 
-Atomic replace matters even at this size. A half-written JSON file is a corrupted resource
-that fails on read forever, and a crash mid-write is exactly when it would happen — so every
-write goes to a temporary file in the same directory and is renamed over the target, which
-POSIX guarantees is atomic.
+Atomic replace matters even at this size. A half-written JSON file is a corrupted resource that
+fails on read forever, and a crash mid-write is exactly when it would happen — so every write
+goes to a temporary file in the same directory and is renamed over the target, which POSIX
+guarantees is atomic.
 """
 
 from __future__ import annotations
@@ -34,8 +34,8 @@ DATA_ROOT = Path(os.environ.get("AVATAR_DATA_DIR", "data"))
 """
 Where resources live. Overridable so tests get a tmp_path and never touch real data.
 
-Relative by default, resolved against the working directory rather than the package, because
-the data belongs to the deployment and not to the installed library.
+Relative by default, resolved against the working directory rather than the package, because the
+data belongs to the deployment and not to the installed library.
 """
 
 
@@ -48,9 +48,9 @@ def new_id(prefix: str) -> str:
     """
     A prefixed, URL-safe identifier: `agent_3f9a1c2b`.
 
-    Prefixed on purpose. A bare UUID in a log line or a bug report tells you nothing about
-    what it refers to, and mixing up a face id and an agent id is the kind of mistake that
-    is silent until something renders the wrong persona.
+    Prefixed on purpose. A bare UUID in a log line or a bug report tells you nothing about what
+    it refers to, and mixing up a face id and an agent id is the kind of mistake that is silent
+    until something renders the wrong persona.
     """
     return f"{prefix}_{uuid.uuid4().hex[:8]}"
 
@@ -63,9 +63,8 @@ class Store:
     """
     One directory per collection, one JSON file per record.
 
-    Chosen over a single file per collection so that two resources being edited never
-    contend for the same file, and so a corrupt record cannot take its whole collection down
-    with it.
+    Chosen over a single file per collection so that two resources being edited never contend
+    for the same file, and so a corrupt record cannot take its whole collection down with it.
     """
 
     def __init__(self, root: Path | None = None) -> None:
@@ -97,8 +96,8 @@ class Store:
         """
         Every record, newest first.
 
-        A corrupt or half-written file is skipped rather than raising: one bad record must
-        not make a whole page 500. It stays on disk to be inspected.
+        A corrupt or half-written file is skipped rather than raising: one bad record must not
+        make a whole page 500. It stays on disk to be inspected.
         """
         records: list[dict[str, Any]] = []
         for path in sorted(self._dir(collection).glob("*.json")):
@@ -127,9 +126,16 @@ class Store:
 
         A PATCH that could rewrite an id would let one resource silently become another, and
         `created_at` moving would break the ordering every list view depends on.
+
+        **`None` sets a field to null rather than being ignored.** This filtered nulls out,
+        which made "not sent" and "explicitly cleared" the same request and so made a nullable
+        field impossible to clear: detaching a rubric or a face from an agent silently did
+        nothing, and the console would have shown a picker that appeared to work. Distinguishing
+        the two is the caller's job and the routers already do it — every one dumps its body
+        with `exclude_unset=True`, so a key reaches here only when the client actually sent it.
         """
         record = self.get(collection, record_id)
-        record.update({k: v for k, v in patch.items() if v is not None})
+        record.update(patch)
         record["id"] = record_id
         record["updated_at"] = now_iso()
         self._write(collection, record)
@@ -145,9 +151,9 @@ class Store:
         """
         Atomic replace: write a sibling temp file, fsync, rename over the target.
 
-        The rename is the atomic step POSIX guarantees. Without it, a crash between opening
-        the target and finishing the write leaves a truncated JSON file that fails to parse
-        on every subsequent read — a resource permanently broken by an unlucky moment.
+        The rename is the atomic step POSIX guarantees. Without it, a crash between opening the
+        target and finishing the write leaves a truncated JSON file that fails to parse on every
+        subsequent read — a resource permanently broken by an unlucky moment.
         """
         target = self._file(collection, record["id"])
         payload = json.dumps(record, indent=2, sort_keys=True) + "\n"

@@ -25,6 +25,7 @@ const GROUPS = [
     items: [
       { href: "/knowledge", name: "Knowledge", hint: "Retrieval context" },
       { href: "/tools", name: "Tools", hint: "Callable functions" },
+      { href: "/rubrics", name: "Rubrics", hint: "Competencies & scoring" },
       { href: "/guardrails", name: "Guardrails", hint: "Input & output policy" },
       { href: "/pronunciations", name: "Pronunciations", hint: "Lexicon overrides" },
     ],

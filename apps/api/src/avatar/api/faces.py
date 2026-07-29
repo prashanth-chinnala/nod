@@ -1,32 +1,30 @@
 """
-CRUD for the Face — a reference clip or image, plus the prepared identity artifact made
-from it.
+CRUD for the Face — a reference clip or image, plus the prepared identity artifact made from it.
 
-**Why enrollment is a status field and not a synchronous side effect of create.** Preparing
-an identity is the one part of this system that is allowed to be slow: `TalkingHeadRenderer`
-says so explicitly, because a real model crops and encodes every frame of the reference clip
-before a session can use it. Doing that inside `POST /faces` would make the create call take
-however long the clip takes, with no record on disk if it died half way. A face therefore
-exists first and is enrolled second, and `status` is what says which of those has happened.
+**Why enrollment is a status field and not a synchronous side effect of create.** Preparing an
+identity is the one part of this system that is allowed to be slow: `TalkingHeadRenderer` says
+so explicitly, because a real model crops and encodes every frame of the reference clip before a
+session can use it. Doing that inside `POST /faces` would make the create call take however long
+the clip takes, with no record on disk if it died half way. A face therefore exists first and is
+enrolled second, and `status` is what says which of those has happened.
 
-**Why a failed prepare is a 200 and not a 500.** A reference clip with no detectable face,
-an unreadable file, a video the decoder refuses — these are the ordinary outcomes of pointing
-a model at operator-supplied media, not server faults. Returning a 500 would put them in the
-error log next to real bugs and leave the operator with nothing to look at; storing
-`status="failed"` with the reason puts the outcome on the row that caused it. The only thing
-this endpoint treats as a genuine fault is a face id that does not exist.
+**Why a failed prepare is a 200 and not a 500.** A reference clip with no detectable face, an
+unreadable file, a video the decoder refuses — these are the ordinary outcomes of pointing a
+model at operator-supplied media, not server faults. Returning a 500 would put them in the error
+log next to real bugs and leave the operator with nothing to look at; storing `status="failed"`
+with the reason puts the outcome on the row that caused it. The only thing this endpoint treats
+as a genuine fault is a face id that does not exist.
 
 **Why `reference_path` cannot be patched.** `status`, `enrollment_ms` and `frame_count` are
-findings about one specific clip. Re-pointing a prepared face at different media would leave
-a measured number attached to something it was never measured from — and the store's merge
-drops `None`, so those fields could not be cleared in the same write (`agents.py` documents
-the same limitation). A new reference is a new face; only the label is editable.
+findings about one specific clip. Re-pointing a prepared face at different media would leave a
+measured number attached to something it was never measured from — and the store's merge drops
+`None`, so those fields could not be cleared in the same write (`agents.py` documents the same
+limitation). A new reference is a new face; only the label is editable.
 
 **Why records go back to the client exactly as the store wrote them.** Same reason as
-`agents.py`: a response model would filter every read through this file's idea of a Face, so
-a field written by a newer build would vanish from the console while still sitting on disk.
-The store is the authority on what a face is; this module is the authority on what may be
-written.
+`agents.py`: a response model would filter every read through this file's idea of a Face, so a
+field written by a newer build would vanish from the console while still sitting on disk. The
+store is the authority on what a face is; this module is the authority on what may be written.
 """
 
 from __future__ import annotations
@@ -52,14 +50,14 @@ PREPARE_RENDERER = "stub"
 """
 Which renderer performs enrollment.
 
-Pinned to the stub rather than read from `AVATAR_RENDERER`, and that is the honest state of
-this milestone: no GPU exists yet, so the queue, the status transitions and the failure path
-have to be buildable and testable against a renderer that needs nothing. `build` is the
-one-line swap — when the real renderer runs, this constant is what changes, and every
-transition around it has already been exercised.
+Pinned to the stub rather than read from `AVATAR_RENDERER`, and that is the honest state of this
+milestone: no GPU exists yet, so the queue, the status transitions and the failure path have to
+be buildable and testable against a renderer that needs nothing. `build` is the one-line swap —
+when the real renderer runs, this constant is what changes, and every transition around it has
+already been exercised.
 
-The consequence, stated rather than hidden: an `enrollment_ms` recorded today is the cost of
-the stub's no-op, not of a real enrollment. It is a real measurement of the wrong thing.
+The consequence, stated rather than hidden: an `enrollment_ms` recorded today is the cost of the
+stub's no-op, not of a real enrollment. It is a real measurement of the wrong thing.
 """
 
 PREPARABLE: frozenset[str] = frozenset({"queued", "failed"})
@@ -67,10 +65,10 @@ PREPARABLE: frozenset[str] = frozenset({"queued", "failed"})
 The statuses `POST /{id}/prepare` accepts.
 
 `preparing` is excluded because a second run would race the first for the same record and the
-loser's result would silently overwrite the winner's — a double-clicked button must not be
-able to do that. `ready` is excluded because prepare overwrites a recorded measurement:
-refusing it means the `enrollment_ms` on a ready face is always the number produced by the
-run that made it ready. Re-enrolling is a delete and a create, which is cheap here.
+loser's result would silently overwrite the winner's — a double-clicked button must not be able
+to do that. `ready` is excluded because prepare overwrites a recorded measurement: refusing it
+means the `enrollment_ms` on a ready face is always the number produced by the run that made it
+ready. Re-enrolling is a delete and a create, which is cheap here.
 """
 
 
@@ -100,8 +98,8 @@ A path the *server* resolves, not the browser.
 
 Deliberately not checked for existence here. Whether a reference is usable is the renderer's
 judgment — a real one may accept a directory of frames, or a URL — and a pre-flight
-`Path.exists()` in the router would either duplicate that judgment or contradict it. An
-unusable reference surfaces where it is discovered, as `status="failed"` with the reason.
+`Path.exists()` in the router would either duplicate that judgment or contradict it. An unusable
+reference surfaces where it is discovered, as `status="failed"` with the reason.
 """
 
 
@@ -110,10 +108,10 @@ class FaceCreate(BaseModel):
     What a client may send to create a face.
 
     `status`, `enrollment_ms`, `frame_count` and `failure_reason` are absent on purpose, and
-    `extra="forbid"` makes sending them a 422 rather than a silent no-op. Every one of them
-    is a finding produced by a prepare run; accepting them from a client would let a face be
-    declared ready, with a latency figure, without anything having been measured. That is the
-    one failure this project is least allowed to have.
+    `extra="forbid"` makes sending them a 422 rather than a silent no-op. Every one of them is a
+    finding produced by a prepare run; accepting them from a client would let a face be declared
+    ready, with a latency figure, without anything having been measured. That is the one failure
+    this project is least allowed to have.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -127,8 +125,8 @@ class FaceUpdate(BaseModel):
     A partial update. Only the label is editable — see the module docstring.
 
     `extra="forbid"` is what turns "patch `reference_path`" into a 422 that names the rule,
-    instead of a write that quietly succeeds and leaves a measurement attached to media it
-    did not come from.
+    instead of a write that quietly succeeds and leaves a measurement attached to media it did
+    not come from.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -146,10 +144,10 @@ def _reported_frame_count(identity: object) -> int | None:
     """
     The frame count the identity artifact reports, or `None` if it does not report one.
 
-    Read off the artifact rather than computed here, because counting frames means decoding
-    the clip and the renderer has already done that. Neither renderer exposes it yet, so this
-    returns `None` today: an operator sees an empty cell rather than a number nothing
-    measured, which is the correct outcome under this repo's first standing rule.
+    Read off the artifact rather than computed here, because counting frames means decoding the
+    clip and the renderer has already done that. Neither renderer exposes it yet, so this
+    returns `None` today: an operator sees an empty cell rather than a number nothing measured,
+    which is the correct outcome under this repo's first standing rule.
     """
     value = getattr(identity, "frame_count", None)
     if isinstance(value, bool) or not isinstance(value, int):
@@ -199,8 +197,9 @@ async def update_face(face_id: str, body: FaceUpdate) -> dict[str, Any]:
     Merge the keys that were sent.
 
     `exclude_unset` is what makes this a patch rather than a replace: without it an omitted
-    `name` would arrive as `None` and — because the store's merge drops `None` — the request
-    would look like it had been applied while changing nothing but `updated_at`.
+    `name` would arrive as `None` and overwrite the stored one with nothing. The store now
+    applies nulls rather than dropping them, so that failure would be destructive instead of
+    merely confusing — which makes `exclude_unset` load-bearing here rather than tidy.
     """
     patch = body.model_dump(exclude_unset=True)
     if not patch:
@@ -224,8 +223,8 @@ async def delete_face(face_id: str) -> None:
     Hard delete, and deliberately not cascading.
 
     An agent may reference this face id. Rewriting those agents to keep the data tidy would
-    change a configuration nobody asked to change; a dangling id that shows up as "missing
-    face" at session start is the smaller and more visible problem.
+    change a configuration nobody asked to change; a dangling id that shows up as "missing face"
+    at session start is the smaller and more visible problem.
     """
     try:
         store.delete(COLLECTION, face_id)
@@ -241,14 +240,14 @@ def prepare_face(face_id: str) -> dict[str, Any]:
     **Declared `def`, not `async def`, and that is load-bearing.** `prepare_identity` is
     synchronous and allowed to be slow. In an `async def` handler it would run on the event
     loop, which is the same loop serving live WebSocket sessions — one enrollment would stall
-    every conversation in progress. A sync handler is dispatched to a threadpool instead, so
-    the cost lands on a worker thread.
+    every conversation in progress. A sync handler is dispatched to a threadpool instead, so the
+    cost lands on a worker thread.
 
     **`preparing` is written before the renderer is touched** so that a process killed mid-
     enrollment leaves evidence of an attempt rather than a record that still claims to be
-    queued. The cost of that choice, stated because it is real: nothing reaps a `preparing`
-    row afterwards, so a crashed enrollment leaves a face that `PREPARABLE` will not accept
-    again and has to be deleted. A reaper belongs with a real job queue, which this is not.
+    queued. The cost of that choice, stated because it is real: nothing reaps a `preparing` row
+    afterwards, so a crashed enrollment leaves a face that `PREPARABLE` will not accept again
+    and has to be deleted. A reaper belongs with a real job queue, which this is not.
     """
     try:
         record = store.get(COLLECTION, face_id)
@@ -287,16 +286,17 @@ def prepare_face(face_id: str) -> dict[str, Any]:
         )
     elapsed_ms = round((time.perf_counter() - started) * 1000)
 
-    # `failure_reason` from an earlier failed run is left as it was: the store's merge drops
-    # `None`, so it cannot be unset in this write, and inventing a second empty value to work
-    # around that would put two ideas of "no failure" into the data. `status` is the
-    # authority — readers must show a reason only while the status is `failed`, which is what
-    # the console page does.
+    # `failure_reason` is explicitly cleared, not left behind. It used to survive a later
+    # successful run because the store dropped nulls, so a face could read `ready` while still
+    # carrying the reason it failed two attempts ago -- harmless only for as long as every
+    # reader remembered to check `status` first. Now that a null can be written, the record can
+    # simply stop contradicting itself.
     return store.update(
         COLLECTION,
         face_id,
         {
             "status": "ready",
+            "failure_reason": None,
             "enrollment_ms": elapsed_ms,
             "frame_count": _reported_frame_count(identity),
         },
