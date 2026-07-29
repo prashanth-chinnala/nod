@@ -20,8 +20,13 @@
 
 import type { ReactNode } from "react";
 
-/** Split on `**bold**` and `` `code` ``, keeping the delimiters so the parts can be typed. */
-const INLINE = /(\*\*[^*]+\*\*|`[^`]+`)/g;
+/**
+ * Split on `**bold**`, `*italic*` and `` `code` ``, keeping the delimiters so parts can be typed.
+ *
+ * Bold is listed first so `**x**` is not consumed as two italics. Italic was added after watching
+ * the model write `*unasked*` in a status column, which rendered with its asterisks showing.
+ */
+const INLINE = /(\*\*[^*]+\*\*|\*[^*\n]+\*|`[^`]+`)/g;
 
 function inline(text: string, keyPrefix: string): ReactNode[] {
   return text.split(INLINE).map((part, index) => {
@@ -31,6 +36,13 @@ function inline(text: string, keyPrefix: string): ReactNode[] {
         <strong key={key} className="font-medium text-ink">
           {part.slice(2, -2)}
         </strong>
+      );
+    }
+    if (part.startsWith("*") && part.endsWith("*") && part.length > 2) {
+      return (
+        <em key={key} className="text-ink-mid not-italic">
+          {part.slice(1, -1)}
+        </em>
       );
     }
     if (part.startsWith("`") && part.endsWith("`") && part.length > 2) {

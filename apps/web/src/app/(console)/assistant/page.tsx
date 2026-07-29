@@ -1,248 +1,49 @@
 "use client";
 
 /**
- * The assistant: ask questions about interviews, see what it looked at to answer.
+ * The assistant's full page: the same conversation as the docked panel, plus the disclosure.
  *
- * **The tool steps are the feature, not decoration.** An answer about six candidates is fifteen
- * seconds of tool calls and then some prose, and a bare spinner for that makes the whole thing feel
- * unreliable. Showing each call as it runs does two things: the wait becomes progress, and the
- * answer becomes checkable — you can see it read interview quality before it commented on a low
- * score, or that it never opened the transcript it is describing. That is the difference between
- * trusting an answer and taking it on faith, and it is why the steps stay visible after the answer
- * arrives instead of collapsing away.
+ * **Why both a page and a dock.** The dock is where the work happens — the questions worth asking
+ * are about the record on screen, and leaving that screen to ask about it is the wrong shape. The
+ * page exists for two things the panel cannot do well: reading a long comparison without a 30rem
+ * column, and disclosing what the assistant can see and change. That disclosure belongs on a page
+ * someone can link to and read, not behind a toggle in a side panel.
  *
- * **Capabilities are disclosed, not asserted.** The panel lists what the assistant can read and what
- * it can change, fetched from the service so it cannot drift from the code. Every write is a
- * proposal a human applies, and saying that once in a doc is not the same as saying it on the screen
- * where someone is about to ask for one.
- *
- * **The suggested questions are chosen deliberately.** They are the things a person cannot do well
- * by hand — cross-session consistency, coverage gaps, separating a bad interview from a weak
- * candidate — rather than "summarise this session", which the report page already answers. A first
- * screen full of the easy cases teaches the wrong mental model of what this is for.
+ * The conversation itself is `AssistantChat`, the same component the dock renders. One surface, so a
+ * feature cannot exist in one place and quietly go missing from the other.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
-import { Prose } from "@/components/prose";
-import { Button, Card, CardHeader, Chip, Page } from "@/components/ui";
-import {
-  fetchCapabilities,
-  useAssistant,
-  type Capabilities,
-  type Message,
-} from "@/lib/assistant";
-
-/** Openers that show what this is actually for. See the module docstring. */
-const SUGGESTIONS = [
-  "Where do the ratings contradict each other across candidates?",
-  "Which competencies are we never actually probing?",
-  "Was the last interview any good, as an interview?",
-  "Which sessions have an unverified quote in their scorecard?",
-] as const;
-
-/**
- * Tool names as an operator would say them.
- *
- * A raw `consistency_audit` is legible enough to a developer and reads as machinery to everyone
- * else. Falls back to the raw name so a tool added to the service is never invisible here.
- */
-const TOOL_LABELS: Record<string, string> = {
-  list_sessions: "listing interviews",
-  get_transcript: "reading the transcript",
-  get_scorecard: "reading the scorecard",
-  get_coverage: "checking what was probed",
-  interview_quality: "checking interview quality",
-  compare_candidates: "comparing candidates",
-  consistency_audit: "auditing consistency",
-  coverage_gaps: "looking for coverage gaps",
-  action_history: "checking past actions",
-  flag_for_review: "flagging for review",
-  add_note: "recording a note",
-  request_rescore: "proposing a re-score",
-  propose_rubric_change: "drafting a rubric change",
-  propose_calibration_anchor: "proposing a calibration anchor",
-};
-
-const WRITE_TOOLS = new Set([
-  "flag_for_review",
-  "add_note",
-  "request_rescore",
-  "propose_rubric_change",
-  "propose_calibration_anchor",
-]);
+import { AssistantChat } from "@/components/assistant-chat";
+import { Card, CardHeader, Chip, Page } from "@/components/ui";
+import { fetchCapabilities, type Capabilities } from "@/lib/assistant";
 
 export default function AssistantPage() {
-  // No accounts exist, so this is a claim rather than an identity. It is sent with every write so a
-  // proposal carries a name, and the disclosure panel says plainly that it is unverified.
+  // No accounts exist, so this is a claim rather than an identity. Sent with every write so a
+  // proposal carries a name; the panel below says plainly that it is unverified.
   const [actor, setActor] = useState("operator");
-  const { messages, busy, send, stop, reset } = useAssistant(actor);
-  const [draft, setDraft] = useState("");
   const [capabilities, setCapabilities] = useState<Capabilities | null>(null);
-  const [showCapabilities, setShowCapabilities] = useState(false);
-  const scroller = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     fetchCapabilities().then(setCapabilities);
   }, []);
 
-  // Follow the stream. Tokens arrive continuously, so this runs on content length rather than on
-  // message count.
-  useEffect(() => {
-    scroller.current?.scrollTo({ top: scroller.current.scrollHeight, behavior: "smooth" });
-  }, [messages]);
-
-  const submit = useCallback(
-    (question: string) => {
-      void send(question);
-      setDraft("");
-    },
-    [send],
-  );
-
   return (
     <Page
       title="Assistant"
-      lede="Ask about interviews, or about the interviews themselves. It reads records, finds contradictions between them, and drafts changes for you to apply — it never decides anything."
-      action={
-        <div className="flex gap-2">
-          <Button onClick={() => setShowCapabilities((open) => !open)}>
-            {showCapabilities ? "Hide" : "What can it do?"}
-          </Button>
-          <Button onClick={reset} disabled={messages.length === 0}>
-            New conversation
-          </Button>
-        </div>
-      }
+      lede="The same assistant as the panel, with room for a long answer — and the disclosure of what it can see and change. It reads records, finds contradictions between them, and drafts changes for you to apply. It never decides anything."
     >
-      {showCapabilities ? <CapabilityPanel capabilities={capabilities} actor={actor} onActor={setActor} /> : null}
-
       <Card>
         <CardHeader
           title="Conversation"
           hint="Every step it takes is shown. If it answers about a transcript it never opened, you will see that."
         />
-
-        <div ref={scroller} className="max-h-[60vh] min-h-72 space-y-5 overflow-y-auto px-5 py-5">
-          {messages.length === 0 ? (
-            <div className="py-6">
-              <p className="text-[12.5px] text-ink-mid">
-                Things worth asking — these are the ones that are hard to do by hand:
-              </p>
-              <div className="mt-3 flex flex-col items-start gap-2">
-                {SUGGESTIONS.map((suggestion) => (
-                  <button
-                    key={suggestion}
-                    type="button"
-                    onClick={() => submit(suggestion)}
-                    className="rounded-lg border border-hair-strong bg-glass-raise px-3 py-2 text-left text-[12.5px] text-ink-mid transition-colors hover:border-ink-low hover:text-ink"
-                  >
-                    {suggestion}
-                  </button>
-                ))}
-              </div>
-            </div>
-          ) : null}
-
-          {messages.map((message, index) => (
-            <Bubble key={index} message={message} streaming={busy && index === messages.length - 1} />
-          ))}
-        </div>
-
-        <form
-          className="flex gap-2 border-t border-hair px-5 py-4"
-          onSubmit={(event) => {
-            event.preventDefault();
-            submit(draft);
-          }}
-        >
-          <input
-            value={draft}
-            onChange={(event) => setDraft(event.target.value)}
-            placeholder="Ask about a session, or across all of them…"
-            aria-label="Ask the assistant"
-            className="min-w-0 flex-1 rounded-lg border border-hair-strong bg-base px-3 py-2 text-[13px] text-ink placeholder:text-ink-low"
-          />
-          {busy ? (
-            <Button variant="danger" onClick={stop}>
-              Stop
-            </Button>
-          ) : (
-            <Button variant="primary" type="submit" disabled={!draft.trim()}>
-              Ask
-            </Button>
-          )}
-        </form>
+        <AssistantChat actor={actor} />
       </Card>
+
+      <CapabilityPanel capabilities={capabilities} actor={actor} onActor={setActor} />
     </Page>
-  );
-}
-
-/**
- * One message. The assistant's carries its tool steps above the prose.
- *
- * Above rather than below, because they happen first and because they are what is on screen during
- * the wait — moving them under the answer would leave the panel empty for the ten seconds that
- * matter most.
- */
-function Bubble({ message, streaming }: { message: Message; streaming: boolean }) {
-  if (message.role === "user") {
-    return (
-      <div className="flex justify-end">
-        <p className="max-w-[85%] rounded-xl border border-accent/30 bg-accent/10 px-3.5 py-2.5 text-[13px] leading-relaxed text-ink">
-          {message.content}
-        </p>
-      </div>
-    );
-  }
-
-  const tools = message.tools ?? [];
-  return (
-    <div className="max-w-[92%] space-y-2.5">
-      {tools.length > 0 ? (
-        <div className="flex flex-wrap gap-1.5">
-          {tools.map((tool, index) => (
-            <span
-              key={`${tool.name}-${index}`}
-              className={[
-                "inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-[11.5px]",
-                // A write is marked differently from a read. The panel says writes are proposals;
-                // this is where that distinction is visible at the moment one happens.
-                WRITE_TOOLS.has(tool.name)
-                  ? "border-warn/40 bg-warn/5 text-warn"
-                  : "border-hair-strong bg-glass-raise text-ink-low",
-              ].join(" ")}
-            >
-              <span
-                aria-hidden="true"
-                className={[
-                  "size-1.5 rounded-full",
-                  tool.done ? "bg-ok" : "animate-pulse bg-listening",
-                ].join(" ")}
-              />
-              {TOOL_LABELS[tool.name] ?? tool.name}
-              {WRITE_TOOLS.has(tool.name) ? " · proposal" : ""}
-            </span>
-          ))}
-        </div>
-      ) : null}
-
-      {message.error ? (
-        <div className="rounded-lg border border-bad/40 bg-bad/5 px-3.5 py-3">
-          <p className="text-[12.5px] leading-relaxed text-bad">{message.error}</p>
-        </div>
-      ) : null}
-
-      {message.content ? (
-        // `Prose` renders a small markdown subset as React elements and never produces HTML from
-        // the input, which matters because this text routinely contains verbatim transcript. The
-        // first version showed the raw string for that reason and was wrong the other way: the
-        // model emits `**` and `- ` constantly, so answers arrived full of asterisks.
-        <Prose text={message.content} />
-      ) : streaming && tools.length === 0 ? (
-        <p className="text-[12.5px] text-ink-low">Thinking…</p>
-      ) : null}
-    </div>
   );
 }
 

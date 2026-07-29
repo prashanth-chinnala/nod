@@ -22,6 +22,8 @@
 
 import { useCallback, useRef, useState } from "react";
 
+import type { Screen } from "@/lib/screen";
+
 const API = process.env.NEXT_PUBLIC_ASSISTANT_BASE ?? "http://127.0.0.1:8100";
 
 export type ToolStep = { name: string; done: boolean };
@@ -41,7 +43,7 @@ type Event =
   | { type: "error"; detail: string }
   | { type: "done" };
 
-export function useAssistant(actor: string) {
+export function useAssistant(actor: string, screen?: Screen) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [busy, setBusy] = useState(false);
   const abort = useRef<AbortController | null>(null);
@@ -77,7 +79,7 @@ export function useAssistant(actor: string) {
         const response = await fetch(`${API}/ask`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ message: text, history, actor }),
+          body: JSON.stringify({ message: text, history, actor, screen }),
           signal: controller.signal,
         });
         if (!response.ok || !response.body) {
@@ -147,7 +149,7 @@ export function useAssistant(actor: string) {
         setBusy(false);
       }
     },
-    [actor, busy, messages, patchLast],
+    [actor, busy, messages, patchLast, screen],
   );
 
   /** Stop generating. The partial answer is kept: it is what the tools already found. */

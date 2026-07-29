@@ -33,7 +33,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from avatar.config import load_env, loaded_files
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
 from sse_starlette.sse import EventSourceResponse
@@ -75,12 +75,36 @@ class Turn(BaseModel):
     content: str
 
 
+class Screen(BaseModel):
+    """
+    What the operator is looking at, derived by the client from its own URL.
+
+    Sent so "this session" and "why did she score badly" resolve without the operator pasting an
+    id. Derived from the route rather than reported by each page: a registry every page has to
+    remember to update goes stale the first time someone adds a screen, and a stale context is
+    worse than none -- it would answer confidently about the wrong candidate.
+
+    Advisory, not authoritative. It is injected as a hint the model may use to resolve a
+    pronoun; every fact still comes from a tool call against the store, so a wrong context
+    produces a question about the wrong id rather than an invented answer about the right one.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    route: str = ""
+    label: str = ""
+    session_id: str | None = None
+    rubric_id: str | None = None
+    agent_id: str | None = None
+
+
 class Ask(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     message: str
     history: list[Turn] = Field(default_factory=list)
     actor: str = "unknown"
+    screen: Screen | None = None
     """
     Who is asking, as claimed by the caller.
 
@@ -143,14 +167,43 @@ def _to_messages(body: Ask) -> list[Any]:
     return messages
 
 
-def _actor_note(actor: str) -> str:
+def _context_note(body: Ask) -> str:
     """
-    Tell the model who is asking, so write tools get a real name rather than "unknown".
+    Who is asking and what they are looking at, as one message.
 
-    Injected as a message rather than baked into the system prompt, because the system prompt is
-    built once and the actor changes per request.
+    Injected per request rather than baked into the system prompt, because the prompt is built
+    once and both of these change every time. Phrased as context the model may use rather than
+    as instructions, and it says explicitly that the ids are unconfirmed -- otherwise a model
+    asked "summarise this" on a stale tab will happily describe whatever id it was handed
+    without checking it exists.
     """
-    return f"The person asking is: {actor}. Pass this as `actor` to any write tool you use."
+    lines = [
+        f"The person asking is: {body.actor}. "
+        "Pass this as `actor` to any write tool you use."
+    ]
+    screen = body.screen
+    if screen and (screen.route or screen.session_id or screen.rubric_id):
+        where = screen.label or screen.route or "the console"
+        lines.append(
+            f"They are currently looking at {where}"
+            + (f" (route {screen.route})" if screen.route else "")
+            + "."
+        )
+        ids = {
+            "session_id": screen.session_id,
+            "rubric_id": screen.rubric_id,
+            "agent_id": screen.agent_id,
+        }
+        named = {key: value for key, value in ids.items() if value}
+        if named:
+            lines.append(
+                "On-screen ids, for resolving words like \"this\" or \"her\": "
+                + ", ".join(f"{key}={value}" for key, value in named.items())
+                + ". Verify with a tool before describing any of them; do not assume the "
+                "record exists, or that it is the one they mean if the question names "
+                "something else."
+            )
+    return "\n".join(lines)
 
 
 async def _stream(body: Ask) -> AsyncIterator[dict[str, str]]:
@@ -190,7 +243,7 @@ async def _stream(body: Ask) -> AsyncIterator[dict[str, str]]:
         return
 
     messages = _to_messages(body)
-    messages.insert(max(0, len(messages) - 1), HumanMessage(content=_actor_note(body.actor)))
+    messages.insert(max(0, len(messages) - 1), HumanMessage(content=_context_note(body)))
 
     try:
         async for event in graph.astream_events({"messages": messages}, version="v2"):
@@ -240,3 +293,85 @@ async def ask(body: Ask) -> EventSourceResponse:
     -- with transcript quotes in it.
     """
     return EventSourceResponse(_stream(body))
+
+
+@app.get("/voice")
+async def voice_status() -> dict[str, Any]:
+    """
+    Whether speech is configured, so the console can hide the microphone rather than offer one
+    that fails.
+    """
+    from assistant import voice
+
+    return {
+        "available": voice.available(),
+        "voice": voice.voice_name() if voice.available() else None,
+        "detail": (
+            "speech in and out via Deepgram"
+            if voice.available()
+            else "DEEPGRAM_API_KEY is not set; the assistant is text-only"
+        ),
+    }
+
+
+@app.post("/transcribe")
+async def transcribe(request: Request) -> dict[str, Any]:
+    """
+    One recorded question to text.
+
+    Takes the raw body with the browser's own Content-Type rather than multipart: MediaRecorder
+    hands over a Blob whose type is platform-specific -- webm/opus on Chrome, mp4 on Safari --
+    and Deepgram sniffs the container, so forwarding it unchanged is what makes both work.
+
+    A failure returns a message rather than a status code alone. This is triggered by someone
+    holding a microphone button, and "transcription failed" with no reason is indistinguishable
+    from a broken microphone.
+    """
+    from assistant import voice
+
+    body = await request.body()
+    try:
+        text = await voice.transcribe(body, request.headers.get("content-type", "audio/webm"))
+    except voice.VoiceUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502, detail=f"transcription failed: {type(exc).__name__}: {exc}"
+        ) from exc
+    return {"text": text, "empty": not text}
+
+
+class Speak(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    text: str
+
+
+@app.post("/speak")
+async def speak(body: Speak) -> Response:
+    """
+    One answer to one audio file.
+
+    Returns the audio directly rather than a URL, so nothing has to be stored: an answer about a
+    candidate synthesised to a file on disk is a second copy of interview content with its own
+    retention question, for no benefit over streaming the bytes once.
+    """
+    from assistant import voice
+
+    try:
+        audio, content_type = await voice.speak(body.text)
+    except voice.VoiceUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502, detail=f"synthesis failed: {type(exc).__name__}: {exc}"
+        ) from exc
+    if not audio:
+        raise HTTPException(status_code=400, detail="nothing to say")
+    # `no-store`: this is a recruiter listening to an assessment, and a proxy holding it is a
+    # copy of candidate information nobody asked to make.
+    return Response(
+        content=audio, media_type=content_type, headers={"Cache-Control": "no-store"}
+    )
