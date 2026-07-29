@@ -401,3 +401,16 @@ Every symptom points at the application: the token is valid, the room is right, 
 participants appear in the server log, and the agent publishes both tracks. Nothing points at
 ICE. The tell is that the Python SDK works from the host while the browser does not — the
 Python client falls back to TCP on 7881, and browsers are stricter.
+
+### When the call does not establish
+
+Two independent causes, both of which present as "no video, chip says websocket":
+
+1. **The SFU's ICE candidate** — see `--node-ip 127.0.0.1` above.
+2. **A stale Next bundle.** This one leaves no trace: source is correct, `typecheck` and
+   `lint` pass, the served chunks contain the new code, and the browser still runs an older
+   module. `rm -rf apps/web/.next` and restart `pnpm dev`, then hard-reload the tab.
+
+Distinguishing them takes one query — if the LiveKit room log shows only `avatar-agent` and no
+`candidate-*` participant, the browser never joined, which is cause 2. If both joined and the
+connection went `connecting → disconnected`, it is cause 1.
