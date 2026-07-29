@@ -1,26 +1,97 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+/*
+  Tokens are lifted from the live session client (apps/api/web/index.html) rather than
+  invented, so the console and the thing it configures read as one product. A `speaking`
+  chip here is the exact hue the candidate saw on their screen.
+
+  Two rules the palette encodes deliberately:
+
+  1. Semantic colour is separate from the accent. `--color-accent` carries identity — focus
+     rings, primary actions, active nav. ok/warn/bad carry meaning and nothing else.
+     Conflating the two is why dense admin UIs become unreadable: a warning and a brand
+     highlight must never be the same colour.
+
+  2. This is an instrument, not a marketing page. The surface stays quiet so that the one
+     thing that matters on each screen — usually a number or a status — is the thing that
+     reads first.
+*/
+
+@theme {
+  --color-base: #0e1418;
+  --color-raise: #131b21;
+  --color-glass: rgba(255, 255, 255, 0.035);
+  --color-glass-raise: rgba(255, 255, 255, 0.055);
+  --color-hair: rgba(255, 255, 255, 0.085);
+  --color-hair-strong: rgba(255, 255, 255, 0.14);
+
+  --color-ink: #e7edf1;
+  --color-ink-mid: #8e9da8;
+  --color-ink-low: #5d6c77;
+
+  --color-accent: #e0a458;
+
+  --color-ok: #6fbf8b;
+  --color-warn: #e0a458;
+  --color-bad: #d4685a;
+  --color-info: #54b6d6;
+
+  /* Runtime session states, matching the live client exactly. */
+  --color-idle: #78878f;
+  --color-listening: #54b6d6;
+  --color-thinking: #9b8fd4;
+  --color-speaking: #e0a458;
+
+  --font-sans: var(--font-inter-tight), -apple-system, BlinkMacSystemFont, "Segoe UI",
+    system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
+@layer base {
+  html {
+    color-scheme: dark;
+  }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+  body {
+    background: var(--color-base);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /*
+    Any figure that lines up in a column gets tabular numerals. A latency table with
+    proportional digits is genuinely hard to scan — the decimal points wander — and this is
+    a product whose defining characteristic is a latency budget it has to meet.
+  */
+  .nums,
+  td,
+  th {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Keyboard focus must always be visible. Part of why the accent is reserved. */
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  ::selection {
+    background: rgba(224, 164, 88, 0.25);
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-hair-strong) transparent;
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
 }

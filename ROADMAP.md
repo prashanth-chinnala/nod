@@ -30,6 +30,45 @@ So the recommendation is a **two-track split**: land §2 (Today) before recordin
 
 ---
 
+## Status — updated as this lands
+
+**The ultimate goal, restated so it does not drift:** a working conversational avatar product
+that can be demoed end to end — a real face driven by a real voice, configured through a
+console, with a knowledge base, and honest numbers throughout. `main` holds the assessment
+deliverable; this branch is the product.
+
+| | State |
+|---|---|
+| Text chat + two-sided transcript | **Done.** Verified live: a typed answer produced a follow-up quoting "40,000 corrupted records" |
+| Monorepo — `apps/api` + `apps/web`, pnpm workspaces, two CI jobs | **Done.** 252 API tests green from the new location; web builds, typechecks, lints |
+| MuseTalk renderer behind the Protocol | **Done, unexecuted.** 27 GPU-free tests. Needs a working spike before it renders anything |
+| Console shell — tokens, primitives, nav | **Done** |
+| JSON store for console resources | **Done** |
+| Agents · Faces · Knowledge · Tools · Guardrails · Pronunciations · Sessions | **In progress** |
+| Knowledge retrieval wired into the prompt | Next |
+| Pronunciations applied before TTS | Next |
+| A real face rendering end to end | **Blocked on a GPU spike run** |
+
+### Decisions changed since the first draft
+
+**Next.js, not Vite.** Asked for, and defensible on a product basis rather than taste: this
+grows two surfaces, an internal console where server rendering buys little, and a
+candidate-facing interview page reached by a shared link, where first paint and a per-session
+route genuinely matter. One framework serving both beats two toolchains.
+
+**Full monorepo, not `console/` alongside.** The earlier draft argued against moving the API
+while a submission was pending. That constraint was lifted deliberately — the assessment
+deliverable is frozen on `main`, so the restructure costs nothing it was protecting.
+
+**A JSON-file store, not Postgres.** Every resource here is a handful of small documents
+edited by one operator. A database would add a service, migrations, and a pool to tune in
+exchange for guarantees nothing needs. Writes are atomic via temp-file-plus-rename, because a
+half-written JSON file is a permanently broken resource. The limit is written down in
+`store.py`: two concurrent operators, or a few thousand rows, and it should be replaced
+rather than extended.
+
+---
+
 ## 1. Repository shape
 
 **Recommendation: add, do not move.** A full `apps/api` + `apps/web` restructure means
