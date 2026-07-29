@@ -165,7 +165,9 @@ async def test_malformed_arguments_are_reported_rather_than_crashing() -> None:
 
 async def test_an_http_tool_with_no_url_is_reported() -> None:
     """A tool that cannot be called is a silent no-op mid-conversation unless it says so."""
-    result = await ToolExecutor([tool(name="remote", kind="http", url=None)]).run("remote", "{}")
+    executor = ToolExecutor([tool(name="remote", kind="http", url=None)])
+
+    result = await executor.run("remote", "{}")
 
     assert "no url configured" in result
 
