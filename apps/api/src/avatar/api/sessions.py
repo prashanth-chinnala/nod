@@ -122,6 +122,41 @@ async def append_turn(session_id: str, body: Turn) -> dict[str, Any]:
     return store.update(COLLECTION, session_id, {"turns": turns})
 
 
+@router.get("/{session_id}/rtc")
+async def rtc_credentials(session_id: str) -> dict[str, Any]:
+    """
+    A LiveKit URL and join token for the candidate in this session's room.
+
+    The room name is derived from the session id rather than stored, so there is one room per
+    session by construction and no way for two sessions to collide in one — which would put two
+    candidates in the same interview.
+
+    Minted per request rather than at session creation, so a token's lifetime is tied to opening
+    the page and not to how long ago the link was sent. The link itself is still not a
+    credential; this endpoint is where that would be fixed, by requiring one.
+
+    Returns `available: false` rather than a 500 when LiveKit is not configured. WebRTC is
+    opt-in and a clean clone has no SFU, so the client must be able to fall back to the
+    WebSocket transport rather than treat it as an outage.
+    """
+    _load(session_id)
+    try:
+        from avatar.transport.livekit import credentials, room_token
+
+        url, _, _ = credentials()
+    except Exception as exc:
+        return {"available": False, "detail": str(exc)}
+
+    room = f"session-{session_id}"
+    return {
+        "available": True,
+        "url": url,
+        "room": room,
+        "token": room_token(room, f"candidate-{session_id}", name="Candidate"),
+        "agent_identity": "avatar-agent",
+    }
+
+
 @router.post("/{session_id}/end")
 async def end_session(session_id: str) -> dict[str, Any]:
     """

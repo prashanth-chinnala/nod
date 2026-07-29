@@ -35,6 +35,13 @@ tts = [
 vector = [
   "chromadb>=1.0",
 ]
+# WebRTC transport via LiveKit. Optional: the WebSocket transport needs none of it, and a
+# clean clone runs without an SFU.
+webrtc = [
+  "livekit>=1.0",
+  "livekit-api>=1.0",
+  "pillow>=10.0",
+]
 # Silero VAD. A ~2GB install for a ~2MB model, which is why it is opt-in and why the
 # default detector needs nothing at all.
 vad = [
@@ -92,6 +99,7 @@ module = [
   "PIL.*",
   "cv2.*",
   "musetalk.*",
+  "livekit.*",
 ]
 ignore_missing_imports = true
 
