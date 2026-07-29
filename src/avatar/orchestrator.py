@@ -348,6 +348,10 @@ class SessionOrchestrator:
                             epoch=my_epoch,
                         )
                     turn.text_generated += sentence
+                    # Before synthesis, so the words appear even if a barge-in cuts this
+                    # sentence off mid-air. An interrupted question is the one most worth
+                    # being able to read back.
+                    self._telemetry.said(sentence, epoch=my_epoch)
 
                     tts_started = self._clock()
                     saw_audio = False

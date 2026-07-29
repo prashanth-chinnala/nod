@@ -134,7 +134,7 @@ STATS_INTERVAL_SECONDS = 0.5
 RELAY_QUEUE_DEPTH = 256
 
 RELAYED_EVENTS = frozenset(
-    {"state_change", "latency", "stale_dropped", "session_failure", "counter"}
+    {"state_change", "latency", "stale_dropped", "session_failure", "counter", "heard", "said"}
 )
 """
 Which telemetry events reach the browser.
@@ -143,6 +143,12 @@ Which telemetry events reach the browser.
 fires up to 25 times a second, and relaying it would spend the socket on
 instrumentation instead of video. The count still reaches the page in the stats
 message.
+
+`heard` and `said` are the conversation itself, so they belong here rather than only in a
+server log. Both are once-per-turn-ish -- `said` is once per sentence -- so the volume
+argument that excludes `frame_repeated` does not apply. **This allowlist is easy to forget:
+a new event is silently invisible to the client until it is added here, which is exactly
+what happened to both of these.**
 """
 
 app = FastAPI(title="nod", docs_url=None, redoc_url=None)
@@ -302,7 +308,15 @@ class BrowserSession:
         elif kind == "speech_retract":
             await self._orchestrator.on_speech_retract()
         elif kind == "end_of_turn":
-            await self._orchestrator.on_end_of_turn(str(message.get("transcript", "")))
+            # A client-supplied transcript: the typed-answer path, and the one the buttons
+            # use. It gets the same `heard` telemetry as the microphone path -- otherwise
+            # the transcript pane would show half the conversation, and which half depended
+            # on how the turn was started.
+            spoken = str(message.get("transcript", ""))
+            self._telemetry.heard(
+                spoken, epoch=self._orchestrator.epoch, transcribed=bool(spoken)
+            )
+            await self._orchestrator.on_end_of_turn(spoken)
         elif kind == "audio_played":
             # The client's report of what it actually played. The only input that
             # moves audio_played_ms, and therefore the only evidence history

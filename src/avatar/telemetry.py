@@ -198,6 +198,21 @@ class Telemetry:
         self.increment("heard", transcribed=str(transcribed).lower())
         self._emit("heard", text=text, epoch=epoch, transcribed=transcribed)
 
+    def said(self, sentence: str, *, epoch: int) -> None:
+        """
+        One sentence the avatar is about to speak.
+
+        Emitted per sentence rather than per turn, and *before* its audio is synthesised,
+        so a reader sees the words in the order they are spoken and sees them for a turn
+        that a barge-in later cuts short. Pairing with `heard` gives a complete two-sided
+        transcript without the client having to transcribe audio it just played.
+
+        Deliberately not the whole turn's text: waiting for the turn to finish would mean
+        an interrupted question never appears at all, and an interrupted question is
+        exactly the one worth reading.
+        """
+        self._emit("said", text=sentence, epoch=epoch)
+
     def frame_repeated(self, *, total: int) -> None:
         self.increment("frames_repeated")
         self._emit("frame_repeated", total=total)
