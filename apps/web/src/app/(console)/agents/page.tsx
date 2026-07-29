@@ -22,6 +22,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 
+import { Attachments } from "@/components/attachments";
+
 import {
   Button,
   Card,
@@ -81,15 +83,33 @@ type Agent = {
   tool_ids: string[];
   guardrail_id: string | null;
   pronunciation_id: string | null;
+  rubric_id: string | null;
   turn_taking: TurnTaking;
   created_at: string;
   updated_at: string;
 };
 
-const HEAD = ["name", "model", "voice", "face", "end of turn", "updated"] as const;
+const HEAD = ["name", "model", "voice", "attached", "end of turn", "updated"] as const;
 
 /** An unset optional reference reads as a dash, not as an empty cell that looks broken. */
 const UNSET = "—";
+
+/**
+ * Which kinds of resource an agent references, as a short list.
+ *
+ * Names the kinds rather than counting them: "rubric, guardrail" answers the question an operator
+ * is actually asking, where "2 attached" would send them to the editor to find out which two.
+ */
+function attachedSummary(agent: Agent): string {
+  const parts: string[] = [];
+  if (agent.rubric_id) parts.push("rubric");
+  if (agent.face_id) parts.push("face");
+  if (agent.guardrail_id) parts.push("guardrail");
+  if (agent.pronunciation_id) parts.push("lexicon");
+  if (agent.knowledge_base_ids.length) parts.push(`${agent.knowledge_base_ids.length} kb`);
+  if (agent.tool_ids.length) parts.push(`${agent.tool_ids.length} tools`);
+  return parts.join(", ");
+}
 
 /**
  * Flagged above the runtime's default, and deliberately not against a measured target.
@@ -227,8 +247,11 @@ export default function AgentsPage() {
                   {agent.voice_provider}
                   {agent.voice_id ? ` · ${agent.voice_id}` : ""}
                 </Cell>
-                <Cell dim mono>
-                  {agent.face_id ?? UNSET}
+                <Cell dim>
+                  {/* What is attached, by kind rather than by id. An operator scanning this list
+                      wants to know whether an agent has a rubric at all; the ids are in the
+                      editor below, where they can be changed. */}
+                  {attachedSummary(agent) || UNSET}
                 </Cell>
                 <Cell>
                   {/* The column that decides how the interview feels, so it gets the chip. */}
@@ -244,6 +267,11 @@ export default function AgentsPage() {
           </Table>
         )}
       </Card>
+
+      {/* Below the table rather than inside a row: the reference pickers are six controls and a
+          two-line explanation each, which would not survive being squeezed into a table cell.
+          It also keeps the table scannable, which is what a list view is for. */}
+      <Attachments agents={agents ?? []} onChanged={load} />
     </Page>
   );
 }
