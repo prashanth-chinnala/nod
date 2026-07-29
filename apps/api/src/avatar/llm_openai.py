@@ -32,9 +32,11 @@ from __future__ import annotations
 import os
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import aclosing
+from typing import Any
 
 from avatar.contracts import Message
 from avatar.llm import MAX_CHUNK_CHARS, chunk_into_sentences
+from avatar.tools import MAX_CALLS_PER_TURN, ToolExecutor
 
 DEFAULT_MODEL = "gpt-4o"
 """
@@ -95,6 +97,7 @@ class OpenAIInterviewer:
         max_completion_tokens: int = MAX_COMPLETION_TOKENS,
         max_chunk_chars: int = MAX_CHUNK_CHARS,
         client: object | None = None,
+        executor: ToolExecutor | None = None,
     ) -> None:
         self.model = model or os.environ.get("AVATAR_LLM_MODEL", DEFAULT_MODEL)
         self.system = system
@@ -102,7 +105,12 @@ class OpenAIInterviewer:
         self.max_chunk_chars = max_chunk_chars
         # Injected in tests so the suite never touches the network.
         self._client = client if client is not None else _build_client()
+        # Tool calling is handled inside this adapter rather than above it, so `__call__`
+        # still yields nothing but sentences and the orchestrator never learns that tools
+        # exist. A model asking to call a function is an LLM concern, not a session one.
+        self._executor = executor
         self.requests = 0
+        self.tool_rounds = 0
 
     def __call__(self, history: Sequence[Message]) -> AsyncGenerator[str, None]:
         return chunk_into_sentences(self._tokens(history), max_chars=self.max_chunk_chars)
@@ -114,29 +122,112 @@ class OpenAIInterviewer:
         The system prompt is a message here rather than a top-level argument -- the one
         shape difference from the Anthropic adapter that is not merely a renamed keyword.
         """
-        turns: list[Message] = list(history) or [
+        turns: list[dict[str, Any]] = [dict(message) for message in history] or [
             {"role": "user", "content": "[the candidate has joined and is ready to begin]"}
         ]
-        self.requests += 1
 
-        stream = await self._client.chat.completions.create(  # type: ignore[attr-defined]
-            model=self.model,
-            max_completion_tokens=self.max_completion_tokens,
-            messages=[{"role": "system", "content": self.system}, *turns],
-            stream=True,
+        # Loop only while the model keeps asking for tools, and only so many times: each
+        # round is another round trip inside a turn the candidate is already waiting on, and a
+        # model can be talked into alternating between two functions indefinitely.
+        for _ in range(MAX_CALLS_PER_TURN):
+            spoke, calls = False, []
+            async for piece in self._one_round(turns):
+                if isinstance(piece, str):
+                    spoke = True
+                    yield piece
+                else:
+                    calls.append(piece)
+
+            if not calls:
+                return
+            if spoke:
+                # This round both spoke and asked for a tool, so its words have already been
+                # synthesised and must not be produced again on the next pass.
+                turns.append({"role": "assistant", "content": ""})
+            turns.append({"role": "assistant", "tool_calls": calls})
+            for call in calls:
+                self.tool_rounds += 1
+                turns.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": call["id"],
+                        "content": await self._run_tool(call),
+                    }
+                )
+
+        # Budget spent. One final round with tools **withheld** rather than merely asking the
+        # model to stop -- an instruction it can ignore, whereas an absent `tools` field it
+        # cannot. Told why as well, because a request that silently vanishes gets repeated.
+        turns.append(
+            {
+                "role": "user",
+                "content": "[tool budget for this turn is spent -- answer directly now]",
+            }
         )
+        async for piece in self._one_round(turns, offer_tools=False):
+            if isinstance(piece, str):
+                yield piece
+
+    async def _run_tool(self, call: dict[str, Any]) -> str:
+        if self._executor is None:  # pragma: no cover - guarded by the caller
+            return "error: no tools are configured"
+        function = call.get("function") or {}
+        return await self._executor.run(
+            str(function.get("name") or ""), str(function.get("arguments") or "")
+        )
+
+    async def _one_round(
+        self, turns: list[dict[str, Any]], *, offer_tools: bool = True
+    ) -> AsyncGenerator[str | dict[str, Any], None]:
+        """
+        One request. Yields text deltas as strings and completed tool calls as dicts.
+
+        Tool-call arguments arrive fragmented across deltas exactly like content does, so they
+        are accumulated by index and only emitted once the stream ends. Parsing them
+        incrementally would mean handing the executor half a JSON object.
+        """
+        self.requests += 1
+        request: dict[str, Any] = {
+            "model": self.model,
+            "max_completion_tokens": self.max_completion_tokens,
+            "messages": [{"role": "system", "content": self.system}, *turns],
+            "stream": True,
+        }
+        if offer_tools and self._executor is not None and self._executor.available:
+            request["tools"] = self._executor.specs
+
+        stream = await self._client.chat.completions.create(**request)  # type: ignore[attr-defined]
         # Two levels of close, for the same reason as the Anthropic adapter: `async for`
         # closes nothing, so each wrapper must propagate it or the one below is left
         # suspended with its HTTP response open.
+        pending: dict[int, dict[str, Any]] = {}
         async with stream as live, aclosing(live.__aiter__()) as chunks:
             async for chunk in chunks:
                 if not chunk.choices:
                     # Usage-only or filter-only chunks carry no choices at all. Indexing
                     # [0] unconditionally is the usual way this crashes in production.
                     continue
-                delta = chunk.choices[0].delta.content
-                if delta:
-                    yield delta
+                delta = chunk.choices[0].delta
+                if delta.content:
+                    yield delta.content
+                for fragment in getattr(delta, "tool_calls", None) or []:
+                    slot = pending.setdefault(
+                        fragment.index,
+                        {
+                            "id": "",
+                            "type": "function",
+                            "function": {"name": "", "arguments": ""},
+                        },
+                    )
+                    if fragment.id:
+                        slot["id"] = fragment.id
+                    if fragment.function and fragment.function.name:
+                        slot["function"]["name"] = fragment.function.name
+                    if fragment.function and fragment.function.arguments:
+                        slot["function"]["arguments"] += fragment.function.arguments
+
+        for _, call in sorted(pending.items()):
+            yield call
 
 
 LOCAL_BASE_URL = "http://localhost:11434/v1"

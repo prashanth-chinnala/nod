@@ -29,10 +29,12 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from avatar.api.guardrails import Policy
+from avatar.contracts import SentenceStream
 from avatar.knowledge import build_retriever
 from avatar.knowledge.contracts import Retriever
 from avatar.knowledge.keyword import NullRetriever
 from avatar.store import NotFound, Store, store
+from avatar.tools import Tool, tools_from_records
 
 AGENT_ENV = "AVATAR_AGENT"
 COLLECTION = "agents"
@@ -64,6 +66,7 @@ class ResolvedAgent:
     retriever: Retriever = field(default_factory=NullRetriever)
     lexicon: list[tuple[str, str]] = field(default_factory=list)
     guardrail: Policy | None = None
+    tools: list[Tool] = field(default_factory=list)
     llm_model: str = ""
     voice_id: str = ""
     face_id: str | None = None
@@ -132,6 +135,7 @@ def resolve_agent(agent_id: str | None = None, *, data: Store | None = None) -> 
         retriever=_load_knowledge(data, record.get("knowledge_base_ids") or [], chosen),
         lexicon=_load_lexicon(data, record.get("pronunciation_id"), chosen),
         guardrail=_load_guardrail(data, record.get("guardrail_id"), chosen),
+        tools=_load_tools(data, record.get("tool_ids") or [], chosen),
         llm_model=str(record.get("llm_model") or ""),
         voice_id=str(record.get("voice_id") or ""),
         face_id=record.get("face_id"),
@@ -217,3 +221,48 @@ def _load_guardrail(data: Store, guard_id: str | None, agent_id: str) -> Policy 
             "refuses to start."
         ) from exc
     return Policy.model_validate(record)
+
+
+def _load_tools(data: Store, tool_ids: list[str], agent_id: str) -> list[Tool]:
+    """
+    Load the tools an agent may call. A missing one is fatal at session start.
+
+    Fatal rather than skipped, because a tool the model is told about and cannot reach is worse
+    than one it was never offered: it will try, get an error, and spend a round trip inside the
+    turn discovering what the operator could have been told here.
+    """
+    if not tool_ids:
+        return []
+    records = []
+    for tool_id in tool_ids:
+        try:
+            records.append(data.get("tools", tool_id))
+        except NotFound as exc:
+            raise AgentNotConfigured(
+                f"agent {agent_id!r} references tool {tool_id!r}, which does not exist."
+            ) from exc
+    return tools_from_records(records)
+
+
+def build_llm_with_tools(agent: ResolvedAgent) -> SentenceStream:
+    """
+    Build the interviewer, handing it an executor when the agent has tools.
+
+    Here rather than in `server.py` so the server does not have to know that only one adapter
+    supports tool calling. Anthropic's does not yet, and offering tools to an adapter that
+    ignores them would be worse than not offering them -- the model would never call, and
+    nobody would know why.
+    """
+    from avatar.llm_anthropic import build_llm
+    from avatar.tools import ToolExecutor
+
+    name = os.environ.get("AVATAR_LLM", "scripted")
+    if name != "openai" or not agent.tools:
+        return build_llm(name)
+
+    from avatar.llm_openai import OpenAIInterviewer
+
+    return OpenAIInterviewer(
+        system=agent.system_prompt or OpenAIInterviewer().system,
+        executor=ToolExecutor(agent.tools),
+    )

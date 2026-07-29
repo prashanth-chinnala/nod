@@ -34,7 +34,7 @@ from typing import Any
 from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 
-from avatar.agent_config import ResolvedAgent, resolve_for_session
+from avatar.agent_config import ResolvedAgent, build_llm_with_tools, resolve_for_session
 from avatar.api import (
     agents,
     faces,
@@ -59,7 +59,6 @@ from avatar.contracts import RendererConfig
 from avatar.idle import placeholder_idle_loop
 from avatar.knowledge.augment import with_knowledge, with_pronunciation
 from avatar.knowledge.guard import with_guardrail
-from avatar.llm_anthropic import build_llm
 from avatar.mixer import FRAME_INTERVAL_MS, TARGET_FPS, FrameMixer
 from avatar.orchestrator import RENDER_LEAD_IN_FRAMES, SessionOrchestrator
 from avatar.renderers import build
@@ -275,7 +274,7 @@ class BrowserSession:
             # after retrieval influenced it. Reversed, retrieved context would be policed as
             # though the candidate had spoken it.
             llm=with_guardrail(
-                with_knowledge(build_llm(LLM_NAME), self._agent.retriever),
+                with_knowledge(build_llm_with_tools(self._agent), self._agent.retriever),
                 self._agent.guardrail,
             ),
             tts=with_pronunciation(build_tts(TTS_NAME), self._agent.lexicon),
