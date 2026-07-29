@@ -118,6 +118,14 @@ class LiveKitTransport:
         self._audio_source: Any = None
         self._video_source: Any = None
         self._connected = False
+        self._marked_epoch = -1
+        """
+        The last epoch announced on the data channel.
+
+        `-1` rather than `0`, because epoch 0 is a real turn -- the opening question -- and
+        starting at 0 would swallow its marker and leave the first turn of every session
+        unmeasurable, which is exactly the turn a demo looks at.
+        """
         self.recording: dict[str, Any] = {
             "status": "off",
             "reason": "the session has not started",
@@ -213,10 +221,26 @@ class LiveKitTransport:
         encode again in VP8. The right fix is for the renderer to hand over raw frames and let
         the transport decide, which means a `Frame` variant carrying pixels -- deferred rather
         than pretended away, and it is a real cost of having built the WebSocket path first.
+
+        **The epoch goes out separately, over the data channel.** A WebSocket frame is a framed
+        binary message the client can read an epoch out of; a WebRTC video track is just pixels,
+        so the turn a frame belongs to is erased in transit. That is why first-frame and
+        end-to-end latency were unmeasurable over WebRTC: the client could see a frame arrive
+        and had no way to say which turn it closed. Marking the first frame of each epoch on the
+        data channel restores the attribution without touching the media path.
+
+        Sent before the frame is captured, and only on an epoch change -- one message per turn,
+        not per frame at 25fps. The two travel different paths, so ordering is not guaranteed;
+        what the client can then measure is stated precisely where it measures it, in
+        `lib/rtc.ts`.
         """
         if self._video_source is None:
             return
         from livekit import rtc
+
+        if frame.epoch != self._marked_epoch:
+            self._marked_epoch = frame.epoch
+            await self.send_control({"type": "frame_epoch", "epoch": frame.epoch})
 
         rgba, width, height = _decode_to_rgba(frame.data, self.width, self.height)
         await asyncio.to_thread(

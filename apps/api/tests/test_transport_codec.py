@@ -1,17 +1,15 @@
 """
 The wire protocol, and the transport that speaks it.
 
-Tested without FastAPI on purpose: `WebSocketTransport` takes two send callables, so
-the codec and the `Transport` implementation are exercisable with a list as the
-socket. That keeps the web stack out of the CI dependency set and keeps this file
-fast, and it is the same reason the orchestrator takes a `Transport` rather than a
-WebSocket.
+Tested without FastAPI on purpose: `WebSocketTransport` takes two send callables, so the codec
+and the `Transport` implementation are exercisable with a list as the socket. That keeps the web
+stack out of the CI dependency set and keeps this file fast, and it is the same reason the
+orchestrator takes a `Transport` rather than a WebSocket.
 
 The web client reimplements `decode` in TypeScript (`apps/web/src/lib/session.ts`), so the
-header layout is duplicated across two languages by necessity. The round-trip
-tests here are what pin the byte layout the two sides have to agree on -- network
-byte order for the header, little-endian for the PCM payload, which is an easy pair
-to get backwards.
+header layout is duplicated across two languages by necessity. The round-trip tests here are
+what pin the byte layout the two sides have to agree on -- network byte order for the header,
+little-endian for the PCM payload, which is an easy pair to get backwards.
 """
 
 from __future__ import annotations
@@ -79,9 +77,8 @@ def test_audio_encoding_uses_the_supplied_timeline_not_the_chunk() -> None:
     """
     Audio pts comes from the transport's running cursor.
 
-    `AudioChunk` has a duration but no position -- the orchestrator produces chunks
-    without knowing where in the session they land, and only the transport is in a
-    position to say.
+    `AudioChunk` has a duration but no position -- the orchestrator produces chunks without
+    knowing where in the session they land, and only the transport is in a position to say.
     """
     chunk = AudioChunk(pcm=b"\x01\x02", epoch=3, duration_ms=80)
 
@@ -170,3 +167,107 @@ async def test_transport_counts_bytes_for_the_stats_readout() -> None:
     await transport.send_frame(Frame(data=b"x" * 100, epoch=1, pts_ms=0))
 
     assert transport.bytes_sent == 100 + HEADER_SIZE
+
+
+# -- webrtc epoch marking --------------------------------------------------
+#
+# A WebSocket frame is a framed binary message carrying its own epoch, which is what the tests
+# above assert. A WebRTC video track is anonymous pixels, so the epoch has to travel beside
+# it on the data channel or no painted frame can be attributed to a turn -- which is exactly why
+# end-to-end latency was unmeasurable on that path. These pin the marking discipline.
+
+
+class MarkingTransport:
+    """
+    A `LiveKitTransport` with the SDK replaced by recorders.
+
+    Subclassed rather than mocked at the module level so the epoch-tracking logic under test is
+    the real one; only the two calls that would touch a network are swapped.
+    """
+
+    def __init__(self) -> None:
+        from avatar.transport.livekit import LiveKitTransport
+
+        self.inner = LiveKitTransport("session-x", width=8, height=8)
+        self.controls: list[dict[str, object]] = []
+        self.frames: list[int] = []
+
+        async def send_control(payload: dict[str, object]) -> None:
+            self.controls.append(payload)
+
+        self.inner.send_control = send_control  # type: ignore[method-assign]
+
+        # A stand-in with the one method `send_frame` reaches for. A bare `object()` is not
+        # enough: the attribute is read while building the `asyncio.to_thread` arguments, so it
+        # fails before any patch on `to_thread` could intercept it.
+        class Source:
+            def capture_frame(self, frame: object) -> None:
+                return None
+
+        self.inner._video_source = Source()
+
+    async def send(self, epoch: int) -> None:
+        from unittest.mock import patch
+
+        from avatar.contracts import Frame
+
+        # The decode-and-capture tail needs Pillow and a real source; the epoch marking happens
+        # before it, so it is stubbed out rather than exercised here.
+        with patch("avatar.transport.livekit._decode_to_rgba", return_value=(b"", 8, 8)), patch(
+            "asyncio.to_thread", new=_noop
+        ):
+            await self.inner.send_frame(Frame(data=b"x", epoch=epoch, pts_ms=0))
+        self.frames.append(epoch)
+
+    @property
+    def marked(self) -> list[int]:
+        return [int(c["epoch"]) for c in self.controls if c.get("type") == "frame_epoch"]
+
+
+async def _noop(*args: object, **kwargs: object) -> None:
+    return None
+
+
+@pytest.mark.asyncio
+async def test_the_first_frame_of_a_turn_is_marked_on_the_data_channel() -> None:
+    """
+    Without this the client sees a frame arrive and cannot say which turn it closes.
+
+    Epoch 0 is included deliberately: it is the opening question, and a tracker initialised to 0
+    rather than -1 would swallow its marker and leave the first turn of every session
+    unmeasurable -- which is the turn a demo looks at.
+    """
+    transport = MarkingTransport()
+    await transport.send(0)
+    assert transport.marked == [0]
+
+
+@pytest.mark.asyncio
+async def test_only_the_first_frame_of_each_turn_is_marked() -> None:
+    """
+    One message per turn, not one per frame.
+
+    Frames leave at 25fps; marking each would spend the data channel on instrumentation and put
+    a control message between every pair of frames, which is the same mistake `RELAYED_EVENTS`
+    excludes `frame_repeated` for.
+    """
+    transport = MarkingTransport()
+    for epoch in (3, 3, 3, 4, 4, 5):
+        await transport.send(epoch)
+    assert transport.marked == [3, 4, 5]
+    assert len(transport.frames) == 6  # every frame still went out
+
+
+@pytest.mark.asyncio
+async def test_a_repeated_epoch_after_a_gap_is_not_re_marked() -> None:
+    """
+    The tracker holds the last epoch seen, not a set.
+
+    Epochs only ever increase -- the orchestrator bumps one per turn -- so remembering the last
+    is sufficient, and a set would grow for the life of the session to answer a question about
+    the present.
+    """
+    transport = MarkingTransport()
+    for epoch in (1, 2, 2, 2):
+        await transport.send(epoch)
+    assert transport.marked == [1, 2]

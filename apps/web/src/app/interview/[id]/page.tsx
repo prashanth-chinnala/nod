@@ -52,7 +52,16 @@ export default function InterviewPage({ params }: { params: Promise<{ id: string
   const { id } = use(params);
   const session = useSession(API, id);
   const { state, connected, transcript, error } = session;
-  const { connect, disconnect, say, startMic, stopMic, attachCanvas, setLocalPlayback } = session;
+  const { connect, disconnect, say, startMic, stopMic, attachCanvas } = session;
+  const { setLocalPlayback, suppressPaintReports, send } = session;
+
+  // Forwarded over the WebSocket the session already owns rather than back down the data channel:
+  // `first_paint` is an existing server message with an existing handler, and one reporting path
+  // is easier to reason about than two that must agree.
+  const reportPaint = useCallback(
+    (epoch: number) => send({ type: "first_paint", epoch }),
+    [send],
+  );
   const {
     hasVideo: rtcVideo,
     hasAudio: rtcAudio,
@@ -64,7 +73,7 @@ export default function InterviewPage({ params }: { params: Promise<{ id: string
     attachVideo,
     attachAudio,
     attachSelf,
-  } = useRtc(API, id);
+  } = useRtc(API, id, reportPaint);
 
   const [joined, setJoined] = useState(false);
   const [micOn, setMicOn] = useState(true);
@@ -109,6 +118,13 @@ export default function InterviewPage({ params }: { params: Promise<{ id: string
   useEffect(() => {
     setLocalPlayback(!rtcAudio);
   }, [rtcAudio, setLocalPlayback]);
+
+  // Whoever is visible reports the paint. The canvas keeps decoding behind the video element, and
+  // the orchestrator keeps only the first report per turn -- so without this the hidden surface
+  // would win and the latency table would describe something nobody watched.
+  useEffect(() => {
+    suppressPaintReports(rtcVideo);
+  }, [rtcVideo, suppressPaintReports]);
 
   const join = useCallback(async () => {
     // Release the preview first. Holding the camera open in two places makes the published track

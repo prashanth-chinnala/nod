@@ -132,6 +132,13 @@ export function useSession(apiBase: string, sessionId?: string) {
   const scheduledRef = useRef<Array<{ src: AudioBufferSourceNode; at: number; dur: number }>>([]);
   const drawingRef = useRef(false);
   const paintedEpochRef = useRef(0);
+  /**
+   * Whether this path should stay silent about paint. Set when a WebRTC video track is attached.
+   *
+   * A ref rather than state: it is read inside `drawFrame`, which runs up to 25 times a second and
+   * must not be rebuilt when this flips.
+   */
+  const suppressPaintRef = useRef(false);
   const fpsWindowRef = useRef<number[]>([]);
   const uid = useRef(0);
   const micRef = useRef<{ stream: MediaStream; node: ScriptProcessorNode } | null>(null);
@@ -248,7 +255,14 @@ export function useSession(apiBase: string, sessionId?: string) {
         paintedEpochRef.current = epoch;
         // Closes the end-to-end measurement. The server cannot see encode, socket, decode,
         // or paint; this is the only report of that tail.
-        send({ type: "first_paint", epoch });
+        //
+        // Suppressed while WebRTC owns the picture. The runtime tees frames down both transports,
+        // so this canvas keeps decoding and painting even when it is hidden behind the video
+        // element -- and the orchestrator records the *first* paint report per turn and ignores
+        // the rest. Left reporting, a hidden canvas would win that race and the latency table
+        // would describe a surface nobody looked at, while the number it displaced was the real
+        // one. Whoever is visible reports.
+        if (!suppressPaintRef.current) send({ type: "first_paint", epoch });
       }
     } catch {
       /* a malformed frame must not tear down the session */
@@ -414,6 +428,17 @@ export function useSession(apiBase: string, sessionId?: string) {
     gain.gain.setTargetAtTime(audible ? 1 : 0, ctx.currentTime, 0.015);
   }, []);
 
+  /**
+   * Hand paint reporting to the WebRTC path, or take it back.
+   *
+   * Paired with `setLocalPlayback`, and for the same reason: the two transports both deliver every
+   * turn, so exactly one of them must be the one that reports, and it has to be the one the
+   * candidate is actually watching.
+   */
+  const suppressPaintReports = useCallback((suppress: boolean) => {
+    suppressPaintRef.current = suppress;
+  }, []);
+
   const stopMic = useCallback(() => {
     micRef.current?.node.disconnect();
     micRef.current?.stream.getTracks().forEach((track) => track.stop());
@@ -437,5 +462,6 @@ export function useSession(apiBase: string, sessionId?: string) {
   return {
     state, hello, connected, transcript, metrics, error,
     attachCanvas, connect, disconnect, say, send, startMic, stopMic, setLocalPlayback,
+    suppressPaintReports,
   };
 }

@@ -29,6 +29,21 @@ import {
   type RemoteTrackPublication,
 } from "livekit-client";
 
+/**
+ * `requestVideoFrameCallback`, which is not in TypeScript's DOM lib yet.
+ *
+ * Declared narrowly rather than cast to `any` at the call site, so the one place that knows the
+ * shape is the one place that documents it. Optional on the element type because Firefox has not
+ * shipped it — the caller checks before using it and simply reports nothing where it is absent,
+ * which is the honest degradation: a missing measurement rather than a wrong one.
+ */
+type FrameCallbackMetadata = { presentedFrames: number; presentationTime?: number };
+type VideoWithFrameCallback = HTMLVideoElement & {
+  requestVideoFrameCallback?: (
+    callback: (now: number, metadata: FrameCallbackMetadata) => void,
+  ) => number;
+};
+
 export type RtcCredentials = {
   available: boolean;
   url?: string;
@@ -61,11 +76,39 @@ const IDLE: RtcState = {
   error: null,
 };
 
-export function useRtc(apiBase: string, sessionId: string) {
+export function useRtc(
+  apiBase: string,
+  sessionId: string,
+  /**
+   * Called when a turn's first frame has been presented, with the epoch it belongs to.
+   *
+   * A callback rather than a returned value because this closes a measurement on the server: the
+   * caller forwards it as `first_paint` over the WebSocket the session already owns, keeping one
+   * reporting path rather than teaching the data channel to talk back.
+   */
+  onFirstPaint?: (epoch: number) => void,
+) {
   const [state, setState] = useState<RtcState>(IDLE);
   const roomRef = useRef<Room | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  // Kept in a ref, synced in an effect rather than assigned during render -- React's compiler
+  // lint rejects the latter, and it is right to: a ref written during render is not a render
+  // output, so a re-render that is thrown away still mutates it. The ref exists so that a caller
+  // passing an inline closure does not tear down and rebuild the room on every render.
+  const paintRef = useRef(onFirstPaint);
+  useEffect(() => {
+    paintRef.current = onFirstPaint;
+  }, [onFirstPaint]);
+  /**
+   * The epoch the server has announced but whose frame has not yet been seen presented.
+   *
+   * One slot rather than a queue: turns do not overlap, and a barge-in replaces the pending epoch
+   * rather than queueing behind it — measuring the paint of a turn that was already cancelled
+   * would be worse than measuring nothing.
+   */
+  const pendingEpoch = useRef<number | null>(null);
+  const reportedEpoch = useRef(-1);
 
   const attachVideo = useCallback((node: HTMLVideoElement | null) => {
     videoRef.current = node;
@@ -76,6 +119,46 @@ export function useRtc(apiBase: string, sessionId: string) {
   const selfRef = useRef<HTMLVideoElement | null>(null);
   const attachSelf = useCallback((node: HTMLVideoElement | null) => {
     selfRef.current = node;
+  }, []);
+
+  /**
+   * Report the pending epoch once the video element presents its next frame.
+   *
+   * **What this measures, precisely.** The server announces an epoch on the data channel
+   * immediately before pushing that turn's first frame into the video source. `rVFC` then fires
+   * when the compositor has presented a frame. So the figure closed here is *the time from the
+   * server marking a turn's first frame to the client presenting its next frame* — which includes
+   * encode, the SFU, decode, the jitter buffer and a compositor tick, and is what the candidate
+   * actually waited for.
+   *
+   * **What it is not.** The marker and the frame travel different paths — SCTP data and an RTP
+   * media stream — so nothing guarantees the frame `rVFC` reports is the frame the marker
+   * described. In practice the marker is a few dozen bytes on a lower-latency path and arrives
+   * first, so the next presented frame is the right one; under loss or congestion it could be a
+   * frame from the tail of the previous turn, which would understate the figure. It is an
+   * attribution by adjacency, not by identity, and the honest reading is "close, with a known bias
+   * toward optimism". Exact attribution needs the epoch inside the frame — an SEI message or
+   * `RTCEncodedVideoFrame` metadata — which means an encoded-transform pipeline this does not have.
+   *
+   * One callback per marker rather than a standing loop: `rVFC` is not repeating, and re-arming it
+   * every frame would run this at 25fps to answer a question asked once a turn.
+   */
+  const watchForPaint = useCallback(() => {
+    const element = videoRef.current as VideoWithFrameCallback | null;
+    const epoch = pendingEpoch.current;
+    if (!element || epoch === null) return;
+    // Absent on Firefox. Reporting nothing is the right degradation -- a missing measurement is
+    // recoverable, a fabricated one poisons the latency table this product is judged on.
+    if (typeof element.requestVideoFrameCallback !== "function") return;
+
+    element.requestVideoFrameCallback(() => {
+      // Monotonic guard, matching the orchestrator's own rule that there is only one first frame
+      // per turn. Without it a late marker for an old epoch could report a paint out of order.
+      if (epoch <= reportedEpoch.current) return;
+      reportedEpoch.current = epoch;
+      pendingEpoch.current = null;
+      paintRef.current?.(epoch);
+    });
   }, []);
 
   const join = useCallback(async () => {
@@ -125,6 +208,24 @@ export function useRtc(apiBase: string, sessionId: string) {
     };
 
     room
+      .on(RoomEvent.DataReceived, (payload: Uint8Array, _p, _kind, topic?: string) => {
+        // The epoch marker the transport sends on the first frame of each turn. Without it a
+        // WebRTC video track is anonymous pixels and no painted frame can be attributed to a
+        // turn, which is why first-frame latency was unmeasurable on this path.
+        if (topic !== undefined && topic !== "control") return;
+        try {
+          const message = JSON.parse(new TextDecoder().decode(payload)) as {
+            type?: string;
+            epoch?: number;
+          };
+          if (message.type === "frame_epoch" && typeof message.epoch === "number") {
+            pendingEpoch.current = message.epoch;
+            watchForPaint();
+          }
+        } catch {
+          /* a malformed control message must not take the call down */
+        }
+      })
       .on(RoomEvent.TrackSubscribed, attach)
       .on(RoomEvent.TrackUnsubscribed, (track: RemoteTrack) => {
         track.detach();
@@ -172,7 +273,7 @@ export function useRtc(apiBase: string, sessionId: string) {
       });
       roomRef.current = null;
     }
-  }, [apiBase, sessionId]);
+  }, [apiBase, sessionId, watchForPaint]);
 
   const leave = useCallback(async () => {
     const room = roomRef.current;
