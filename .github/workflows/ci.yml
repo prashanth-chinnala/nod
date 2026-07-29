@@ -2,13 +2,19 @@ name: ci
 
 on: [push, pull_request]
 
-# The whole point of this workflow is that it needs no GPU, no model weights, and
-# no network at test time. If a change makes CI want a CUDA package in order to
-# import, a module boundary has been broken -- fix the boundary, do not add the
-# dependency. tests/test_boundaries.py fails first when that happens.
+# Two independent jobs, one per app, because they share nothing at build time and a failure
+# in one should not mask the state of the other.
+#
+# The api job's whole point is that it needs no GPU, no model weights, and no network at
+# test time. If a change makes it want a CUDA package in order to import, a module boundary
+# has been broken -- fix the boundary, do not add the dependency. tests/test_boundaries.py
+# fails first when that happens.
 jobs:
-  test:
+  api:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/api
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -20,3 +26,19 @@ jobs:
       - run: ruff format --check src tests
       - run: mypy src/avatar
       - run: pytest -m "not gpu" --tb=short
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # Types and lint before build: both fail faster, and with far better messages, than a
+      # bundler error does.
+      - run: pnpm --filter web typecheck
+      - run: pnpm --filter web lint
+      - run: pnpm --filter web build

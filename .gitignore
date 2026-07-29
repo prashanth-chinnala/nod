@@ -72,3 +72,12 @@ docs/
 .idea/
 .vscode/
 *.swp
+node_modules
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+.turbo/
+*.tsbuildinfo
+next-env.d.ts

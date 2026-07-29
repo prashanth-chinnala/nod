@@ -1,0 +1,15 @@
+packages:
+  - "apps/web"
+  - "packages/*"
+
+allowBuilds:
+  sharp: set this to true or false
+  unrs-resolver: set this to true or false
+
+# pnpm blocks dependency install scripts by default, which is correct -- it is what makes a
+# malicious transitive postinstall harder. These three are named individually because each
+# genuinely compiles a native binary, and a blanket allow would defeat the point.
+onlyBuiltDependencies:
+  - sharp
+  - unrs-resolver
+  - "@tailwindcss/oxide"
