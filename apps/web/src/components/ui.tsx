@@ -259,7 +259,14 @@ export function Page({
   action,
   children,
 }: {
-  title: string;
+  /**
+   * A string on every page except the home one, which passes the wordmark.
+   *
+   * `ReactNode` rather than `string` so the product name can be set as the mark rather than
+   * typed out in the UI face. The heading stays an `h1` either way, and `Wordmark` carries its
+   * own `role="img"` and accessible name, so the document outline is unchanged.
+   */
+  title: ReactNode;
   lede: string;
   action?: ReactNode;
   children: ReactNode;

@@ -1,0 +1,17 @@
+<!--
+  The app icon: the lamp and its ghost, no letters.
+
+  Pure circles rather than the wordmark, because an icon has no room for text and no font to
+  depend on. Colours are literal hex rather than the app's CSS variables: this file is served
+  standalone to a browser chrome that has never loaded the stylesheet, so a var() here would
+  resolve to nothing and render an invisible icon.
+
+  Sized 64 and served as SVG, so it is sharp at every size a browser asks for. The 16px case is
+  a separate file -- see icon0.svg -- because two circles that close together become one grey
+  smudge at that scale, and a favicon is picked by the browser rather than chosen by us.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <rect width="64" height="64" rx="15" fill="#131b21"/>
+  <circle cx="32" cy="22" r="8" fill="#54b6d6" opacity=".22"/>
+  <circle cx="32" cy="41" r="8" fill="#54b6d6"/>
+</svg>

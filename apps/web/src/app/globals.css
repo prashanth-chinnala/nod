@@ -45,6 +45,14 @@
   --font-sans: var(--font-inter-tight), -apple-system, BlinkMacSystemFont, "Segoe UI",
     system-ui, sans-serif;
   --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+
+  /*
+    The wordmark's face, separate from the UI face on purpose: a mark that is set in the same
+    typeface as the surrounding labels stops reading as a mark. The fallback matters more here
+    than elsewhere -- if Outfit fails, the wordmark renders in the system face at -0.045em
+    tracking, which is visibly wrong but still says "nod" rather than breaking.
+  */
+  --font-logo: var(--font-outfit), var(--font-inter-tight), system-ui, sans-serif;
 }
 
 @layer base {

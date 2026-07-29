@@ -1,0 +1,13 @@
+<!--
+  iOS home-screen icon.
+
+  Separate from icon.svg for one reason: iOS applies its own rounded mask and does not honour a
+  transparent-cornered tile, so the background must run edge to edge or the corners show through
+  as dark fringing against a light wallpaper. The rounding is therefore dropped here and left to
+  the platform, which is the one case where matching the identity's tile exactly is wrong.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="180" height="180">
+  <rect width="64" height="64" fill="#131b21"/>
+  <circle cx="32" cy="21" r="7.5" fill="#54b6d6" opacity=".22"/>
+  <circle cx="32" cy="40" r="7.5" fill="#54b6d6"/>
+</svg>

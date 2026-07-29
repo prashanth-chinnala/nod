@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
+import { Wordmark } from "@/components/logo";
+
 /**
  * The sidebar.
  *
@@ -45,8 +47,12 @@ export function Nav() {
       className="sticky top-0 flex h-dvh w-60 shrink-0 flex-col border-r border-hair bg-raise"
     >
       <div className="border-b border-hair px-5 py-5">
-        <Link href="/" className="block">
-          <span className="text-[15px] font-semibold tracking-tight text-ink">nod</span>
+        <Link href="/" className="block text-ink transition-colors hover:text-accent">
+          {/* The full lockup. It used to be the static cut at nav scale, because the trail
+              overflowed this header's padding and got clipped -- now that `Wordmark` reserves
+              its own headroom the constraint is gone, and the sidebar is where a brand mark
+              should be unmistakable rather than tucked in. */}
+          <Wordmark size={24} trail />
           <span className="mt-0.5 block text-[11px] text-ink-low">
             conversational avatar console
           </span>

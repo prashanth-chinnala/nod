@@ -14,6 +14,8 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
+
+import { Wordmark } from "@/components/logo";
 import Link from "next/link";
 
 import { Button, Card, CardHeader, Chip, Page, type Status } from "@/components/ui";
@@ -108,7 +110,7 @@ export default function HomePage() {
 
   return (
     <Page
-      title="nod"
+      title={<Wordmark size={34} trail />}
       lede="A real-time conversational avatar: audio in, talking-head video out, with session lifecycle and interruption handling. This console configures it; a separate runtime serves it."
       action={
         <div className="flex gap-2">

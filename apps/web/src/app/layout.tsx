@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Inter_Tight } from "next/font/google";
+import { Inter_Tight, Outfit } from "next/font/google";
 
 import "./globals.css";
 
@@ -21,6 +21,23 @@ const sans = Inter_Tight({
   display: "swap",
 });
 
+/*
+  Outfit carries the wordmark and nothing else -- the identity specifies it for the logo and
+  Inter Tight for the interface, and mixing the two into body copy would lose the distinction
+  that makes a wordmark read as a mark.
+
+  Loaded through `next/font` rather than a stylesheet link, which self-hosts the file at build
+  time: no request to a font CDN at runtime, and the weight is preloaded, so the wordmark does
+  not flash in the fallback face on first paint. Only weight 500 is fetched, because that is
+  the only weight the mark uses.
+*/
+const logo = Outfit({
+  variable: "--font-outfit",
+  subsets: ["latin"],
+  weight: ["500"],
+  display: "swap",
+});
+
 export const metadata: Metadata = {
   title: "nod",
   description:
@@ -31,7 +48,7 @@ export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en" className={`${sans.variable} h-full antialiased`}>
+    <html lang="en" className={`${sans.variable} ${logo.variable} h-full antialiased`}>
       <body className="min-h-full">{children}</body>
     </html>
   );

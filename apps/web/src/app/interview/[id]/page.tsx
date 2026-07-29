@@ -24,6 +24,7 @@
 import Link from "next/link";
 import { use, useCallback, useEffect, useRef, useState } from "react";
 
+import { Wordmark } from "@/components/logo";
 import { Button, Chip } from "@/components/ui";
 import { useSession, type SessionState } from "@/lib/session";
 import { useRtc } from "@/lib/rtc";
@@ -151,10 +152,11 @@ export default function InterviewPage({ params }: { params: Promise<{ id: string
         <Link
           href="/"
           aria-label="nod — go to the console"
-          className="mb-8 flex w-fit items-center gap-2 text-[14px] font-semibold tracking-tight text-ink hover:text-accent"
+          className="mb-9 block w-fit text-ink transition-colors hover:text-accent"
         >
-          <NodMark />
-          nod
+          {/* The full lockup, trail included. This is the one screen with vertical room for it,
+              and it is the first thing a candidate ever sees of the product. */}
+          <Wordmark size={32} trail />
         </Link>
         <h1 className="text-[24px] font-semibold tracking-tight text-ink">
           You are about to start your interview
@@ -222,10 +224,13 @@ export default function InterviewPage({ params }: { params: Promise<{ id: string
           onClick={leave}
           aria-label="nod — leave and go to the console"
           title="Leave and go to the console"
-          className="flex items-center gap-2 text-[14px] font-semibold tracking-tight text-ink hover:text-accent"
+          className="flex items-center text-ink transition-colors hover:text-accent"
         >
-          <NodMark />
-          nod
+          {/* The lamp reports the session state, which is the one place in the product where
+              the mark carries information rather than decoration. The identity's two lamp
+              variants are exactly this app's `listening` cyan and `speaking` amber, so "on air"
+              is a literal reading of the amber cut rather than a repurposing of it. */}
+          <Wordmark size={18} tone={state === "SPEAKING" ? "live" : "rest"} />
         </Link>
         <span className="h-4 w-px bg-hair-strong" aria-hidden="true" />
         <span className="text-[13px] text-ink-mid">Interview</span>
@@ -455,26 +460,6 @@ function MicOffIcon() {
       <path d="M5.5 11a6.5 6.5 0 0 0 10.1 5.4M12 17.5V21" />
       {/* The slash is the whole point — it reads as muted without relying on the colour. */}
       <path d="M4 4l16 16" />
-    </svg>
-  );
-}
-
-/**
- * The nod mark: a head dipping in acknowledgement, which is what the product is named for.
- *
- * Two strokes rather than a glyph, so it holds at 18px and inherits `currentColor` — the same
- * reason the call icons are inline.
- */
-function NodMark() {
-  return (
-    <svg width={17} height={17} viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.7" opacity="0.35" />
-      <path
-        d="M7.5 10.5c1.6 2.4 3.1 3.6 4.5 3.6s2.9-1.2 4.5-3.6"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-      />
     </svg>
   );
 }
