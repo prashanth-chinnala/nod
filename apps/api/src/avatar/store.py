@@ -151,7 +151,10 @@ class Store:
         """
         target = self._file(collection, record["id"])
         payload = json.dumps(record, indent=2, sort_keys=True) + "\n"
-        handle = tempfile.NamedTemporaryFile(
+        # Deliberately not a bare context manager: `delete=False` plus an explicit
+        # `os.replace` IS the atomic-write pattern. The file is closed by the inner `with`
+        # below, and the except clause removes it if the rename never happens.
+        handle = tempfile.NamedTemporaryFile(  # noqa: SIM115
             "w", encoding="utf-8", dir=target.parent, prefix=".tmp-", delete=False
         )
         try:

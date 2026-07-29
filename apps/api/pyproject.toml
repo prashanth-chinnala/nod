@@ -29,6 +29,12 @@ llm = [
 tts = [
   "httpx>=0.27",
 ]
+# Chroma Cloud retrieval. Opt-in: the default retriever is keyword-based, in-process, and
+# needs neither. The client also downloads a ~79MB ONNX embedding model on first use, which
+# is a further reason not to make it a base dependency.
+vector = [
+  "chromadb>=1.0",
+]
 # Silero VAD. A ~2GB install for a ~2MB model, which is why it is opt-in and why the
 # default detector needs nothing at all.
 vad = [
