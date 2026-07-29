@@ -28,6 +28,7 @@ import os
 from dataclasses import dataclass, field
 from typing import Any
 
+from avatar.api.guardrails import Policy
 from avatar.knowledge import build_retriever
 from avatar.knowledge.contracts import Retriever
 from avatar.knowledge.keyword import NullRetriever
@@ -62,6 +63,7 @@ class ResolvedAgent:
     system_prompt: str = ""
     retriever: Retriever = field(default_factory=NullRetriever)
     lexicon: list[tuple[str, str]] = field(default_factory=list)
+    guardrail: Policy | None = None
     llm_model: str = ""
     voice_id: str = ""
     face_id: str | None = None
@@ -129,6 +131,7 @@ def resolve_agent(agent_id: str | None = None, *, data: Store | None = None) -> 
         system_prompt=str(record.get("system_prompt") or ""),
         retriever=_load_knowledge(data, record.get("knowledge_base_ids") or [], chosen),
         lexicon=_load_lexicon(data, record.get("pronunciation_id"), chosen),
+        guardrail=_load_guardrail(data, record.get("guardrail_id"), chosen),
         llm_model=str(record.get("llm_model") or ""),
         voice_id=str(record.get("voice_id") or ""),
         face_id=record.get("face_id"),
@@ -193,3 +196,24 @@ def _load_lexicon(data: Store, lex_id: str | None, agent_id: str) -> list[tuple[
         for entry in record.get("entries") or []
         if str(entry.get("term", "")).strip()
     ]
+
+
+def _load_guardrail(data: Store, guard_id: str | None, agent_id: str) -> Policy | None:
+    """
+    Load the policy an agent references, validated through the same model the API writes.
+
+    Validating on read rather than trusting the file: a policy edited by hand on disk, or
+    written by an older build, would otherwise reach enforcement with a missing field and fail
+    mid-conversation. Better to refuse at session start, where an operator sees it.
+    """
+    if not guard_id:
+        return None
+    try:
+        record = data.get("guardrails", guard_id)
+    except NotFound as exc:
+        raise AgentNotConfigured(
+            f"agent {agent_id!r} references guardrail {guard_id!r}, which does not exist. "
+            "An interview running without the policy someone wrote is worse than one that "
+            "refuses to start."
+        ) from exc
+    return Policy.model_validate(record)

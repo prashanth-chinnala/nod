@@ -58,6 +58,7 @@ from avatar.config import load_env, loaded_files
 from avatar.contracts import RendererConfig
 from avatar.idle import placeholder_idle_loop
 from avatar.knowledge.augment import with_knowledge, with_pronunciation
+from avatar.knowledge.guard import with_guardrail
 from avatar.llm_anthropic import build_llm
 from avatar.mixer import FRAME_INTERVAL_MS, TARGET_FPS, FrameMixer
 from avatar.orchestrator import RENDER_LEAD_IN_FRAMES, SessionOrchestrator
@@ -269,7 +270,14 @@ class BrowserSession:
             # Both boundaries are wrapped rather than the orchestrator being changed:
             # retrieval augments the prompt, a lexicon rewrites text before synthesis, and
             # neither is a session-lifecycle concern. The state machine cannot tell.
-            llm=with_knowledge(build_llm(LLM_NAME), self._agent.retriever),
+            # Order matters: the guardrail wraps the retrieval-augmented stream, so the input
+            # check sees the candidate's words and the output check sees what the model said
+            # after retrieval influenced it. Reversed, retrieved context would be policed as
+            # though the candidate had spoken it.
+            llm=with_guardrail(
+                with_knowledge(build_llm(LLM_NAME), self._agent.retriever),
+                self._agent.guardrail,
+            ),
             tts=with_pronunciation(build_tts(TTS_NAME), self._agent.lexicon),
             telemetry=self._telemetry,
         )
