@@ -33,6 +33,13 @@ from avatar.contracts import SentenceStream
 from avatar.knowledge import build_retriever
 from avatar.knowledge.contracts import Retriever
 from avatar.knowledge.keyword import NullRetriever
+from avatar.plan import (
+    DEFAULT_MAX_TURNS,
+    DEFAULT_MIN_SIGNALS,
+    Competency,
+    InterviewPlan,
+    slug,
+)
 from avatar.store import NotFound, Store, store
 from avatar.tools import Tool, tools_from_records
 
@@ -67,6 +74,7 @@ class ResolvedAgent:
     lexicon: list[tuple[str, str]] = field(default_factory=list)
     guardrail: Policy | None = None
     tools: list[Tool] = field(default_factory=list)
+    plan: InterviewPlan = field(default_factory=InterviewPlan)
     llm_model: str = ""
     voice_id: str = ""
     face_id: str | None = None
@@ -136,6 +144,7 @@ def resolve_agent(agent_id: str | None = None, *, data: Store | None = None) -> 
         lexicon=_load_lexicon(data, record.get("pronunciation_id"), chosen),
         guardrail=_load_guardrail(data, record.get("guardrail_id"), chosen),
         tools=_load_tools(data, record.get("tool_ids") or [], chosen),
+        plan=_load_plan(data, record.get("rubric_id"), chosen),
         llm_model=str(record.get("llm_model") or ""),
         voice_id=str(record.get("voice_id") or ""),
         face_id=record.get("face_id"),
@@ -183,6 +192,49 @@ def _load_knowledge(data: Store, kb_ids: list[str], agent_id: str) -> Retriever:
         # uploading to it — but the caller reports it so it is visible rather than puzzling.
         return retriever
     return retriever
+
+
+def _load_plan(data: Store, rubric_id: str | None, agent_id: str) -> InterviewPlan:
+    """
+    Load the rubric an agent interviews against, as an immutable plan.
+
+    Ids are read from the stored record rather than re-derived from the name. The API stamps
+    them at write time precisely so this cannot drift: re-slugging here would work until an
+    operator renamed a competency, at which point past sessions' coverage would key off an id
+    that no longer exists and their reports would silently lose an area. The fallback covers
+    records written before ids were stamped.
+    """
+    if not rubric_id:
+        return InterviewPlan()
+    try:
+        record = data.get("rubrics", rubric_id)
+    except NotFound as exc:
+        raise AgentNotConfigured(
+            f"agent {agent_id!r} references rubric {rubric_id!r}, which does not exist. An "
+            "interview running without the plan someone wrote would look fine and cover "
+            "nothing in particular."
+        ) from exc
+
+    competencies = []
+    for entry in record.get("competencies") or []:
+        name = str(entry.get("name") or "").strip()
+        if not name:
+            continue
+        competencies.append(
+            Competency(
+                id=str(entry.get("id") or slug(name)),
+                name=name,
+                probe=str(entry.get("probe") or ""),
+                signals=tuple(
+                    str(signal).strip()
+                    for signal in entry.get("signals") or []
+                    if str(signal).strip()
+                ),
+                max_turns=int(entry.get("max_turns") or DEFAULT_MAX_TURNS),
+                min_signals=int(entry.get("min_signals") or DEFAULT_MIN_SIGNALS),
+            )
+        )
+    return InterviewPlan(name=str(record.get("name") or ""), competencies=tuple(competencies))
 
 
 def _load_lexicon(data: Store, lex_id: str | None, agent_id: str) -> list[tuple[str, str]]:

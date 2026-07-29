@@ -213,6 +213,20 @@ class Telemetry:
         """
         self._emit("said", text=sentence, epoch=epoch)
 
+    def plan_update(self, snapshot: Mapping[str, object], *, epoch: int) -> None:
+        """
+        Coverage against the competency plan, after a turn has been read into it.
+
+        Emitted as an event rather than only written to the session record because the operator
+        watching a live interview is the person who most needs it: knowing that four of six
+        competencies are evidenced with two turns left is actionable *during* the call, and
+        useless afterwards. The record is for the report; this is for the room.
+
+        No histogram. Coverage is not a duration, and forcing it into `observe_ms` to reuse the
+        plumbing would put a meaningless percentile in the latency snapshot.
+        """
+        self._emit("plan", epoch=epoch, **snapshot)
+
     def frame_repeated(self, *, total: int) -> None:
         self.increment("frames_repeated")
         self._emit("frame_repeated", total=total)

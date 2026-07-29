@@ -284,3 +284,43 @@ async def test_session_recovers_enough_to_take_another_turn(
 
     assert orch.state is State.IDLE
     assert orch.history[-1] == {"role": "assistant", "content": "recovered."}
+
+
+async def test_end_of_turn_from_idle_is_refused_and_says_so(
+    build_session: Callable[..., SessionOrchestrator],
+) -> None:
+    """
+    A turn the machine will not accept must report that, not just quietly not happen.
+
+    The silent version caused a real defect one level up: `server.py` emitted `heard` telemetry
+    before calling this, so an end-of-turn arriving without a preceding `speech_start` put the
+    candidate's words in the transcript pane and in the session record while the model never
+    received them. The next question then read as the interviewer ignoring the answer, which is
+    the precise failure `heard` exists to expose — caused by the instrumentation itself.
+
+    Asserting the history too, because the return value alone would let an implementation say
+    "refused" while still appending, and the appended-but-refused case is the one that would
+    reach the model on the *following* turn out of order.
+    """
+    orch = build_session()
+    await orch.start("reference.mp4")
+    assert orch.state is State.IDLE
+
+    accepted = await orch.on_end_of_turn("I have six years of backend experience.")
+
+    assert accepted is False
+    assert orch.history == []
+
+
+async def test_end_of_turn_from_listening_is_accepted(
+    build_session: Callable[..., SessionOrchestrator],
+) -> None:
+    """The accepted path, so the assertion above is about the guard and not about the return."""
+    orch = build_session()
+    await orch.start("reference.mp4")
+    await orch.on_speech_start()
+
+    accepted = await orch.on_end_of_turn("I have six years of backend experience.")
+
+    assert accepted is True
+    assert orch.history[-1]["content"] == "I have six years of backend experience."

@@ -81,3 +81,9 @@ out/
 .turbo/
 *.tsbuildinfo
 next-env.d.ts
+
+# Runtime store. One JSON file per agent, rubric, session and knowledge base, written by
+# `avatar.store`. Untracked because it is state, not source -- but the reason it is *ignored*
+# rather than merely untracked is that session records hold interview transcripts: what a
+# candidate said, verbatim. One `git add -A` from a demo run would publish them.
+apps/api/data/

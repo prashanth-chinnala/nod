@@ -41,6 +41,7 @@ from avatar.api import (
     guardrails,
     knowledge,
     pronunciations,
+    rubrics,
     sessions,
     tools,
 )
@@ -61,6 +62,7 @@ from avatar.knowledge.augment import with_knowledge, with_pronunciation
 from avatar.knowledge.guard import with_guardrail
 from avatar.mixer import FRAME_INTERVAL_MS, TARGET_FPS, FrameMixer
 from avatar.orchestrator import RENDER_LEAD_IN_FRAMES, SessionOrchestrator
+from avatar.plan import with_plan
 from avatar.renderers import build
 from avatar.state import State
 from avatar.store import store
@@ -143,7 +145,16 @@ STATS_INTERVAL_SECONDS = 0.5
 RELAY_QUEUE_DEPTH = 256
 
 RELAYED_EVENTS = frozenset(
-    {"state_change", "latency", "stale_dropped", "session_failure", "counter", "heard", "said"}
+    {
+        "state_change",
+        "latency",
+        "stale_dropped",
+        "session_failure",
+        "counter",
+        "heard",
+        "said",
+        "plan",
+    }
 )
 """
 Which telemetry events reach the browser.
@@ -178,7 +189,16 @@ app.add_middleware(
 # configuration; the socket *is* the runtime. They share this process only because a second
 # deployment unit would be overhead at this size -- nothing in the orchestration path imports
 # them, so splitting them out later is a routing change rather than a rewrite.
-for _resource in (agents, faces, guardrails, knowledge, pronunciations, sessions, tools):
+for _resource in (
+    agents,
+    faces,
+    guardrails,
+    knowledge,
+    pronunciations,
+    rubrics,
+    sessions,
+    tools,
+):
     app.include_router(_resource.router)
 
 
@@ -237,6 +257,10 @@ class BrowserSession:
         # not know a database exists.
         self._turn: dict[str, Any] = {}
         self._turns_written = 0
+        # Empty until the plan reads its first turn, and empty for good on an agent with no
+        # rubric -- `with_plan` returns the stream untouched in that case, so the callback that
+        # would fill this is never wired up.
+        self._plan: dict[str, Any] = {}
 
         self._telemetry = Telemetry()
         self._telemetry.subscribe(self._on_telemetry)
@@ -289,8 +313,21 @@ class BrowserSession:
             # check sees the candidate's words and the output check sees what the model said
             # after retrieval influenced it. Reversed, retrieved context would be policed as
             # though the candidate had spoken it.
+            # The plan sits innermost, so retrieval keys on the candidate's answer rather than
+            # on the brief the plan just appended: `latest_candidate_text` scans backwards for
+            # the last user message and the plan's guidance is a system message, so the order is
+            # actually safe either way -- but innermost also means retrieval runs against a
+            # history the plan has already read, which keeps the two independent. The guardrail
+            # stays outermost so its input check still sees the candidate's own words.
             llm=with_guardrail(
-                with_knowledge(build_llm_with_tools(self._agent), self._agent.retriever),
+                with_knowledge(
+                    with_plan(
+                        build_llm_with_tools(self._agent),
+                        self._agent.plan,
+                        on_update=self._on_plan_update,
+                    ),
+                    self._agent.retriever,
+                ),
                 self._agent.guardrail,
             ),
             tts=with_pronunciation(build_tts(TTS_NAME), self._agent.lexicon),
@@ -378,10 +415,17 @@ class BrowserSession:
             # the transcript pane would show half the conversation, and which half depended
             # on how the turn was started.
             spoken = str(message.get("transcript", ""))
-            self._telemetry.heard(
-                spoken, epoch=self._orchestrator.epoch, transcribed=bool(spoken)
-            )
-            await self._orchestrator.on_end_of_turn(spoken)
+            # After the orchestrator, not before. Emitting `heard` unconditionally reported a
+            # transcript for turns the state machine refused -- so a client that sent an
+            # end-of-turn without a preceding `speech_start` saw its answer in the transcript
+            # pane and in the session record while the model never received it, and the next
+            # question read as the interviewer ignoring them. The refusal is now the loud thing.
+            if await self._orchestrator.on_end_of_turn(spoken):
+                self._telemetry.heard(
+                    spoken, epoch=self._orchestrator.epoch, transcribed=bool(spoken)
+                )
+            else:
+                self._telemetry.increment("turn_refused", state=str(self._orchestrator.state))
         elif kind == "audio_played":
             # The client's report of what it actually played. The only input that
             # moves audio_played_ms, and therefore the only evidence history
@@ -456,14 +500,23 @@ class BrowserSession:
             # rather than delegating it to the STT vendor's endpointing.
             transcript = self._stt.take_transcript()
             heard = transcript or f"[{event.speech_ms}ms of speech, no transcript]"
-            # Emitted before the turn starts, so the log shows what the LLM was given and
-            # not merely what it replied. Without this an empty transcript is invisible:
-            # the interviewer still asks a plausible question, it just has nothing to do
-            # with the answer, and that looks like a model problem rather than an STT one.
-            self._telemetry.heard(
-                heard, epoch=self._orchestrator.epoch, transcribed=bool(transcript)
-            )
-            await self._orchestrator.on_end_of_turn(heard)
+            # Emitted only for a turn the machine accepted, and still ahead of any `said`:
+            # `on_end_of_turn` spawns the turn rather than awaiting the model, and the LLM's
+            # first token measured 1.6-4.7s behind it. So the log keeps showing what the LLM
+            # was given before what it replied, without the event ever describing a turn that
+            # was refused. Without `heard` at all an empty transcript is invisible -- the
+            # interviewer asks a plausible question with no relation to the answer, which reads
+            # as a model problem rather than the STT problem it is.
+            #
+            # This path reaches LISTENING by construction, since the detector only emits
+            # END_OF_TURN after an onset. The refusal branch is therefore expected to be dead,
+            # and it is here so that if the invariant ever breaks it says so.
+            if await self._orchestrator.on_end_of_turn(heard):
+                self._telemetry.heard(
+                    heard, epoch=self._orchestrator.epoch, transcribed=bool(transcript)
+                )
+            else:
+                self._telemetry.increment("turn_refused", state=str(self._orchestrator.state))
 
     # -- background pumps ---------------------------------------------------
 
@@ -583,6 +636,32 @@ class BrowserSession:
                     self._flush_turn()
         except Exception:  # pragma: no cover - instrumentation must never break a session
             self._turn = {}
+
+    def _on_plan_update(self, snapshot: Mapping[str, object]) -> None:
+        """
+        Record and relay coverage after the plan has read a turn.
+
+        Written to the session record whole rather than appended, because coverage is cumulative
+        session state, not a per-turn event: the current snapshot already contains everything
+        the earlier ones said. Appending a snapshot per turn would store the same evidence n
+        times and leave a reader to work out which copy is authoritative.
+
+        Persisted here rather than in `_flush_turn` because the two have different clocks. A
+        turn flushes when the state machine leaves SPEAKING, which a barge-in during THINKING
+        skips entirely -- and a question that was asked and interrupted still consumed one of
+        the competency's `max_turns`, so coverage that only survived completed turns would drift
+        below what the interview actually spent.
+
+        Wrapped, like every other instrumentation path here: a store write failing must not end
+        an interview that is otherwise working.
+        """
+        self._plan = dict(snapshot)
+        try:
+            self._telemetry.plan_update(self._plan, epoch=self._orchestrator.epoch)
+            if self._session_id:
+                store.update("sessions", self._session_id, {"coverage": self._plan})
+        except Exception:  # pragma: no cover - instrumentation must never break a session
+            return
 
     def _flush_turn(self) -> None:
         """Append the accumulated turn to the session record, if there is one to append to."""

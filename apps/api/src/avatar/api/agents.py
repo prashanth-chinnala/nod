@@ -121,6 +121,7 @@ class AgentCreate(BaseModel):
     knowledge_base_ids: list[str] = Field(default_factory=list)
     tool_ids: list[str] = Field(default_factory=list)
     guardrail_id: str | None = None
+    rubric_id: str | None = None
     pronunciation_id: str | None = None
     turn_taking: TurnTaking = Field(default_factory=TurnTaking)
 
@@ -148,6 +149,7 @@ class AgentUpdate(BaseModel):
     knowledge_base_ids: list[str] | None = None
     tool_ids: list[str] | None = None
     guardrail_id: str | None = None
+    rubric_id: str | None = None
     pronunciation_id: str | None = None
     turn_taking: TurnTaking | None = None
 

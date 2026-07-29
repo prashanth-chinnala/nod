@@ -170,6 +170,33 @@ def _bounded(term: str) -> str:
     return f"{prefix}{escaped}{suffix}"
 
 
+def terms_present(text: str, terms: Sequence[str]) -> list[str]:
+    """
+    Which of `terms` appear in `text`, whole-word and case-insensitively.
+
+    Here rather than in `avatar.plan` so the competency plan's signal matching and the
+    pronunciation lexicon share one answer to the boundary problem `_bounded` documents. A
+    second implementation would work on "Kafka" and "latency" and fail silently on `C++`, `.NET`
+    and `Node.js` — which are exactly the signals an engineering rubric is written in, so the
+    bug would show up as a competency that never registers evidence no matter what the candidate
+    says.
+
+    Returns the matched terms rather than a count, because the caller records *which* signals
+    fired as the evidence a reviewer reads. A number would say a competency was covered without
+    saying what covered it.
+    """
+    if not text or not terms:
+        return []
+    found: list[str] = []
+    for term in terms:
+        cleaned = term.strip()
+        if not cleaned or cleaned in found:
+            continue
+        if re.search(_bounded(cleaned), text, re.IGNORECASE):
+            found.append(cleaned)
+    return found
+
+
 def with_pronunciation(
     tts: SpeechStreamLike, entries: Sequence[tuple[str, str]]
 ) -> SpeechStreamLike:

@@ -243,11 +243,26 @@ class SessionOrchestrator:
         if self.state is State.LISTENING:
             self._transition(State.IDLE)
 
-    async def on_end_of_turn(self, transcript: str) -> None:
+    async def on_end_of_turn(self, transcript: str) -> bool:
+        """
+        Accept the candidate's turn, or refuse it. Returns whether it was accepted.
+
+        The guard stays: an end-of-turn from anywhere but LISTENING is not a turn. What
+        changed is that refusal is now *reported* rather than silent, and the reason is a
+        defect this cost a debugging session to find.
+
+        The caller emits `heard` telemetry for the transcript. When this returned `None`
+        unconditionally, a refused turn still produced a `heard` event -- so the transcript
+        pane and the session record both showed the candidate saying something the model
+        never received, and the interviewer's next question looked like it was ignoring them.
+        That is the exact failure class `heard` was introduced to make visible, and it was
+        being caused by the instrumentation itself. A caller can now tell the difference.
+        """
         if self.state is not State.LISTENING:
-            return
+            return False
         self.history.append({"role": "user", "content": transcript})
         self._begin_turn()
+        return True
 
     async def on_idle_tick(self) -> None:
         """
