@@ -90,7 +90,9 @@ def _sync(device: str) -> None:
         torch.mps.synchronize()
 
 
-def time_stages(backend: Any, identity: dict[str, Any], features: list[Any]) -> dict[str, float]:
+def time_stages(
+    backend: Any, identity: dict[str, Any], features: list[Any]
+) -> dict[str, float]:
     """
     Per-stage ms/frame, so a slow result names its own cause.
 
@@ -110,7 +112,9 @@ def time_stages(backend: Any, identity: dict[str, Any], features: list[Any]) -> 
     size = len(features)
     indices = [i % len(identity["latents"]) for i in range(size)]
 
-    stages: dict[str, list[float]] = {"pe": [], "unet": [], "vae_decode": [], "blend": [], "jpeg": []}
+    stages: dict[str, list[float]] = {
+        "pe": [], "unet": [], "vae_decode": [], "blend": [], "jpeg": []
+    }
     for run in range(WARMUP + RUNS):
         with torch.no_grad():
             audio = torch.stack([torch.as_tensor(f) for f in features]).to(device, dtype)
@@ -196,7 +200,11 @@ def main() -> int:
             "be reported with the device attached to it.\n"
         )
 
-    result: dict[str, Any] = {"device_info": info, "reference": args.reference, "precisions": {}}
+    result: dict[str, Any] = {
+        "device_info": info,
+        "reference": args.reference,
+        "precisions": {},
+    }
     batches = [int(b) for b in args.batches.split(",") if b.strip()]
 
     for precision in [p.strip() for p in args.precisions.split(",") if p.strip()]:
