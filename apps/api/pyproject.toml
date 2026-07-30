@@ -48,6 +48,14 @@ vad = [
   "torch>=2.0",
   "torchaudio>=2.0",
 ]
+# The Postgres backing for the resource store, and the one-off import in
+# scripts/migrate_to_postgres.py. Optional because `dependencies = []` is what lets CI run with
+# no services: the default store is still the JSON files, and AVATAR_STORE=postgres is what asks
+# for this. `[binary]` ships a wheel with libpq in it, so installing needs no pg_config and no
+# compiler -- the source build is the version of this that fails on somebody's laptop.
+postgres = [
+  "psycopg[binary]>=3.1",
+]
 # Kept out of [dev] so CI never needs a web stack to lint the state machine. The
 # codec and the Transport implementation are tested with a list standing in for the
 # socket, so nothing in `tests/` imports these.

@@ -75,6 +75,54 @@ attachable and the live conversation consults all of them. What remains:
 | First-frame attribution | Measured by adjacency, not identity — the epoch marker and the frame travel different paths. Biased optimistic. Exact needs the epoch inside the frame (SEI / `RTCEncodedVideoFrame`) |
 | Assistant has no tests | `apps/api` has 666; `apps/assistant` has none. Verified by driving it live, which is not the same thing |
 
+### Where candidate data goes today, and the plan to bring it in house
+
+Recorded because it is the easiest thing in this product to be wrong about, and being wrong about
+it in front of a customer is expensive. **Today, candidate data leaves this system.** The decision
+to accept that for now is deliberate — the alternative is worse on this hardware — but it is a
+stated limitation, not a solved problem.
+
+| Component | Runs where | Sees candidate data? |
+|---|---|---|
+| LiveKit SFU | self-hosted, `ws://localhost:7880` | Audio and video, and **never leaves** |
+| Egress recording | self-hosted container → `recordings/` | The recording, and **never leaves** |
+| Record store | local files → local Postgres | Transcripts, and **never leaves** |
+| Retrieval | BM25, in-process (`AVATAR_RETRIEVER` unset) | Answers, and **never leaves**. Chroma Cloud is configured but dormant |
+| **STT** | `wss://api.deepgram.com` | **The candidate's raw microphone audio. Every word** |
+| **LLM** | `https://ollama.com/v1` | **The transcript and full conversation history, every turn** |
+| **Scorer** | same endpoint | **The entire transcript**, plus the rubric |
+| **Assistant** | same endpoint | **Transcript excerpts, on every question an operator asks** |
+| **TTS** | `api.deepgram.com/v1/speak` | The interviewer's text, not the candidate's |
+
+**Why cloud, for now.** Not cost — these are free tiers. Two engineering reasons. The machine has
+16 GB shared with three containers, Postgres, Node and two Python services, so a 7B model would
+compete for memory with everything else; and LLM time-to-first-token already measures
+1,645–4,724 ms, which local inference on constrained hardware would make worse rather than better.
+"Local" is not automatically "faster", and pretending otherwise would trade a real latency budget
+for an unmeasured principle.
+
+**Why the swap stays cheap.** Every one of those boundaries is a Protocol with a registry, and
+`llm_openai.py` already documents the local endpoint it would use. The LLM is a one-line change
+(`OPENAI_BASE_URL=http://localhost:11434/v1`) which the scorer and the assistant inherit for free,
+because all three read the same configuration. STT and TTS each need one new adapter — Whisper and
+Piper are the obvious open-source choices — behind `Transcriber` and `SpeechStream`, which already
+exist and already have a no-network implementation each.
+
+**The renderer is the exception worth knowing.** `Renderer` receives exactly
+`prepare_identity(reference_path)` and `push_audio(chunk)`, and those chunks are TTS output — the
+interviewer's own synthesised voice. **The renderer never sees candidate data.** So a hosted
+lip-sync service would process the persona's face and the interviewer's voice and nothing of the
+candidate's, which is a materially different privacy question from a hosted *conversational* avatar
+that takes the candidate's microphone directly. One is compatible with an in-house data position;
+the other is not.
+
+**The gap that is not a code gap.** The candidate's pre-join screen says the session is recorded
+and reviewed by a person. It does not say that a third party processes their audio and transcript.
+For an internal demo that is fine. For a real candidate it is a processor disclosure, and
+`/config` — which already reports which implementation each boundary resolved to — is the natural
+place to also report whether that implementation is local or third-party. Flagged rather than
+decided, because what a candidate is told is a product judgment.
+
 ### The assistant, and why LangGraph is here but not in the interview
 
 Two opposite workloads, so the answer is allowed to differ. The interview path is realtime and
