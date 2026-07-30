@@ -205,7 +205,20 @@ class SessionOrchestrator:
     # -- lifecycle ----------------------------------------------------------
 
     async def start(self, identity_reference: str) -> None:
-        identity = self._renderer.prepare_identity(identity_reference)
+        """
+        Prepare the identity and open the track.
+
+        `prepare_identity` goes to a worker thread, and that is not a micro-optimisation. It is
+        synchronous and a real renderer makes it expensive -- measured at 109s for a 150-frame
+        reference -- so calling it inline blocked the event loop for the whole enrollment. The
+        symptom was not a slow session: it was `TimeoutError: timed out during opening
+        handshake`, because the loop could not finish the WebSocket handshake it was in the
+        middle of. Every other session in the process stalls with it.
+
+        No torch crosses this line. `asyncio.to_thread` is stdlib, and the renderer is still
+        reached only through the protocol -- which is what rule 3 protects.
+        """
+        identity = await asyncio.to_thread(self._renderer.prepare_identity, identity_reference)
         self._render_session = self._renderer.start_session(identity)
         await self._transport.open_track()
         self._last_activity = self._clock()

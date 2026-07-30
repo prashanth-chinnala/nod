@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from collections.abc import AsyncIterator, Callable, Iterable, Sequence
+from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Sequence
 
 import pytest
 
@@ -261,3 +261,26 @@ def build_session(
         )
 
     return _build
+
+
+@pytest.fixture(autouse=True)
+def _isolate_identity_cache() -> Iterator[None]:
+    """
+    Clear the MuseTalk renderer's process-wide identity cache around every test.
+
+    That cache is module-level on purpose -- enrollment and a session build separate renderer
+    instances, and per-instance caching meant enrollment warmed nothing. The price is global
+    state, and it was not theoretical: `test_reset_does_not_unload_weights` passed alone and
+    failed in the suite, because an earlier test had already prepared the same reference path
+    and the second `prepare_identity` returned the cached artifact without calling the fake
+    backend. Autouse, so a test cannot forget.
+
+    Imported lazily. `avatar.renderers.musetalk` is stdlib-only at import time, but keeping this
+    inside the fixture means a collection error in that module cannot take the whole suite with
+    it.
+    """
+    from avatar.renderers.musetalk import reset_identity_cache
+
+    reset_identity_cache()
+    yield
+    reset_identity_cache()

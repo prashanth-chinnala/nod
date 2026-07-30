@@ -29,6 +29,7 @@ store is the authority on what a face is; this module is the authority on what m
 
 from __future__ import annotations
 
+import os
 import time
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -48,18 +49,23 @@ router = APIRouter(prefix="/faces", tags=["faces"])
 
 FaceStatus = Literal["queued", "preparing", "ready", "failed"]
 
-PREPARE_RENDERER = "stub"
+PREPARE_RENDERER = os.environ.get("AVATAR_RENDERER", "stub")
 """
-Which renderer performs enrollment.
+Which renderer performs enrollment: whichever one the server is configured to render with.
 
-Pinned to the stub rather than read from `AVATAR_RENDERER`, and that is the honest state of this
-milestone: no GPU exists yet, so the queue, the status transitions and the failure path have to
-be buildable and testable against a renderer that needs nothing. `build` is the one-line swap —
-when the real renderer runs, this constant is what changes, and every transition around it has
-already been exercised.
+This was pinned to `"stub"` for the whole time no GPU existed, with a note that the constant
+was the one-line swap once a real renderer ran. It has run, so this is that swap.
 
-The consequence, stated rather than hidden: an `enrollment_ms` recorded today is the cost of the
-stub's no-op, not of a real enrollment. It is a real measurement of the wrong thing.
+Reading `AVATAR_RENDERER` rather than taking a separate variable is the point. Enrolling with
+one renderer and rendering with another produces an identity artifact of the wrong shape --
+MuseTalk's is a dict of latents, masks and cycled frames; the stub's holds a path -- and the
+mismatch would not surface at enrollment. It would surface as a failed session, after a
+candidate had already joined.
+
+The consequence for anything measured before this commit, stated rather than quietly
+corrected: an `enrollment_ms` recorded under the stub is the cost of a no-op, not of an
+enrollment, and those rows are still in the database. `frame_count` is the tell -- the stub
+reports none.
 """
 
 PREPARABLE: frozenset[str] = frozenset({"queued", "failed"})

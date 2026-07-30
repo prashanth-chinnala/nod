@@ -33,6 +33,7 @@ would produce is therefore still `NOT YET MEASURED`.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
@@ -124,6 +125,19 @@ class MuseTalkIdentity:
     reference_path: str
     prepared: object
 
+    frame_count: int | None = None
+    """
+    Usable reference frames -- the ones a face was found in, before cycling.
+
+    Reported here rather than counted by the API, which would mean decoding the clip a second
+    time to learn something the renderer already knows. `None` from a backend that does not
+    report it, so the console shows an empty cell rather than a number nothing measured.
+
+    It is the *usable* count, not the source count: a frame with no detected face is dropped
+    during preparation, so a 150-frame clip where the subject turns away can legitimately
+    enroll fewer. The difference is worth seeing.
+    """
+
 
 @dataclass
 class MuseTalkSession:
@@ -135,6 +149,35 @@ class MuseTalkSession:
     epoch: int = IDLE_EPOCH
     closed: bool = False
     resets: int = 0
+
+
+IDENTITY_CACHE_SIZE = 2
+"""
+Prepared identities held in memory at once. `AVATAR_IDENTITY_CACHE` overrides.
+
+Two, not more: each one is roughly a gigabyte for a 150-frame reference, and this process also
+holds several GB of model weights. One would thrash whenever two agents alternate.
+"""
+
+_IDENTITIES: dict[str, MuseTalkIdentity] = {}
+"""
+Prepared identities, shared by every renderer instance in the process.
+
+Module-level rather than per-instance, and the reason is specific: `renderers.build`
+constructs a fresh renderer for each caller, so `POST /faces/{id}/prepare` and a session that
+then uses that face were separate objects with separate caches. Enrollment ran, measured 109s,
+cached its result -- and the session it was meant to serve threw the artifact away and did it
+again. Enrollment that does not warm the thing it enrolls for is a status field, not a feature.
+
+The cost of sharing, stated, because it bit immediately: this is process-global, so a test that
+prepares the same reference twice sees one call. `conftest.py` clears it around every test via
+`reset_identity_cache()`, and nothing in the runtime should call that.
+"""
+
+
+def reset_identity_cache() -> None:
+    """Drop every prepared identity. For tests, and for freeing memory deliberately."""
+    _IDENTITIES.clear()
 
 
 class MuseTalkRenderer:
@@ -152,7 +195,37 @@ class MuseTalkRenderer:
         window_frames: int = WINDOW_FRAMES,
         context_frames: int = CONTEXT_FRAMES,
         frame_interval_ms: int = FRAME_INTERVAL_MS,
+        width: int = 0,
+        height: int = 0,
+        first_frame_delay_ms: int = 0,
     ) -> None:
+        """
+        `width`, `height` and `first_frame_delay_ms` are accepted and not honoured, which needs
+        saying out loud rather than being discovered.
+
+        They exist because `renderers.build` passes one options dict to whichever renderer is
+        selected, and until now that dict was shaped entirely by the stub -- so choosing
+        `musetalk` raised `TypeError: unexpected keyword argument 'width'` at the moment a
+        candidate opened their interview. The class docstring claimed conformance was asserted
+        so this "cannot quietly take different arguments"; the conformance test checks methods,
+        not the constructor, so it did.
+
+        Why not honoured:
+
+        * `first_frame_delay_ms` is how long the *stub* waits before its first frame, to
+          simulate a cost this renderer actually pays. Simulating it here would add latency on
+          top of the real thing.
+        * `width`/`height` default to 256x144 -- deliberately tiny, deliberately 16:9, because
+          they describe a placeholder canvas. A reference clip of a person is portrait, and
+          forcing a face into 16:9 would stretch it. Output is scaled by height alone, aspect
+          preserved, capped by `AVATAR_MUSETALK_MAX_HEIGHT`.
+
+        The residual, stated because it is visible: the idle loop is still the 16:9 placeholder,
+        so switching between idle and speaking changes aspect ratio on screen. The right fix is
+        an idle loop built from the reference frames -- the reference *is* the person sitting
+        still, which is exactly what an idle loop should be -- and that is a change to how the
+        mixer is constructed, not to this class.
+        """
         if window_frames < 1:
             raise ValueError(f"window_frames must be positive, got {window_frames}")
         if context_frames < 0:
@@ -160,6 +233,10 @@ class MuseTalkRenderer:
         self.window_frames = window_frames
         self.context_frames = context_frames
         self.frame_interval_ms = frame_interval_ms
+        self.placeholder_geometry = (width, height)
+        self._identity_cache_size = int(
+            os.environ.get("AVATAR_IDENTITY_CACHE", IDENTITY_CACHE_SIZE)
+        )
         self._backend = backend
         self._loaded = False
 
@@ -186,10 +263,44 @@ class MuseTalkRenderer:
     # -- the Protocol -------------------------------------------------------
 
     def prepare_identity(self, reference_path: str) -> object:
-        return MuseTalkIdentity(
+        """
+        Prepare a reference, or return the artifact prepared from it earlier.
+
+        The cache is what makes §1.2's claim -- "reusable across sessions" -- true rather than
+        aspirational. Without it every session re-ran preparation from scratch: 109s of face
+        detection and VAE encoding per candidate, for a result identical to the one the previous
+        candidate's session had just computed and thrown away. Enrollment existed, was measured,
+        and bought nothing.
+
+        Keyed by reference path, because that is what the artifact is a function of. Not by face
+        id: two faces pointing at the same clip should share, and a face whose clip is replaced
+        must not.
+
+        Shared across every renderer instance in the process -- see `_IDENTITIES`. Deliberately
+        tiny: one identity for a 150-frame 576x768 reference holds roughly a gigabyte of cycled
+        frames, masks and latents, so this trades memory for time at a rate where two entries is
+        already a real cost. A persistent cache would mean writing that gigabyte somewhere and
+        inventing an invalidation rule for it; a restart re-prepares instead, which is honest,
+        because the artifact is derived data.
+        """
+        cached = _IDENTITIES.get(reference_path)
+        if cached is not None:
+            return cached
+
+        prepared = self.backend.prepare(reference_path)
+        usable = prepared.get("usable_frames") if isinstance(prepared, dict) else None
+        identity = MuseTalkIdentity(
             reference_path=reference_path,
-            prepared=self.backend.prepare(reference_path),
+            prepared=prepared,
+            frame_count=usable if isinstance(usable, int) else None,
         )
+        # Evict the oldest rather than growing. `dict` preserves insertion order, so this is a
+        # FIFO -- not an LRU, because with a capacity of two the distinction is theoretical and
+        # the tracking is not free.
+        while len(_IDENTITIES) >= self._identity_cache_size:
+            _IDENTITIES.pop(next(iter(_IDENTITIES)))
+        _IDENTITIES[reference_path] = identity
+        return identity
 
     def start_session(self, identity: object) -> object:
         """
