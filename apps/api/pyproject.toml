@@ -141,8 +141,19 @@ ignore_missing_imports = true
 # strict mode rejects those. Scoped to this one module so the relaxation cannot
 # spread to the orchestration layer.
 # numpy and chromadb arrive via the optional [vector] extra and are never type-checked here.
+# torch, face_alignment, transformers and MuseTalk's own modules are the same case, one step
+# further out: they are not in any extra at all, because they are installed into a separate
+# Python 3.10 environment (`.venv-musetalk`) that CI never builds. Every import of them is
+# function-scoped, so `import avatar` stays torch-free -- which tests/test_boundaries.py
+# enforces, and which is why declaring them unresolvable here costs nothing.
 [[tool.mypy.overrides]]
-module = ["numpy.*", "chromadb.*"]
+module = [
+  "numpy.*",
+  "chromadb.*",
+  "face_alignment.*",
+  "transformers.*",
+  "musetalk.*",
+]
 ignore_missing_imports = true
 follow_imports = "skip"
 

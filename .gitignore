@@ -8,6 +8,11 @@ dist/
 .venv/
 venv/
 env/
+# MuseTalk runs on Python 3.10 with numpy<2 and a pinned diffusers/transformers pair, none of
+# which the runtime's own environment can hold -- `opencv-python` compiled against numpy 1.x
+# hard-fails against the numpy 2 that torch pulls in. So it gets its own interpreter. The
+# `.venv/` rule above does not match a suffixed name, which is why this line exists.
+.venv-musetalk/
 
 # Tooling caches
 .pytest_cache/
@@ -41,6 +46,12 @@ outputs/
 *.jpeg
 *.png
 !docs/**/*.png
+
+# Vendored third-party source: the MuseTalk checkout the renderer imports. Upstream publishes no
+# distribution and its modules import each other by top-level name, so the tree has to be on
+# sys.path -- but it is someone else's source under its own licence, and committing it would put
+# an unmaintained fork in this repo. `scripts/setup_musetalk.sh` clones it.
+vendor/
 
 # Prepared idle-loop frames (regenerate with scripts/prepare_idle_loop.py)
 assets/idle_frames/
