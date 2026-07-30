@@ -30,7 +30,8 @@ import json
 import math
 from pathlib import Path
 
-from avatar.mixer import TARGET_FPS, IdleLoop
+from avatar.contracts import TARGET_FPS
+from avatar.mixer import IdleLoop
 from avatar.renderers.stub import draw_placeholder
 
 MOUTH_CLOSED_MANIFEST = "mouth_closed.json"

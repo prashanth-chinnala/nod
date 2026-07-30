@@ -70,11 +70,11 @@ from avatar.audio.turn_detection import (
     TurnEvent,
 )
 from avatar.audio.vad import FRAME_MS, build_vad
-from avatar.contracts import RendererConfig
+from avatar.contracts import FRAME_INTERVAL_MS, TARGET_FPS, RendererConfig
 from avatar.idle import placeholder_idle_loop
 from avatar.knowledge.augment import with_knowledge, with_pronunciation
 from avatar.knowledge.guard import with_guardrail
-from avatar.mixer import FRAME_INTERVAL_MS, TARGET_FPS, FrameMixer
+from avatar.mixer import FrameMixer
 from avatar.orchestrator import RENDER_LEAD_IN_FRAMES, SessionOrchestrator
 from avatar.plan import with_plan
 from avatar.renderers import build

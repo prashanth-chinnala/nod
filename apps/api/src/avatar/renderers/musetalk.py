@@ -38,9 +38,19 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
-from avatar.contracts import IDLE_EPOCH, AudioChunk, Frame
+from avatar.contracts import (
+    FRAME_INTERVAL_MS as CONTRACT_FRAME_INTERVAL_MS,
+)
+from avatar.contracts import (
+    IDLE_EPOCH,
+    AudioChunk,
+    Frame,
+)
+from avatar.contracts import (
+    TARGET_FPS as CONTRACT_TARGET_FPS,
+)
 
-TARGET_FPS = int(os.environ.get("AVATAR_MUSETALK_FPS", 25))
+TARGET_FPS = CONTRACT_TARGET_FPS
 """
 Frames per second the renderer aims to produce. `AVATAR_MUSETALK_FPS` overrides.
 
@@ -61,8 +71,8 @@ they disagree, the mouth drifts against the speech -- slowly, so it reads as bad
 than as a bug. So it is derived from one number here rather than written down three times.
 """
 
-FRAME_INTERVAL_MS = round(1000 / TARGET_FPS)
-"""Milliseconds per frame, derived. 40 at 25fps, 125 at 8fps."""
+FRAME_INTERVAL_MS = CONTRACT_FRAME_INTERVAL_MS
+"""Milliseconds per frame. Re-exported so this module's constants read as a set."""
 
 SAMPLE_RATE = 16_000
 """

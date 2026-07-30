@@ -22,9 +22,38 @@ it is replaceable without the state machine noticing:
 
 from __future__ import annotations
 
+import os
 from collections.abc import AsyncGenerator, Awaitable, Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from typing import Protocol, TypedDict, runtime_checkable
+
+TARGET_FPS = int(os.environ.get("AVATAR_FPS", 25))
+"""
+Frames per second the whole pipeline runs at. `AVATAR_FPS` overrides. 25 is the default and the
+target.
+
+**Why it is here, and why it is one number.** Three places have to agree: the mixer's cadence,
+the interval stamped on each frame, and the `fps=` that Whisper's chunker slices audio features
+with. Written down separately they drift, and the failure is not loud -- the mouth slides
+against the speech slowly enough to read as bad dubbing. `contracts.py` imports nothing from
+this package, so this is the one module every layer can read without any layer depending on
+another.
+
+**Why it is configurable at all, which is the part that matters.** A renderer that cannot reach
+its target does not degrade gracefully; it fails completely. The mixer drops any frame that
+misses its slot, so at 3.3 fps against a 25fps clock every frame is late and every frame is
+discarded -- measured on an M1 Pro, three turns rendered 169 frames and delivered zero, and the
+candidate watched the placeholder while the interviewer talked. A Tesla T4 measures 8.7 fps,
+which fails the same way for the same reason.
+
+So on hardware that cannot hold 25fps, lowering this is the difference between choppy video and
+no video. It is a real loss -- lip motion at 8fps is visibly less smooth -- and it is not a
+substitute for a faster renderer. It is what makes the renderer's actual output visible instead
+of dropped. See MEASUREMENTS.md for the per-device figures.
+"""
+
+FRAME_INTERVAL_MS = round(1000 / TARGET_FPS)
+"""Milliseconds per frame, derived. 40 at 25fps, 125 at 8fps."""
 
 IDLE_EPOCH = 0
 """

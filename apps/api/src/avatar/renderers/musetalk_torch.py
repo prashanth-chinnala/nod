@@ -167,13 +167,13 @@ CPU is excluded because float16 there is emulated and generally slower, not fast
 `AVATAR_MUSETALK_FP16=0` forces float32 for a fidelity comparison.
 """
 
-FPS = int(os.environ.get("AVATAR_MUSETALK_FPS", 25))
+FPS = int(os.environ.get("AVATAR_FPS", 25))
 """
 The reference frame rate, and the rate audio features are chunked against.
 
 Must match the renderer's `frame_interval_ms` or lip motion drifts against speech over a
 long turn -- slowly enough to look like bad sync rather than a bug. Both read
-`AVATAR_MUSETALK_FPS` for exactly that reason; see `musetalk.TARGET_FPS` for why a rate below
+`AVATAR_FPS` for exactly that reason; see `musetalk.TARGET_FPS` for why a rate below
 25 is sometimes the honest choice rather than a compromise.
 """
 

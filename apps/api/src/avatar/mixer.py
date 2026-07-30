@@ -21,13 +21,23 @@ import asyncio
 import time
 from collections.abc import AsyncIterator, Iterable
 
-from avatar.contracts import IDLE_EPOCH, Clock, Frame, Sleep
+from avatar.contracts import (
+    FRAME_INTERVAL_MS,
+    IDLE_EPOCH,
+    TARGET_FPS,
+    Clock,
+    Frame,
+    Sleep,
+)
 from avatar.state import FrameSource
 from avatar.telemetry import Telemetry
 
-TARGET_FPS = 25
 FRAME_INTERVAL = 1.0 / TARGET_FPS
-FRAME_INTERVAL_MS = round(1000 / TARGET_FPS)
+"""
+Seconds per frame. `TARGET_FPS` and `FRAME_INTERVAL_MS` are re-exported from `contracts` rather
+than defined here, because the renderer and the server need the same values and a second
+definition is a second thing to forget to change.
+"""
 
 
 class IdleLoop:

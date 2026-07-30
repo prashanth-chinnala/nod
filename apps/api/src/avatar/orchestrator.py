@@ -36,6 +36,7 @@ import time
 from contextlib import aclosing
 
 from avatar.contracts import (
+    FRAME_INTERVAL_MS,
     AudioChunk,
     Clock,
     Message,
@@ -45,7 +46,7 @@ from avatar.contracts import (
     Transport,
     Turn,
 )
-from avatar.mixer import FRAME_INTERVAL_MS, FrameMixer
+from avatar.mixer import FrameMixer
 from avatar.state import (
     FRAME_SOURCE,
     InvalidTransition,
