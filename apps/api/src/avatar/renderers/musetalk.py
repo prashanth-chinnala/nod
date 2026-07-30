@@ -52,8 +52,8 @@ any frame that misses its slot, so at 3.3 fps against a 25fps clock *every* fram
 delivered zero. The candidate watched the placeholder while the interviewer talked.
 
 Rendering at a rate the hardware can sustain is the difference between choppy video and no
-video. It is not free -- lip motion at 8fps is visibly less smooth -- but it is a real picture of
-a real face, which the alternative is not.
+video. It is not free -- lip motion at 8fps is visibly less smooth -- but it is a real
+picture of a real face, which the alternative is not.
 
 This value has to reach three places that must agree: the mixer's cadence, the frame interval
 stamped on each frame, and the `fps=` argument Whisper's chunker slices audio features with. If
