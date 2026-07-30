@@ -54,6 +54,7 @@ export default function InterviewPage({ params }: { params: Promise<{ id: string
   const { state, connected, transcript, error } = session;
   const { connect, disconnect, say, startMic, stopMic, attachCanvas } = session;
   const { setLocalPlayback, suppressPaintReports, send } = session;
+  const { socketAudioBlocked, unblockSocketAudio } = session;
 
   // Forwarded over the WebSocket the session already owns rather than back down the data channel:
   // `first_paint` is an existing server message with an existing handler, and one reporting path
@@ -66,7 +67,7 @@ export default function InterviewPage({ params }: { params: Promise<{ id: string
     hasVideo: rtcVideo,
     hasAudio: rtcAudio,
     publishing,
-    audioBlocked,
+    audioBlocked: rtcAudioBlocked,
     join: joinRtc,
     leave: leaveRtc,
     unblockAudio,
@@ -74,6 +75,16 @@ export default function InterviewPage({ params }: { params: Promise<{ id: string
     attachAudio,
     attachSelf,
   } = useRtc(API, id, reportPaint);
+
+  /*
+    One banner, either transport. The WebRTC leg reports `canPlaybackAudio` and the WebSocket leg
+    reports a suspended AudioContext; both mean the same thing to a candidate -- the interviewer is
+    talking and you cannot hear it -- and both are fixed by the same press.
+  */
+  const audioBlocked = rtcAudioBlocked || socketAudioBlocked;
+  const unblockBoth = useCallback(async () => {
+    await Promise.all([unblockAudio(), unblockSocketAudio()]);
+  }, [unblockAudio, unblockSocketAudio]);
 
   const [joined, setJoined] = useState(false);
   const [micOn, setMicOn] = useState(true);
@@ -282,7 +293,7 @@ export default function InterviewPage({ params }: { params: Promise<{ id: string
           <p className="min-w-0 flex-1 text-[12.5px] text-ink-mid">
             Your browser blocked sound. The interviewer is speaking and you cannot hear it.
           </p>
-          <Button variant="primary" onClick={() => void unblockAudio()}>
+          <Button variant="primary" onClick={() => void unblockBoth()}>
             Enable sound
           </Button>
         </div>

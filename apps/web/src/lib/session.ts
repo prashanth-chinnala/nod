@@ -114,6 +114,18 @@ export function useSession(apiBase: string, sessionId?: string) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
   const audioRef = useRef<AudioContext | null>(null);
+  /*
+    Whether the browser is refusing to play the audio we are already receiving.
+
+    This existed only for the WebRTC leg, via LiveKit's `canPlaybackAudio`, and the WebSocket leg
+    had nothing -- it called `ctx.resume()` and never looked at whether it worked. Chrome's
+    autoplay policy leaves an AudioContext `suspended` until a gesture it accepts, and audio
+    scheduled into a suspended context is silently discarded. So on any deployment without an SFU
+    -- which is every deployment without LiveKit credentials -- the avatar spoke, 3.2s of real
+    speech per turn arrived at the client, and the candidate heard nothing, saw no warning, and had
+    no button to press.
+  */
+  const [socketAudioBlocked, setSocketAudioBlocked] = useState(false);
   const cursorRef = useRef(0); // next free moment on the audio clock; 0 = no run in progress
   /**
    * Everything this path plays goes through one gain node, so playback can be silenced without
@@ -336,7 +348,9 @@ export function useSession(apiBase: string, sessionId?: string) {
       gainRef.current = ctx.createGain();
       gainRef.current.connect(ctx.destination);
     }
-    await ctx.resume();
+    // Checked, not assumed. `resume()` resolves either way; only `state` says what happened.
+    await ctx.resume().catch(() => undefined);
+    setSocketAudioBlocked(ctx.state === "suspended");
 
     // The session id travels as a query parameter, which is how the candidate's link reaches
     // the runtime: the record it names carries the agent, and the agent carries everything
@@ -459,8 +473,23 @@ export function useSession(apiBase: string, sessionId?: string) {
     canvasRef.current = node;
   }, []);
 
+  /**
+   * Resume playback after the browser blocked it. Call from a click handler.
+   *
+   * Kept separate from `connect` because the gesture that opened the session is not always one
+   * Chrome accepts -- a programmatic navigation into the room, or a click it has already spent.
+   * A second, explicit press always is.
+   */
+  const unblockSocketAudio = useCallback(async () => {
+    const ctx = audioRef.current;
+    if (!ctx) return;
+    await ctx.resume().catch(() => undefined);
+    setSocketAudioBlocked(ctx.state === "suspended");
+  }, []);
+
   return {
     state, hello, connected, transcript, metrics, error,
+    socketAudioBlocked, unblockSocketAudio,
     attachCanvas, connect, disconnect, say, send, startMic, stopMic, setLocalPlayback,
     suppressPaintReports,
   };
