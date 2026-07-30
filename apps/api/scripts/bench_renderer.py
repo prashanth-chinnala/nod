@@ -243,7 +243,16 @@ def main() -> int:
             if size > len(features):
                 continue
             backend.batch_size = size
-            stages = time_stages(backend, identity, features[:size])
+            try:
+                stages = time_stages(backend, identity, features[:size])
+            except torch.OutOfMemoryError:
+                # Recorded, not fatal. A batch that does not fit is a real result about this
+                # card -- and dying here would throw away every smaller batch already measured,
+                # which is the part anyone actually needs.
+                torch.cuda.empty_cache()
+                entry["batches"][size] = {"oom": True}
+                print(f"{size:>6}  out of memory on {info.get('gpu', backend.device)}")
+                continue
             total = round(sum(stages.values()), 1)
             fps = round(1000 / total, 2) if total else 0.0
             entry["batches"][size] = stages | {
@@ -257,9 +266,14 @@ def main() -> int:
                 f"  {total:>8.1f} {fps:>7.2f}  {total / TARGET_MS:>5.1f}x"
             )
 
-        best = min(entry["batches"], key=lambda b: entry["batches"][b]["total_ms_per_frame"])
+        measured = {b: v for b, v in entry["batches"].items() if "total_ms_per_frame" in v}
+        if not measured:
+            print("\n!! every batch size ran out of memory; nothing measured")
+            result["precisions"][precision] = entry
+            continue
+        best = min(measured, key=lambda b: measured[b]["total_ms_per_frame"])
         entry["best_batch"] = best
-        entry["best"] = entry["batches"][best]
+        entry["best"] = measured[best]
         print(
             f"\nbest: batch {best} at {entry['best']['total_ms_per_frame']} ms/frame "
             f"= {entry['best']['fps']} fps = {entry['best']['x_over_budget']}x the 40 ms budget"
