@@ -152,12 +152,17 @@ export function Table({
       <table className="w-full min-w-full border-collapse text-[13px]">
         <thead>
           <tr>
-            {head.map((column) => {
+            {head.map((column, index) => {
               const { label, align } =
                 typeof column === "string" ? { label: column, align: "left" as const } : column;
               return (
                 <th
-                  key={label}
+                  // Keyed by position, not by label. Labels are not unique: a table with both a
+                  // leading thumbnail column and a trailing action column has two empty headers,
+                  // and keying by label collapsed them into one — React logged a duplicate-key
+                  // error and was free to drop a column. Position is what actually identifies a
+                  // column here, and the array is static per table.
+                  key={index}
                   scope="col"
                   className={cx(
                     "border-b border-hair px-5 py-2.5",

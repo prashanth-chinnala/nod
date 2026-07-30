@@ -19,6 +19,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 
+import { FaceCreate } from "@/components/face-create";
 import {
   Button,
   Card,
@@ -43,6 +44,12 @@ type Face = {
   id: string;
   name: string;
   reference_path: string;
+  /** Present only on uploaded faces; a path-created face has no preview frame. */
+  thumbnail_path?: string | null;
+  source_kind?: string | null;
+  duration_seconds?: number | null;
+  width?: number | null;
+  height?: number | null;
   status: FaceStatus;
   enrollment_ms: number | null;
   frame_count: number | null;
@@ -178,6 +185,11 @@ export default function FacesPage() {
         it is what decides whether identities can be warmed in a pool or have to be enrolled
         as a scheduled job."
     >
+      {/* Upload first: it is how a face is actually made now. The path-based form below stays for
+          a reference already on the API's disk -- a scripted demo, or a clip too large to push
+          through a browser -- and is collapsed, because it is the rarer case. */}
+      <FaceCreate onCreated={() => void load()} />
+
       <Card>
         <CardHeader
           title="Prepared personas"
@@ -209,9 +221,32 @@ export default function FacesPage() {
             shows up here once it has actually been measured.
           </Empty>
         ) : (
-          <Table head={["Name", "Status", num("Enrollment"), num("Frames"), "Updated (UTC)", ""]}>
+          <Table head={["", "Name", "Status", num("Enrollment"), num("Frames"), "Updated (UTC)", ""]}>
             {faces.map((face) => (
               <Row key={face.id}>
+                <Cell>
+                  {/* The preview, or a placeholder that says why there is none. A face with no
+                      thumbnail was created from a server-side path, which is a real and supported
+                      case rather than a broken one. */}
+                  {face.thumbnail_path ? (
+                    /* eslint-disable-next-line @next/next/no-img-element --
+                       served by the runtime on another origin, which next/image would need a
+                       remotePatterns entry for; and a 480px JPEG has nothing to gain from an
+                       optimisation pipeline. */
+                    <img
+                      src={`${API}/faces/${face.id}/thumbnail`}
+                      alt={`Preview frame of ${face.name}`}
+                      className="h-10 w-16 rounded border border-hair object-cover"
+                    />
+                  ) : (
+                    <span
+                      title="Created from a server-side path, so there is no preview frame"
+                      className="grid h-10 w-16 place-items-center rounded border border-dashed border-hair text-[10px] text-ink-low"
+                    >
+                      no preview
+                    </span>
+                  )}
+                </Cell>
                 <Cell>
                   <span className="block text-ink">{face.name}</span>
                   <span className="mt-0.5 block font-mono text-[11.5px] text-ink-low">
@@ -267,12 +302,20 @@ export default function FacesPage() {
         )}
       </Card>
 
-      <Card>
-        <CardHeader
-          title="New face"
-          hint="The reference path is resolved by the API process, not by this browser."
-        />
-        <div className="grid gap-4 px-5 py-5 sm:grid-cols-2">
+      {/* Behind a disclosure, because it is now the rarer path and a second create form sitting
+          open next to the uploader is an invitation to type a path that does not exist on the API
+          host -- which fails at prepare time, not here, with nothing on screen explaining why. */}
+      <details className="group rounded-xl border border-hair bg-glass">
+        <summary className="cursor-pointer list-none px-5 py-4">
+          <span className="text-[13.5px] font-medium text-ink">
+            Point at a reference already on the API host
+          </span>
+          <span className="mt-1 block text-[12px] text-ink-mid">
+            For a clip too large to push through a browser, or a scripted demo. The path is
+            resolved by the API process, not by this browser — so it must exist on that machine.
+          </span>
+        </summary>
+        <div className="grid gap-4 border-t border-hair px-5 py-5 sm:grid-cols-2">
           <Field label="Name" hint="How this persona is identified in the agent editor.">
             <Input
               id={NAME_FIELD_ID}
@@ -304,7 +347,7 @@ export default function FacesPage() {
           </p>
           {formError ? <p className="text-[11.5px] text-bad">{formError}</p> : null}
         </div>
-      </Card>
+      </details>
     </Page>
   );
 }
