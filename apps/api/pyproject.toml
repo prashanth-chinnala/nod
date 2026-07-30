@@ -62,6 +62,11 @@ postgres = [
 server = [
   "fastapi>=0.115",
   "uvicorn[standard]>=0.30",
+  # Required by FastAPI for `Form`/`UploadFile`, which the face upload uses. In `[server]` rather
+  # than `[dev]` because it is a serving concern -- and note it is needed at *import* of
+  # `api/faces.py`, not at request time, so without it the whole router fails to load and the test
+  # modules that import it error during collection rather than skipping.
+  "python-multipart>=0.0.9",
 ]
 
 [tool.setuptools.packages.find]

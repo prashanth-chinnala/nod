@@ -101,3 +101,7 @@ data-archive-*.tar.gz
 # Finished recordings, bind-mounted out of the egress container. Interviews, in video form -- the
 # same reason `data/` is ignored, only larger and harder to un-publish.
 recordings/
+
+# Uploaded reference media: a real person's face and voice, provided for a persona. Same class of
+# content as `recordings/` and ignored for the same reason.
+media/

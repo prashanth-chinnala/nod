@@ -7,16 +7,16 @@ environment variable. A console that configures things the runtime ignores is a 
 console, not a product. `AVATAR_AGENT=<id>` is what joins them.
 
 **Why one env var still, rather than a per-session choice.** The candidate picks nothing; an
-interview is opened *for* them. Selecting the agent per socket is the right end state and
-needs a session token the console mints, which does not exist yet. Reading one id from the
-environment is the smallest step that makes stored configuration real, and it moves to a
-token without changing anything below this module.
+interview is opened *for* them. Selecting the agent per socket is the right end state and needs
+a session token the console mints, which does not exist yet. Reading one id from the environment
+is the smallest step that makes stored configuration real, and it moves to a token without
+changing anything below this module.
 
-**Failure is loud, deliberately.** A missing agent, knowledge base or lexicon raises at
-session construction rather than degrading. The alternative — falling back to defaults —
-produces an interviewer that behaves plausibly while ignoring the configuration someone
-carefully wrote, which is the same failure class as the empty transcript that took a day to
-find: nothing errors, the output is merely wrong.
+**Failure is loud, deliberately.** A missing agent, knowledge base or lexicon raises at session
+construction rather than degrading. The alternative — falling back to defaults — produces an
+interviewer that behaves plausibly while ignoring the configuration someone carefully wrote,
+which is the same failure class as the empty transcript that took a day to find: nothing errors,
+the output is merely wrong.
 
 Nothing here imports a renderer, torch, or a web framework, so it stays outside the
 orchestration boundary that `tests/test_boundaries.py` enforces.
@@ -51,8 +51,8 @@ class AgentNotConfigured(RuntimeError):
     """
     A referenced resource is missing.
 
-    Its own type rather than a bare RuntimeError so a caller can distinguish
-    "misconfiguration, tell the operator" from "the model provider is down, retry".
+    Its own type rather than a bare RuntimeError so a caller can distinguish "misconfiguration,
+    tell the operator" from "the model provider is down, retry".
     """
 
 
@@ -61,10 +61,10 @@ class ResolvedAgent:
     """
     Everything a session needs from stored configuration, already loaded.
 
-    Resolution happens once at session start, not per turn. The retriever in particular
-    indexes its whole corpus here, so the per-turn cost is a scored lookup rather than a
-    reload — and re-reading documents on every turn would put file I/O inside the latency
-    budget for no benefit.
+    Resolution happens once at session start, not per turn. The retriever in particular indexes
+    its whole corpus here, so the per-turn cost is a scored lookup rather than a reload — and
+    re-reading documents on every turn would put file I/O inside the latency budget for no
+    benefit.
     """
 
     agent_id: str | None = None
@@ -75,6 +75,18 @@ class ResolvedAgent:
     guardrail: Policy | None = None
     tools: list[Tool] = field(default_factory=list)
     plan: InterviewPlan = field(default_factory=InterviewPlan)
+    face_reference: str | None = None
+    """
+    The path the renderer should build its identity from, resolved from `face_id`.
+
+    Separate from `face_id` because the runtime needs the *file*, and only this module knows how
+    a face record maps to one. Without it the whole faces resource was decorative: `face_id` was
+    loaded here faithfully and then read by nothing, while `server.py` handed the renderer an
+    `AVATAR_REFERENCE` environment variable. An operator could attach a face in the console,
+    watch it prepare successfully, start a session, and get whatever the env var pointed at --
+    with no error anywhere. That is the same failure class as a knowledge base the interviewer
+    never consulted, and it is the last one of those.
+    """
     llm_model: str = ""
     voice_id: str = ""
     face_id: str | None = None
@@ -95,8 +107,8 @@ def resolve_for_session(session_id: str | None, *, data: Store | None = None) ->
     Nothing about the conversation then depends on how the server process was started.
 
     `AVATAR_AGENT` stays as a fallback, in that order, for two cases that both matter: running
-    the prototype against no console data at all — which the README promises works — and
-    pinning one agent for a scripted demo without minting a session first.
+    the prototype against no console data at all — which the README promises works — and pinning
+    one agent for a scripted demo without minting a session first.
 
     An unknown session id falls through to the environment rather than raising. The runtime
     should not refuse to talk to a candidate because a record was deleted; it should hold the
@@ -120,8 +132,8 @@ def resolve_agent(agent_id: str | None = None, *, data: Store | None = None) -> 
     Load an agent and everything it references. Returns defaults when none is selected.
 
     Defaults rather than raising when `AVATAR_AGENT` is unset, because a clean clone with no
-    stored data must still run — the README promises that, and every other boundary here
-    keeps the same promise.
+    stored data must still run — the README promises that, and every other boundary here keeps
+    the same promise.
     """
     data = data or store
     chosen = agent_id or os.environ.get(AGENT_ENV) or ""
@@ -145,6 +157,7 @@ def resolve_agent(agent_id: str | None = None, *, data: Store | None = None) -> 
         guardrail=_load_guardrail(data, record.get("guardrail_id"), chosen),
         tools=_load_tools(data, record.get("tool_ids") or [], chosen),
         plan=_load_plan(data, record.get("rubric_id"), chosen),
+        face_reference=_load_face(data, record.get("face_id"), chosen),
         llm_model=str(record.get("llm_model") or ""),
         voice_id=str(record.get("voice_id") or ""),
         face_id=record.get("face_id"),
@@ -157,11 +170,11 @@ def _load_knowledge(data: Store, kb_ids: list[str], agent_id: str) -> Retriever:
     Index every attached knowledge base into one retriever.
 
     One retriever across all of them rather than one each: retrieval has to rank a job
-    description's paragraphs against a rubric's on the same scale, and per-base retrievers
-    would return the top hit from each regardless of whether the second was relevant at all.
+    description's paragraphs against a rubric's on the same scale, and per-base retrievers would
+    return the top hit from each regardless of whether the second was relevant at all.
 
-    Document ids are namespaced by base, because `index` replaces by document id and two
-    bases can legitimately hold a document with the same id.
+    Document ids are namespaced by base, because `index` replaces by document id and two bases
+    can legitimately hold a document with the same id.
     """
     if not kb_ids:
         return NullRetriever()
@@ -238,6 +251,41 @@ def _load_plan(data: Store, rubric_id: str | None, agent_id: str) -> InterviewPl
     return InterviewPlan(name=str(record.get("name") or ""), competencies=tuple(competencies))
 
 
+def _load_face(data: Store, face_id: str | None, agent_id: str) -> str | None:
+    """
+    The reference path for an attached face, or `None` to fall back to the environment.
+
+    Fatal when the face is missing, like every other reference: an interview that silently wears
+    a different face than the one configured is worse than one that refuses to start, and the
+    operator can see the reason.
+
+    A face that has not been prepared is *not* fatal. `prepare_identity` runs at session start
+    regardless -- preparation is a cache, not a gate -- so a `pending` face costs the first
+    session the preprocessing time and works. Refusing here would turn a slow first session into
+    a broken one. A `failed` face is different: whatever the renderer could not read then it
+    will not read now, so that is worth stopping for.
+    """
+    if not face_id:
+        return None
+    try:
+        record = data.get("faces", face_id)
+    except NotFound as exc:
+        raise AgentNotConfigured(
+            f"agent {agent_id!r} references face {face_id!r}, which does not exist. An "
+            "interview wearing a different face than the one configured is worse than one "
+            "that refuses to start."
+        ) from exc
+
+    if str(record.get("status")) == "failed":
+        raise AgentNotConfigured(
+            f"agent {agent_id!r} references face {face_id!r}, whose preparation failed: "
+            f"{record.get('failure_reason') or 'no reason recorded'}. Re-prepare it or attach "
+            "another face."
+        )
+    reference = str(record.get("reference_path") or "").strip()
+    return reference or None
+
+
 def _load_lexicon(data: Store, lex_id: str | None, agent_id: str) -> list[tuple[str, str]]:
     if not lex_id:
         return []
@@ -306,8 +354,8 @@ def build_llm_with_tools(agent: ResolvedAgent) -> SentenceStream:
 
     Here rather than in `server.py` so the server does not have to know that only one adapter
     supports tool calling. Anthropic's does not yet, and offering tools to an adapter that
-    ignores them would be worse than not offering them -- the model would never call, and
-    nobody would know why.
+    ignores them would be worse than not offering them -- the model would never call, and nobody
+    would know why.
     """
     from avatar.llm_anthropic import build_llm
     from avatar.tools import ToolExecutor

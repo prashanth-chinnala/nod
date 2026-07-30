@@ -369,7 +369,10 @@ class BrowserSession:
                 "end_of_turn_silence_ms": END_OF_TURN_SILENCE_MS,
             }
         )
-        await self._orchestrator.start(IDENTITY_REFERENCE)
+        # The agent's own face, falling back to the environment. Until this line the faces
+        # resource was decorative: `face_id` was resolved and then read by nothing, so a face
+        # attached in the console prepared successfully and never appeared in a session.
+        await self._orchestrator.start(self._agent.face_reference or IDENTITY_REFERENCE)
         self._persist_recording()
 
         tasks = [

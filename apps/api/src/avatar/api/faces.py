@@ -30,9 +30,11 @@ store is the authority on what a face is; this module is the authority on what m
 from __future__ import annotations
 
 import time
+from pathlib import Path
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
+from fastapi.responses import FileResponse
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 
 from avatar.contracts import RendererConfig
@@ -181,6 +183,102 @@ async def create_face(body: FaceCreate) -> dict[str, Any]:
             "failure_reason": None,
         },
     )
+
+
+@router.post("/upload", status_code=status.HTTP_201_CREATED)
+async def upload_face(
+    name: Annotated[str, Form()],
+    file: Annotated[UploadFile, File()],
+) -> dict[str, Any]:
+    """
+    Create a face from an uploaded video or image.
+
+    Alongside `POST ""` rather than replacing it: that endpoint takes a path already on the
+    server, which is how a scripted demo and the test suite create faces without moving bytes.
+    This is the one a person uses.
+
+    **The file is stored before it is validated, and validated by reading it.** ffprobe needs a
+    file on disk, and every property that matters -- is it really video, how long, how big -- is
+    a claim the uploader cannot be trusted for. A `.mp4` full of PDF passes every check based on
+    the filename and then fails inside the renderer, hours later, as a preparation error nobody
+    traces back to here. A rejected upload is deleted rather than left to accumulate.
+
+    **An image is expanded into a short clip and the clip becomes the reference.** A photograph
+    has no head motion for a reference-driven renderer to borrow, so keeping the two shapes
+    separate would push a special case into `prepare_identity`, the frame cycling and the render
+    windowing. The warning about it reaches the operator; what it cannot do is invent movement.
+
+    Returns the record plus `warnings` -- things that will work and disappoint, which is a
+    different answer from a refusal and belongs in front of whoever chose the file.
+    """
+    from avatar import media
+
+    raw = await file.read()
+    try:
+        stored = media.store_upload(raw, file.filename or "")
+    except media.MediaRejected as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    try:
+        found = media.probe(stored)
+        warnings = media.check(found)
+        reference = media.clip_from_image(stored) if found.kind == "image" else stored
+        thumb = media.thumbnail(reference)
+    except media.MediaRejected as exc:
+        # Nothing usable came of it, so it does not stay on the disk. Leaving rejected uploads
+        # behind is how a media directory becomes unattributable junk nobody dares delete.
+        stored.unlink(missing_ok=True)
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    record = store.create(
+        COLLECTION,
+        ID_PREFIX,
+        {
+            "name": name.strip() or file.filename or "untitled",
+            "reference_path": str(reference),
+            # The original is kept even when a clip was generated from it. It is the only
+            # lossless
+            # copy of what the operator actually provided, and re-deriving the clip later --
+            # at a
+            # different length, or with a renderer that can animate a still -- needs it.
+            "source_path": str(stored),
+            "thumbnail_path": str(thumb),
+            "source_kind": found.kind,
+            "duration_seconds": found.duration,
+            "width": found.width,
+            "height": found.height,
+            "status": "queued",
+            "enrollment_ms": None,
+            "frame_count": None,
+            "failure_reason": None,
+        },
+    )
+    return {**record, "warnings": warnings}
+
+
+@router.get("/{face_id}/thumbnail")
+async def face_thumbnail(face_id: str) -> FileResponse:
+    """
+    The preview frame, served as a file.
+
+    Served by the runtime rather than the console because the file lives beside the reference on
+    the runtime's disk, and copying it into the web app's public directory would make two copies
+    with no way to tell which is current.
+    """
+    try:
+        record = store.get(COLLECTION, face_id)
+    except NotFound as exc:
+        raise _not_found(face_id) from exc
+    path = Path(str(record.get("thumbnail_path") or ""))
+    if not path.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "this face has no preview frame. Faces created from a server-side path do not "
+                "get one; upload the reference to generate it."
+            ),
+        )
+    return FileResponse(path, media_type="image/jpeg")
 
 
 @router.get("/{face_id}")
