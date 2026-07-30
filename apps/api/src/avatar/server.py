@@ -636,8 +636,26 @@ class BrowserSession:
                 if field:
                     self._turn[field] = float(str(record.get("ms", 0) or 0))
             elif event == "stale_dropped" and self._turn:
+                # Kept, but it is no longer what records a barge-in -- see the CANCELLING branch
+                # below. A stale artifact can still arrive during a turn that was cancelled and
+                # restarted quickly, and marking it costs nothing.
                 self._turn["interrupted"] = True
             elif event == "state_change" and self._turn:
+                # The barge-in itself, and this is the only branch that reliably catches it.
+                #
+                # `stale_dropped` used to be the sole writer of this flag and never fired in
+                # time: `_cancel_turn` transitions to CANCELLING one line *before* the epoch
+                # bump that makes any artifact stale, so the transition arrives first, the
+                # `from=SPEAKING` case below flushes the turn and clears `self._turn`, and the
+                # `and self._turn` guard on the stale branch then drops the event. Every
+                # mid-speech interruption -- the common case, and the one the whole epoch design
+                # exists for -- was stored as `interrupted: false`, and `interview_quality`
+                # reported zero barge-ins for every session ever recorded.
+                #
+                # Entering CANCELLING *is* the barge-in, so it is read directly rather than
+                # inferred from a downstream symptom that races the flush.
+                if str(record.get("to")) == "CANCELLING":
+                    self._turn["interrupted"] = True
                 # A turn is over when the machine leaves SPEAKING or CANCELLING. This is the
                 # trigger rather than `perceived_total`, which was the first attempt and was
                 # wrong: that stage only fires when the *client* reports having painted, so a

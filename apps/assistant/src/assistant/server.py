@@ -42,7 +42,7 @@ from fastapi.middleware.cors import CORSMiddleware
 # It also carries AVATAR_DATA_DIR, which must be absolute and shared: this service started from
 # its own directory once opened an empty store and reported "no interviews have been scored"
 # about a pipeline with several.
-from avatar.config import load_env, loaded_files  # noqa: E402
+from avatar.config import load_env, loaded_files
 
 _FROM_ENV_FILE = load_env()
 from pydantic import BaseModel, ConfigDict, Field
@@ -144,6 +144,11 @@ async def capabilities() -> dict[str, Any]:
         "writes": describe(WRITE_TOOLS),
         "model": os.environ.get("AVATAR_ASSISTANT_MODEL")
         or os.environ.get("AVATAR_LLM_MODEL", "not configured"),
+        # The store this process actually resolved to. `/config` reports the same thing for the
+        # runtime, and it exists for the same reason: this service silently fell back to the
+        # file
+        # store twice, and both times every tool returned zero rows while nothing errored.
+        "store": _store_name(),
         "env_files_read": loaded_files(),
         "writes_are_proposals": True,
         "auth": "none — this service will read any transcript in the store",
@@ -152,6 +157,13 @@ async def capabilities() -> dict[str, Any]:
             "rating or a weight; a human applies a proposal in the console."
         ),
     }
+
+
+def _store_name() -> str:
+    """The live store's class name, imported lazily so this module holds no import-time view."""
+    from avatar.store import store
+
+    return type(store).__name__
 
 
 def _to_messages(body: Ask) -> list[Any]:

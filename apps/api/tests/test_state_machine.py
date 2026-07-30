@@ -1,10 +1,9 @@
 """
 The transition table, and the guards that keep the session out of dead ends.
 
-The table-completeness tests at the top are the cheap ones that pay off later:
-adding a state without deciding its legal transitions or its frame source fails
-here rather than producing a session that reaches a state the mixer has no opinion
-about.
+The table-completeness tests at the top are the cheap ones that pay off later: adding a state
+without deciding its legal transitions or its frame source fails here rather than producing a
+session that reaches a state the mixer has no opinion about.
 """
 
 from __future__ import annotations
@@ -15,7 +14,7 @@ import pytest
 
 from avatar.orchestrator import SessionOrchestrator
 from avatar.state import FRAME_SOURCE, LEGAL_TRANSITIONS, InvalidTransition, State
-from tests.conftest import FakeClock, RecordingTransport, ScriptedLLM, settle
+from tests.conftest import FakeClock, RecordingTransport, ScriptedLLM, run_until, settle
 
 # -- the tables ------------------------------------------------------------
 
@@ -324,3 +323,42 @@ async def test_end_of_turn_from_listening_is_accepted(
 
     assert accepted is True
     assert orch.history[-1]["content"] == "I have six years of backend experience."
+
+
+async def test_cancelling_is_entered_before_the_epoch_bump(
+    build_session: Callable[..., SessionOrchestrator],
+) -> None:
+    """
+    The ordering that made every barge-in look like a clean turn.
+
+    `_cancel_turn` transitions to CANCELLING and only then bumps the epoch, so a consumer that
+    waits for a *stale artifact* to learn about an interruption is always one step behind: the
+    transition has already been broadcast, and anything that flushes on it has already written
+    the record. `server.py` used to record `interrupted` from `stale_dropped` for exactly that
+    reason and never once succeeded — every mid-speech interruption persisted as `interrupted:
+    false`, and the sessions API reported zero barge-ins for every interview ever held.
+
+    Pinned here rather than in the server because the ordering is the orchestrator's, and a
+    future change that bumped the epoch first would silently make the server's fix unnecessary —
+    or, if reversed again, silently reintroduce the bug.
+    """
+    orch = build_session()
+    await orch.start("reference.mp4")
+    await orch.on_speech_start()
+    await orch.on_end_of_turn("tell me about a failure")
+    await run_until(lambda: orch.state is State.SPEAKING, what="SPEAKING")
+
+    seen: list[tuple[str, int]] = []
+    original = orch._transition
+
+    def record(state: State) -> None:
+        seen.append((str(state), orch.epoch))
+        original(state)
+
+    orch._transition = record  # type: ignore[method-assign]
+    await orch.on_speech_start()
+
+    cancelling = [epoch for name, epoch in seen if name == "CANCELLING"]
+    assert cancelling, "a barge-in during SPEAKING must enter CANCELLING"
+    # The epoch at the moment of the transition is still the *old* one: the bump follows.
+    assert cancelling[0] < orch.epoch

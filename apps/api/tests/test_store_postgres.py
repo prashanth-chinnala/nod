@@ -725,8 +725,11 @@ def test_a_patched_reference_updates_the_typed_column_too(pg: Any, postgres: str
     patched = pg.update("agents", agent["id"], {"rubric_id": second["id"]})
 
     assert patched["rubric_id"] == second["id"]
-    columns = _sql(postgres, "select rubric_id, doc->>'rubric_id' from agents where id = %s",
-                   (agent["id"],))
+    columns = _sql(
+        postgres,
+        "select rubric_id, doc->>'rubric_id' from agents where id = %s",
+        (agent["id"],),
+    )
     assert columns == [(second["id"], second["id"])], "the column and the doc disagree"
 
 

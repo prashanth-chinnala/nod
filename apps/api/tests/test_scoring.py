@@ -28,8 +28,9 @@ from avatar.scoring import (
 
 
 def competency(name: str, *signals: str, weight: float = 1.0) -> Competency:
-    return Competency(id=slug(name), name=name, probe=f"probe {name}", signals=signals,
-                      weight=weight)
+    return Competency(
+        id=slug(name), name=name, probe=f"probe {name}", signals=signals, weight=weight
+    )
 
 
 def plan(*competencies: Competency) -> InterviewPlan:
@@ -322,8 +323,9 @@ def test_untranscribed_speech_is_marked_not_dropped() -> None:
     A session where the candidate spoke and nothing was captured must not read as one where they
     said nothing — that is a broken STT configuration, and it must not be scored as silence.
     """
-    text = transcript_text([turn("[1200ms of speech, no transcript]", "Go on?",
-                                 transcribed=False)])
+    text = transcript_text(
+        [turn("[1200ms of speech, no transcript]", "Go on?", transcribed=False)]
+    )
     assert "not transcribed" in text
 
 
@@ -382,8 +384,79 @@ async def test_prompt_reaches_the_judge_with_the_system_instruction() -> None:
         seen.append(prompt)
         return json.dumps({"rating": "weak", "rationale": "", "quotes": []})
 
-    await judge_competency(
-        competency("Scale", "sharding"), "transcript", "said", {}, judge
-    )
+    await judge_competency(competency("Scale", "sharding"), "transcript", "said", {}, judge)
     assert "Quote the candidate only" in seen[0]
     assert "Competency: Scale" in seen[0]
+
+
+@pytest.mark.asyncio
+async def test_every_call_failing_is_unavailable_not_a_zero_score() -> None:
+    """
+    The worst outcome this module can produce, and it did.
+
+    A failed judge call becomes `no_evidence` with score 0 and the competency's weight intact,
+    so a run where every call failed returned `status="scored"` with `weighted_score: 0.0` — and
+    the report rendered "Weighted score 0%" beside "Judged by <model>". An unmeasured zero in a
+    hiring record is precisely what the module docstring calls the worst thing it is possible to
+    build, and the file already asserted the opposite invariant: a total computed from nothing
+    must look missing, not low.
+
+    One provider 429 is enough to reach it.
+    """
+
+    async def broken(_prompt: str) -> str:
+        raise RuntimeError("429 insufficient_quota")
+
+    card = await score_session(
+        {"turns": [turn("I sharded it.", "scale?")]},
+        plan(competency("Scale", "sharding"), competency("Debugging", "profiler")),
+        broken,
+    )
+    assert card.status == "unavailable"
+    assert card.weighted_score is None
+    assert "429" in card.reason
+
+
+@pytest.mark.asyncio
+async def test_a_partial_failure_withholds_the_total() -> None:
+    """
+    Three of six failing halves the number with nothing at the scorecard level saying so.
+
+    The per-competency rows survive — one bad reply must not cost the others their verdicts —
+    but the aggregate is withheld, because a total that silently counts failures as genuine
+    zeros is worse than no total. A reader comparing two candidates cannot see that one was
+    scored against a working judge and the other was not.
+    """
+
+    async def flaky(prompt: str) -> str:
+        if "Debugging" in prompt:
+            raise RuntimeError("provider exploded")
+        return json.dumps({"rating": "strong", "rationale": "good", "quotes": []})
+
+    card = await score_session(
+        {"turns": [turn("I sharded it.", "scale?")]},
+        plan(competency("Scale", "sharding"), competency("Debugging", "profiler")),
+        flaky,
+    )
+    assert card.status == "scored"  # the successful row is still worth having
+    assert card.weighted_score is None  # but the total is not reportable
+    assert [v.assessed for v in card.verdicts].count(False) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_real_no_evidence_still_counts_toward_the_total() -> None:
+    """
+    The distinction the `assessed` flag exists for.
+
+    A judge that looked and found nothing is a measurement; a judge that never answered is not.
+    Both produce `no_evidence`, so without the flag the fix above would suppress the total for
+    every honest scorecard containing an unprobed competency — which is most of them.
+    """
+    card = await score_session(
+        {"turns": [turn("I read the logs.", "how do you debug?")]},
+        plan(competency("Debugging", "profiler")),
+        replying({"rating": "no_evidence", "rationale": "not discussed", "quotes": []}),
+    )
+    assert card.status == "scored"
+    assert card.verdicts[0].assessed is True
+    assert card.weighted_score == 0.0  # a measured zero, and reportable as one

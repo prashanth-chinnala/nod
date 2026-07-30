@@ -19,8 +19,18 @@ version = "0.1.0"
 description = "Console assistant — reads interview records, explains them, and proposes changes a human commits"
 requires-python = ">=3.11"
 
+# `avatar` is deliberately NOT listed here, and its absence needs the explanation.
+#
+# It is the sibling package at ../api, installed editable, and there is no workspace tool in this
+# repo to express that. Naming it as a bare requirement does not resolve to the sibling -- it
+# resolves to `avatar` on PyPI, which is a real distribution ("Avatar generator", version 0.1, by
+# an unrelated author). So `pip install -e apps/assistant` on a clean clone downloaded a
+# stranger's package, reported the dependency satisfied, and left the import failing for a reason
+# nothing on screen explained.
+#
+# Install the runtime first: `pip install -e apps/api` then `pip install -e apps/assistant`.
+# `assistant/__init__.py` checks for it at import and says exactly that if it is missing.
 dependencies = [
-  "avatar",
   "langgraph>=0.2",
   "langchain-core>=0.3",
   # The provider adapter. OpenAI-shaped on purpose, matching `avatar.llm_openai`: Ollama, LM Studio
@@ -51,7 +61,10 @@ target-version = "py311"
 # Same reason as the runtime's server.py: env files must load before the `avatar` imports, because
 # `avatar.store` picks its backend at import time. Two services disagreeing about where the records
 # live is a failure with nothing in either log to explain it.
-"src/assistant/server.py" = ["E402"]
+# I001 as well as E402: the import sorter would move `avatar.config` back above `load_env()`,
+# which is precisely the ordering that left this service reading an empty store. An autofix that
+# reintroduces a bug is worse than a lint warning.
+"src/assistant/server.py" = ["E402", "I001"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]

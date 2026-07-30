@@ -186,6 +186,12 @@ class MarkingTransport:
     """
 
     def __init__(self) -> None:
+        # `send_frame` reaches `from livekit import rtc`, and livekit lives in the `[webrtc]`
+        # extra which CI does not install -- it installs `[dev]` only. Guarded here rather than
+        # at module scope because the rest of this file is the pure wire codec and must keep
+        # running without the extra, which is the whole reason that codec has no dependencies.
+        pytest.importorskip("livekit", reason="epoch marking needs the [webrtc] extra")
+
         from avatar.transport.livekit import LiveKitTransport
 
         self.inner = LiveKitTransport("session-x", width=8, height=8)
@@ -213,8 +219,9 @@ class MarkingTransport:
 
         # The decode-and-capture tail needs Pillow and a real source; the epoch marking happens
         # before it, so it is stubbed out rather than exercised here.
-        with patch("avatar.transport.livekit._decode_to_rgba", return_value=(b"", 8, 8)), patch(
-            "asyncio.to_thread", new=_noop
+        with (
+            patch("avatar.transport.livekit._decode_to_rgba", return_value=(b"", 8, 8)),
+            patch("asyncio.to_thread", new=_noop),
         ):
             await self.inner.send_frame(Frame(data=b"x", epoch=epoch, pts_ms=0))
         self.frames.append(epoch)

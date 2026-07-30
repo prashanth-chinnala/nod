@@ -93,6 +93,11 @@ next-env.d.ts
 # duly got committed. Matching the directory at any depth is the only version that holds.
 data/
 
+# Archived copies of the file store, taken when migrating to Postgres. Same contents as `data/`
+# — verbatim interview transcripts — so the same rule applies, and a tarball is easier to
+# accidentally commit than a directory.
+data-archive-*.tar.gz
+
 # Finished recordings, bind-mounted out of the egress container. Interviews, in video form -- the
 # same reason `data/` is ignored, only larger and harder to un-publish.
 recordings/

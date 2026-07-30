@@ -131,6 +131,22 @@ class Verdict:
     about whether this scorecard can be trusted at all: a judge that invents evidence is not a
     judge whose ratings mean anything, and a reviewer needs to see that it happened.
     """
+    assessed: bool = True
+    """
+    Whether a model actually judged this competency, or the call failed.
+
+    A failed call still produces a Verdict -- one competency's bad reply must not cost the
+    others theirs -- but it produces `no_evidence`, which is indistinguishable from a real
+    finding of no evidence. Without this flag the aggregate could not tell the two apart, and a
+    scorecard whose every call failed reported a weighted score of 0.0 as though it had been
+    measured.
+
+    Declared last on purpose. Placed between `quotes` and `unverified_quotes` it shifted
+    every positional argument after it, and a caller passing fields positionally silently
+    bound its quote tuple to this flag -- caught only because a tuple and a list compare
+    unequal after a JSON round trip. A new field on a dataclass with positional callers
+    goes at the end.
+    """
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -139,6 +155,7 @@ class Verdict:
             "rating": self.rating,
             "score": self.score,
             "weight": self.weight,
+            "assessed": self.assessed,
             "rationale": self.rationale,
             "quotes": list(self.quotes),
             "unverified_quotes": list(self.unverified_quotes),
@@ -172,6 +189,16 @@ class Scorecard:
         and a longer decimal would imply the weights were measured.
         """
         if self.status != "scored" or not self.verdicts:
+            return None
+        # A partial total is not a total. A failed judge call yields `no_evidence`, score 0,
+        # with
+        # the competency's full weight intact -- so a run where three of six calls failed would
+        # halve the number with nothing at this level saying so, and one where all six failed
+        # would report 0.0 as though it had been measured. This class of silent zero is what the
+        # module docstring calls the worst thing it is possible to build here, and the paragraph
+        # above already asserts the opposite invariant: a total computed from nothing must look
+        # missing, not low. Any unassessed row makes the total unreportable.
+        if any(not v.assessed for v in self.verdicts):
             return None
         total_weight = sum(v.weight for v in self.verdicts)
         if not total_weight:
@@ -362,6 +389,7 @@ async def judge_competency(
             rating="no_evidence",
             score=RATINGS["no_evidence"],
             weight=competency.weight,
+            assessed=False,
             rationale=f"could not be assessed: {type(exc).__name__}: {exc}",
         )
 
@@ -435,4 +463,19 @@ async def score_session(
             for competency in plan.competencies
         )
     )
+    # Every call failing is an outage, not an assessment. Reported as unavailable so it lands in
+    # the same branch as "no model configured" -- the console already refuses to render a
+    # scorecard for that, where a `scored` card with a 0% headline beside "Judged by <model>"
+    # states a measurement that never happened.
+    if verdicts and not any(v.assessed for v in verdicts):
+        reasons = {v.rationale for v in verdicts if v.rationale}
+        return Scorecard(
+            status="unavailable",
+            model=model,
+            reason=(
+                "every competency failed to be assessed, so there is no scorecard: "
+                + "; ".join(sorted(reasons)[:2])
+            ),
+            verdicts=tuple(verdicts),
+        )
     return Scorecard(status="scored", model=model, verdicts=tuple(verdicts))

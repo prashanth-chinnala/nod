@@ -273,7 +273,10 @@ def _load_guardrail(data: Store, guard_id: str | None, agent_id: str) -> Policy 
             "An interview running without the policy someone wrote is worse than one that "
             "refuses to start."
         ) from exc
-    return Policy.model_validate(record)
+    # Annotated rather than returned bare: with pydantic absent under the CI install
+    # `model_validate` is `Any`, and strict mypy rejects returning it as `Policy`.
+    policy: Policy = Policy.model_validate(record)
+    return policy
 
 
 def _load_tools(data: Store, tool_ids: list[str], agent_id: str) -> list[Tool]:

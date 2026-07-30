@@ -324,9 +324,7 @@ def brief(state: PlanState) -> str:
         f"Probe next: {focus.name}." + (f" {focus.probe}" if focus.probe else ""),
     ]
     if evidenced:
-        lines.append(
-            "Already evidenced, do not re-ask: " + ", ".join(evidenced) + "."
-        )
+        lines.append("Already evidenced, do not re-ask: " + ", ".join(evidenced) + ".")
     if remaining:
         lines.append("Still to come, not yet: " + ", ".join(remaining) + ".")
     lines.append(

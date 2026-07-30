@@ -11,6 +11,9 @@ from __future__ import annotations
 from collections.abc import Iterator
 
 import pytest
+
+pytest.importorskip("fastapi", reason="console routers need the [server] extra")
+
 from fastapi.testclient import TestClient
 
 from avatar.agent_config import AgentNotConfigured, resolve_agent

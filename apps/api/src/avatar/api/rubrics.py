@@ -172,7 +172,7 @@ def _stored(body: RubricCreate | RubricUpdate) -> dict[str, Any]:
     Deriving it on every read would work until someone renamed a competency, at which point old
     session coverage would key off an id no longer computable from the current name.
     """
-    payload = body.model_dump(exclude_unset=True)
+    payload: dict[str, Any] = body.model_dump(exclude_unset=True)
     if payload.get("competencies") is not None:
         payload["competencies"] = [
             {**competency, "id": slug(str(competency["name"]))}

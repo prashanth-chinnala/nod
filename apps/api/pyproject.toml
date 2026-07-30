@@ -124,6 +124,11 @@ module = [
   "musetalk.*",
   "livekit.*",
   "psycopg.*",
+  # `pydantic` was missing, and its absence is why 8 of the 101 CI errors were
+  # `import-not-found`: every console router imports it at module scope, and CI installs only
+  # `[dev]`. Locally it arrives with `[server]`, so the whole class was invisible to anyone who
+  # had run the app.
+  "pydantic.*",
 ]
 ignore_missing_imports = true
 
@@ -137,8 +142,20 @@ ignore_missing_imports = true
 follow_imports = "skip"
 
 [[tool.mypy.overrides]]
-module = "avatar.server"
+# `avatar.server` *and* the eight routers beside it. Scoped to the server alone, this relaxation
+# left 65 `untyped-decorator` errors in `avatar/api/*.py`: those modules use the same
+# `@router.get`/`@router.post` decorators, and with fastapi absent -- which is exactly what CI
+# installs -- the decorator resolves to `Any` and mypy calls every handler untyped. Invisible
+# locally, because `[server]` brings fastapi and the decorators then have real types.
+module = ["avatar.server", "avatar.api.*"]
 disallow_untyped_decorators = false
+# `BaseModel` is `Any` when pydantic is absent, and strict mode refuses to subclass `Any`. That is
+# the last 25 of the 101 errors CI's install produced. Relaxed rather than solved, because the
+# alternatives are worse: adding pydantic to `[dev]` makes a type-check dependency of a package
+# that declares none, and a `# type: ignore` on every model class says the same thing 25 times
+# without saying why. The models are validated by pydantic at runtime and covered by tests that
+# assert real 422s, so the checking that matters is not being skipped here.
+disallow_subclassing_any = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

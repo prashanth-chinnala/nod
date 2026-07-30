@@ -127,6 +127,12 @@ async def test_missing_credentials_are_unavailable_not_an_exception(
     So this degrades and stores why, rather than raising into session start. The reason names
     the variables, because that is the actionable part.
     """
+    # Needs the library present to reach the credential check at all: `ensure_room` imports
+    # livekit inside its try block, so without the extra the ImportError is reported and the
+    # reason names a missing module rather than a missing key. This test is about the
+    # credential path, not the import path.
+    pytest.importorskip("livekit", reason="the credential check needs the [webrtc] extra")
+
     monkeypatch.setenv("AVATAR_RECORD", "1")
     result = await recording.ensure_room("session-abc")
     assert result["status"] == "unavailable"

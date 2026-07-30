@@ -19,6 +19,9 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+
+pytest.importorskip("fastapi", reason="console routers need the [server] extra")
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 

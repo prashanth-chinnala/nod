@@ -84,7 +84,10 @@ def room_token(room: str, identity: str, *, name: str = "") -> str:
 
     _, key, secret = credentials()
     grants = api.VideoGrants(room_join=True, room=room, can_publish=True, can_subscribe=True)
-    return (
+    # `str(...)` because the livekit stubs are absent under CI's install, so `to_jwt()` is
+    # `Any` there and strict mypy rejects it. A cast would assert a type nobody checked;
+    # this converts one.
+    return str(
         api.AccessToken(key, secret)
         .with_identity(identity)
         .with_name(name or identity)

@@ -53,7 +53,8 @@ def list_sessions(scored_only: bool = False) -> dict[str, Any]:
     Use this to find a session id before fetching anything about it. Set scored_only when the
     question is about assessments rather than about which interviews happened.
 
-    Returns id, agent, when it started, whether it ended, turn count, and scoring status.
+    Returns `total`, `scored_count`, `scored_ids`, `unscored_count`, and the rows themselves —
+    scored ones first. Use the counts as given; do not re-tally the rows.
     """
     rows = []
     for session in _sessions():
@@ -71,7 +72,24 @@ def list_sessions(scored_only: bool = False) -> dict[str, Any]:
                 "weighted_score": scoring.get("weighted_score"),
             }
         )
-    return {"sessions": rows[:MAX_ROWS], "total": len(rows), "truncated": len(rows) > MAX_ROWS}
+    # Scored first, then newest. Not cosmetic: with fourteen unscored rows above one scored row,
+    # the model read the list and answered "no sessions have been scored yet" about a pipeline
+    # containing a complete scorecard. Ordering puts the answer where it will be read.
+    rows.sort(key=lambda r: (r["scoring_status"] != "scored", r["started_at"] or ""))
+
+    scored = [r for r in rows if r["scoring_status"] == "scored"]
+    return {
+        # Counted here rather than left for the model to derive. A small model asked to tally a
+        # column across fifteen rows got it wrong in the most damaging direction -- reporting no
+        # assessments exist -- and no prompt fixes arithmetic. State the fact; do not make it
+        # infer one.
+        "total": len(rows),
+        "scored_count": len(scored),
+        "scored_ids": [r["id"] for r in scored][:MAX_ROWS],
+        "unscored_count": len(rows) - len(scored),
+        "sessions": rows[:MAX_ROWS],
+        "truncated": len(rows) > MAX_ROWS,
+    }
 
 
 @tool
