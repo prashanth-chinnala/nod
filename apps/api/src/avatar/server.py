@@ -306,17 +306,7 @@ class BrowserSession:
             self._telemetry,
         )
         self._orchestrator = SessionOrchestrator(
-            renderer=build(
-                RendererConfig(
-                    name=RENDERER_NAME,
-                    options={
-                        "width": FRAME_WIDTH,
-                        "height": FRAME_HEIGHT,
-                        "first_frame_delay_ms": RENDERER_FIRST_FRAME_DELAY_MS,
-                        "frame_interval_ms": FRAME_INTERVAL_MS,
-                    },
-                )
-            ),
+            renderer=build(RendererConfig(name=RENDERER_NAME, options=renderer_options())),
             mixer=self._mixer,
             transport=self._transport,
             # Both boundaries are wrapped rather than the orchestrator being changed:
@@ -735,6 +725,28 @@ class BrowserSession:
     async def _send(self, payload: Mapping[str, object]) -> None:
         with contextlib.suppress(Exception):
             await self._socket.send_text(json.dumps(payload, default=str))
+
+
+def renderer_options() -> dict[str, object]:
+    """
+    The options every renderer must accept, whichever one `AVATAR_RENDERER` selects.
+
+    A function with a name, rather than a dict literal inlined at the call site, so a test can
+    assert that each renderer accepts exactly this. That test is not bookkeeping: selecting
+    `musetalk` used to raise `TypeError: unexpected keyword argument 'width'` at the instant a
+    candidate opened their interview link, because this dict was shaped entirely by the stub and
+    nothing checked the other renderer against it. `isinstance(r, TalkingHeadRenderer)` did not
+    catch it -- a runtime-checkable Protocol compares method names, not signatures, and says
+    nothing at all about constructors.
+
+    A renderer is free to ignore an option it has no use for. What it may not do is refuse it.
+    """
+    return {
+        "width": FRAME_WIDTH,
+        "height": FRAME_HEIGHT,
+        "first_frame_delay_ms": RENDERER_FIRST_FRAME_DELAY_MS,
+        "frame_interval_ms": FRAME_INTERVAL_MS,
+    }
 
 
 @app.websocket("/session")
