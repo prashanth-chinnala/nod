@@ -31,6 +31,7 @@ import {
   Cell,
   Chip,
   Empty,
+  Combo,
   Field,
   Input,
   Page,
@@ -61,6 +62,56 @@ const TURN_BUDGET = "2.7–5.8s";
 
 type LlmProvider = "openai" | "anthropic" | "scripted";
 type VoiceProvider = "deepgram" | "tone";
+
+/**
+ * Model-name suggestions, per provider.
+ *
+ * Suggestions, emphatically not a valid set — the field they feed is a `Combo`, which still
+ * accepts anything typed. The distinction is the point: this console cannot know what a provider
+ * offers, and a closed list would make a model released tomorrow unselectable.
+ *
+ * `scripted` has no entry because it has no model. It answers from a fixed script, which is what
+ * makes it the credential-free default.
+ *
+ * The runtime's own currently-configured model is prepended at render time from `/config`. That
+ * one is worth more than anything static here: it is the value known to work on this host, keys
+ * and base URL included.
+ */
+const MODEL_SUGGESTIONS: Record<LlmProvider, readonly string[]> = {
+  scripted: [],
+  anthropic: ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"],
+  // Deliberately empty. `AVATAR_LLM=openai` here points at an OpenAI-compatible base URL —
+  // Ollama, LM Studio, vLLM — so the model names depend on which one is running and what is
+  // pulled locally. Guessing a list would be worse than offering none; `/config` supplies the
+  // one name that is actually serving.
+  openai: [],
+};
+
+/**
+ * Voice suggestions, per provider. Same reasoning as the models above.
+ *
+ * Deepgram's list is only the adapter's own `DEFAULT_VOICE` from `audio/tts_deepgram.py` — a
+ * value this repo can point at. The rest of the Aura catalogue is not enumerated here because
+ * nothing in this repo knows it, and a misremembered voice id fails at session start with a
+ * provider error rather than at the form.
+ */
+const VOICE_SUGGESTIONS: Record<VoiceProvider, readonly string[]> = {
+  tone: [],
+  deepgram: ["aura-2-thalia-en"],
+};
+
+/** A face, as much of one as this form needs to offer it. */
+type FaceOption = { id: string; name: string; status: string };
+
+/**
+ * The subset of `/config` this form uses: what the runtime is actually running right now.
+ *
+ * The provider fields matter as much as the names. `/config` reports one model and one voice —
+ * whichever provider the server is configured for — so suggesting `gpt-oss:20b` to someone who
+ * just selected `anthropic` would be offering a name that cannot work. The suggestion is only
+ * made when the provider matches.
+ */
+type RuntimeConfig = { llm?: string; llm_model?: string; tts?: string; tts_voice?: string };
 
 type TurnTaking = {
   onset_probability: number;
@@ -290,6 +341,8 @@ function CreateForm({ onCreated }: { onCreated: () => void }) {
   const [voiceProvider, setVoiceProvider] = useState<VoiceProvider>("tone");
   const [voiceId, setVoiceId] = useState("");
   const [faceId, setFaceId] = useState("");
+  const [faces, setFaces] = useState<FaceOption[] | null>(null);
+  const [runtime, setRuntime] = useState<RuntimeConfig | null>(null);
   const [onsetProbability, setOnsetProbability] = useState(String(DEFAULTS.onset_probability));
   const [releaseProbability, setReleaseProbability] = useState(
     String(DEFAULTS.release_probability),
@@ -299,6 +352,41 @@ function CreateForm({ onCreated }: { onCreated: () => void }) {
   const [endOfTurnMs, setEndOfTurnMs] = useState(String(DEFAULTS.end_of_turn_silence_ms));
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
+
+  /*
+    The two lists this form offers. Promise chains rather than async/await in the effect body,
+    for the reason given on `load` above.
+
+    Neither failure is worth surfacing as an error. A face list that does not arrive leaves the
+    picker disabled and the agent creatable without a face — which is a supported outcome, since
+    faces attach after the fact — and a `/config` that does not answer only costs a suggestion.
+    The list view above already reports an unreachable runtime once, loudly; saying it again
+    beside two optional fields would be noise.
+  */
+  useEffect(() => {
+    fetch("http://127.0.0.1:8000/faces", { cache: "no-store" })
+      .then(async (response) => (response.ok ? ((await response.json()) as FaceOption[]) : []))
+      .then(setFaces)
+      .catch(() => setFaces([]));
+
+    fetch("http://127.0.0.1:8000/config", { cache: "no-store" })
+      .then(async (response) =>
+        response.ok ? ((await response.json()) as RuntimeConfig) : null,
+      )
+      .then(setRuntime)
+      .catch(() => setRuntime(null));
+  }, []);
+
+  /*
+    The runtime's live value first, then the static ones, deduplicated.
+
+    It goes first because it is the strongest suggestion available: whatever `/config` reports is
+    serving on this host right now, with its keys and base URL already resolved. A static name
+    below it may or may not be reachable from this machine.
+  */
+  const suggest = (live: string | undefined, fallback: readonly string[]): readonly string[] => [
+    ...new Set([live, ...fallback].filter((value): value is string => Boolean(value))),
+  ];
 
   // The API rejects this too, and it is the API's rule. Checking it here as well only saves
   // a round trip and puts the explanation next to the field that caused it.
@@ -359,13 +447,37 @@ function CreateForm({ onCreated }: { onCreated: () => void }) {
           />
         </Field>
 
-        <Field label="Face" hint="A face id, or leave empty for the placeholder renderer">
-          <Input
+        {/* A closed dropdown, unlike the model and voice fields below: a face is a row in this
+            product's own database, so the full valid set is known here and anything outside it is
+            a typo that would validate now and fail at session start. */}
+        <Field
+          label="Face"
+          hint={
+            faces === null
+              ? "Reading the faces the runtime knows about…"
+              : faces.length === 0
+                ? "No faces yet. An agent without one runs on the placeholder renderer; create a face on the Faces screen and attach it below."
+                : "Or none, which runs the placeholder renderer"
+          }
+        >
+          <Select
             value={faceId}
+            disabled={faces === null || faces.length === 0}
             onChange={(event) => setFaceId(event.target.value)}
-            placeholder="face_…"
-            spellCheck={false}
-          />
+          >
+            <option value="">
+              {faces && faces.length === 0 ? "No faces yet" : "None — placeholder renderer"}
+            </option>
+            {(faces ?? []).map((face) => (
+              <option key={face.id} value={face.id}>
+                {/* Status is on the option because it changes what happens at session start: an
+                    unprepared face pays its enrollment cost on the first turn instead of having
+                    paid it offline, which is the whole reason Prepare exists. */}
+                {face.name}
+                {face.status === "ready" ? "" : ` — ${face.status}, not prepared`}
+              </option>
+            ))}
+          </Select>
         </Field>
 
         <Field label="LLM provider" hint="scripted needs no key and no network">
@@ -379,12 +491,28 @@ function CreateForm({ onCreated }: { onCreated: () => void }) {
           </Select>
         </Field>
 
-        <Field label="LLM model" hint="Empty means the adapter's own default">
-          <Input
+        <Field
+          label="LLM model"
+          hint={
+            llmProvider === "scripted"
+              ? "scripted answers from a fixed script and has no model to choose"
+              : "Suggestions, not the valid set — the provider owns that list. Empty means the adapter's own default."
+          }
+        >
+          <Combo
+            id="llm-model"
             value={llmModel}
+            suggestions={suggest(
+              runtime?.llm === llmProvider ? runtime?.llm_model : undefined,
+              MODEL_SUGGESTIONS[llmProvider],
+            )}
+            disabled={llmProvider === "scripted"}
             onChange={(event) => setLlmModel(event.target.value)}
-            placeholder="claude-sonnet-4-5"
-            spellCheck={false}
+            placeholder={
+              llmProvider === "scripted"
+                ? "not used"
+                : (runtime?.llm === llmProvider ? runtime?.llm_model : "") || "adapter default"
+            }
           />
         </Field>
 
@@ -398,12 +526,28 @@ function CreateForm({ onCreated }: { onCreated: () => void }) {
           </Select>
         </Field>
 
-        <Field label="Voice" hint="Provider voice id; empty means the adapter's default">
-          <Input
+        <Field
+          label="Voice"
+          hint={
+            voiceProvider === "tone"
+              ? "tone emits a sine wave at the right length, not speech — it has no voices"
+              : "Any Aura voice. Suggestions only; Deepgram owns the list. Empty means the adapter's default."
+          }
+        >
+          <Combo
+            id="voice-id"
             value={voiceId}
+            suggestions={suggest(
+              runtime?.tts === voiceProvider ? runtime?.tts_voice : undefined,
+              VOICE_SUGGESTIONS[voiceProvider],
+            )}
+            disabled={voiceProvider === "tone"}
             onChange={(event) => setVoiceId(event.target.value)}
-            placeholder="aura-asteria-en"
-            spellCheck={false}
+            placeholder={
+              voiceProvider === "tone"
+                ? "not used"
+                : (runtime?.tts === voiceProvider ? runtime?.tts_voice : "") || "adapter default"
+            }
           />
         </Field>
 

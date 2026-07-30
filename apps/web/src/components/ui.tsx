@@ -353,6 +353,55 @@ export function Select(props: React.SelectHTMLAttributes<HTMLSelectElement>) {
   return <select {...props} className={cx(CONTROL, props.className)} />;
 }
 
+/**
+ * A text field with suggestions: pick from the list, or type something not on it.
+ *
+ * **Why this and not a `Select`.** Some fields hold an identifier that another system owns — a
+ * provider's model name, a provider's voice id. A closed dropdown would be a claim that this
+ * console knows the full valid set, and it does not: Anthropic and Deepgram add names without
+ * telling us, so the day after a release a real model becomes unselectable. That failure is worse
+ * than the typo a dropdown prevents, because there is no way around it from the UI.
+ *
+ * A free-text box was the other extreme, and it was what this replaced — correct, and no help at
+ * all. `<datalist>` is the honest middle: the common values are one click away, anything else can
+ * still be typed, and it is native, so it keeps keyboard behaviour and needs no popup of our own.
+ *
+ * The suggestions are labelled as suggestions wherever this is used. An operator should not read
+ * three model names and conclude those are the only three that work.
+ */
+export function Combo({
+  suggestions,
+  id,
+  ...props
+}: React.InputHTMLAttributes<HTMLInputElement> & {
+  suggestions: readonly string[];
+  /** Also used for the datalist, so the two are wired together without a second prop. */
+  id: string;
+}) {
+  const listId = `${id}-suggestions`;
+  return (
+    <>
+      <input
+        {...props}
+        id={id}
+        // `list` is ignored when there is nothing to suggest, but omitting it avoids an empty
+        // dropdown arrow appearing on browsers that render one for a present-but-empty list.
+        list={suggestions.length > 0 ? listId : undefined}
+        autoComplete="off"
+        spellCheck={false}
+        className={cx(CONTROL, props.className)}
+      />
+      {suggestions.length > 0 ? (
+        <datalist id={listId}>
+          {suggestions.map((suggestion) => (
+            <option key={suggestion} value={suggestion} />
+          ))}
+        </datalist>
+      ) : null}
+    </>
+  );
+}
+
 /* ----------------------------------------------------------------- metrics */
 
 /**
