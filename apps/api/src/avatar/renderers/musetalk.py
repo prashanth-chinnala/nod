@@ -86,28 +86,37 @@ path, and a resampler is one fewer thing to get subtly wrong.
 BYTES_PER_SAMPLE = 2
 BYTES_PER_FRAME = SAMPLE_RATE * BYTES_PER_SAMPLE * FRAME_INTERVAL_MS // 1000  # 1280
 
-WINDOW_FRAMES = 16
+WINDOW_MS = 640
 """
-How many frames' worth of audio to accumulate before running a batch.
+How much audio to accumulate before rendering a batch, in milliseconds.
 
-The floor is set by Whisper needing context either side of a frame to encode it well; the
-ceiling by latency, since a frame cannot emit until its window is full. 16 frames is 640ms
-of audio, which at a batch size of 8 is two U-Net passes.
+**Milliseconds, not frames, and that distinction was a real bug.** This was `WINDOW_FRAMES = 16`,
+which is 640ms at 25fps -- correct. But a frame count means the window's *duration* moves with the
+frame rate, so dropping to 8fps to match what the hardware could sustain silently stretched it to
+2000ms. Nothing looked wrong: the renderer produced correct frames at a sustainable rate, and the
+first one still arrived 4.2 seconds into the turn, by which time the avatar's audio had nearly
+finished playing and `SPEAKING -> IDLE` drained the queue. 16 frames rendered, 16 discarded, zero
+shown. The window is a latency budget, and a latency budget denominated in frames is not one.
 
-This is the single knob that trades first-frame latency against throughput, and it is
-`NOT YET MEASURED` on real hardware. It should be tuned once the backend runs, not guessed
-at repeatedly.
+The floor is Whisper needing context either side of a frame to encode it; the ceiling is latency,
+since no frame emits until its window is full. 640ms is upstream's, and it is the whole of the
+first-frame cost that this stage controls.
 """
 
-CONTEXT_FRAMES = 2
-"""
-Frames of already-consumed audio to prepend to each window.
+WINDOW_FRAMES = max(1, round(WINDOW_MS / FRAME_INTERVAL_MS))
+"""The window in frames, derived. 16 at 25fps, 5 at 8fps -- 640ms either way."""
 
-Without it, every window boundary is a discontinuity in the audio features and the mouth
-visibly jumps at the window rate -- the characteristic streaming-talking-head artifact, and
-periodic enough to be unmistakable once seen. Overlapping the context costs two redundant
-feature extractions per window and removes the seam.
+CONTEXT_MS = 80
 """
+Already-consumed audio prepended to each window, in milliseconds. Same reasoning as `WINDOW_MS`.
+
+Without it, every window boundary is a discontinuity in the audio features and the mouth visibly
+jumps at the window rate -- the characteristic streaming-talking-head artifact, and periodic enough
+to be unmistakable once seen.
+"""
+
+CONTEXT_FRAMES = max(1, round(CONTEXT_MS / FRAME_INTERVAL_MS))
+"""Context in frames, derived. 2 at 25fps, 1 at 8fps."""
 
 
 @runtime_checkable
