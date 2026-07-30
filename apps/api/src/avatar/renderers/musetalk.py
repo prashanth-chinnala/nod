@@ -40,8 +40,29 @@ from typing import Protocol, runtime_checkable
 
 from avatar.contracts import IDLE_EPOCH, AudioChunk, Frame
 
-FRAME_INTERVAL_MS = 40
-"""25fps. MuseTalk's reference cycle and Whisper's feature stride both assume it."""
+TARGET_FPS = int(os.environ.get("AVATAR_MUSETALK_FPS", 25))
+"""
+Frames per second the renderer aims to produce. `AVATAR_MUSETALK_FPS` overrides.
+
+**Why this is configurable, and why it is not a quality setting.** 25 is what MuseTalk's
+reference cycle and Whisper's feature stride assume, and it is the right target. But a renderer
+that cannot reach its target does not degrade gracefully -- it fails completely. The mixer drops
+any frame that misses its slot, so at 3.3 fps against a 25fps clock *every* frame is late and
+*every* frame is discarded: measured on the M1 Pro, three turns produced 169 rendered frames and
+delivered zero. The candidate watched the placeholder while the interviewer talked.
+
+Rendering at a rate the hardware can sustain is the difference between choppy video and no
+video. It is not free -- lip motion at 8fps is visibly less smooth -- but it is a real picture of
+a real face, which the alternative is not.
+
+This value has to reach three places that must agree: the mixer's cadence, the frame interval
+stamped on each frame, and the `fps=` argument Whisper's chunker slices audio features with. If
+they disagree, the mouth drifts against the speech -- slowly, so it reads as bad dubbing rather
+than as a bug. So it is derived from one number here rather than written down three times.
+"""
+
+FRAME_INTERVAL_MS = round(1000 / TARGET_FPS)
+"""Milliseconds per frame, derived. 40 at 25fps, 125 at 8fps."""
 
 SAMPLE_RATE = 16_000
 """

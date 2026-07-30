@@ -11,10 +11,18 @@ torch 2.13, Python 3.10) it loads all five models in 13.9-20.2s, prepares a 550-
 reference in 233.9s, and renders frames whose lip region tracks the audio while the rest of
 the frame stays bit-identical to the reference.
 
-What it does *not* do on that hardware is keep up. Measured, median of six batches of eight
-after a warm-up batch: **2604 ms/frame**, min 1879, max 3255. The budget at 25fps is 40 ms, so
-this is 65x too slow -- correct output, nowhere near realtime. No CUDA measurement exists yet,
-and none may be quoted until a run produces one.
+What it does *not* do is reach 25fps on either device measured so far. Both figures are
+`scripts/bench_renderer.py` output, float16, best batch size for that device:
+
+    M1 Pro, 16 GB, MPS      301 ms/frame    3.3 fps    7.5x the 40 ms budget
+    Tesla T4, 15 GB, CUDA   114.7 ms/frame  8.7 fps    2.9x the budget
+
+A T4 is 2.6x the Mac and still short. The per-stage split says where the remaining time goes,
+and it is not where it was on MPS: the U-Net is down to 12.4 ms/frame at batch 16, while VAE
+decode is 58.8 and the CPU-side blend and JPEG encode together are 43.5 -- 38% of the frame, on
+a 4-core machine. So the next real gains are a faster VAE decode and getting blending off the
+critical path, not a bigger batch. No figure for any other GPU exists, and none may be quoted
+until a run produces one.
 
 **Written against MuseTalk v1.5's actual API, read from the checkout, not from its README.**
 An earlier version of this file was written from the v1.0 docs and had five signatures wrong
@@ -64,28 +72,36 @@ the right value depends on the link and on the model's output resolution, neithe
 is measured yet.
 """
 
+BATCH_SIZE_BY_DEVICE = {"cuda": 16, "mps": 4, "cpu": 4}
+"""
+Frames per U-Net forward pass, per device. Measured on both, because they disagree.
+
+Upstream's default is 8. On Apple Silicon that is worse than 4; on a T4 it is worse than 16.
+The curves are not the same shape, so one number cannot be right for both.
+
+Measured, ms/frame, median of 4 runs after warm-up:
+
+    batch      M1 Pro / MPS        Tesla T4 / CUDA
+        1              330                  153.6
+        2              317                  145.0
+        3              301                    ---
+        4              305                  128.3
+        6              413                    ---
+        8              355                  126.0
+       16              ---                  114.7
+       32             1565                    ---
+
+MPS is flat to 4 then degrades badly -- 32 is 5x worse than 3 -- which is memory pressure on
+unified memory shared with the whole machine. CUDA improves monotonically to 16, which is the
+textbook curve, and the reason is visible in the per-stage split: the U-Net drops from 48.9 to
+12.4 ms/frame across that range, so batching is doing exactly what it is supposed to.
+
+`AVATAR_MUSETALK_BATCH` overrides. Anything above 16 on a 15 GB T4 starts asking the allocator
+for 10 GB in one go, which it reports as an OOM rather than serving.
+"""
+
 BATCH_SIZE = 4
-"""
-Frames per U-Net forward pass. Upstream's default is 8; measured, 4 is better here.
-
-The usual reasoning -- a bigger batch uses the device better, at the cost of first-frame
-latency, since no frame emits until all of them are done -- turns out to be backwards on 16 GB
-of unified memory. Measured on this M1 Pro (ms/frame, median of 4 runs after a warm-up):
-
-    batch  1   330      batch  4   305
-    batch  2   317      batch  6   413
-    batch  3   301      batch  8   355
-                        batch 32  1565
-
-Flat from 1 to 4, then it degrades, and by 32 it is 5x worse than 3. Nothing about the model
-changes -- the VAE decode cost stays linear in frames at every batch size -- so this is memory
-bandwidth and pressure, not utilisation. On a discrete GPU with its own VRAM the curve should
-look like the textbook one, which is why this is a measured default rather than a fixed one:
-`AVATAR_MUSETALK_BATCH` overrides it, and it should be re-measured on CUDA rather than assumed.
-
-Picking 4 over 3 for one non-measured reason, stated as such: 4 divides the 8-frame render
-window evenly, and a ragged final batch adds a partial forward pass for no frames.
-"""
+"""Fallback for a device not in the table above. Deliberately conservative."""
 
 FACE_SIZE = 256
 """The crop the U-Net was trained on. Not a tunable."""
@@ -151,12 +167,14 @@ CPU is excluded because float16 there is emulated and generally slower, not fast
 `AVATAR_MUSETALK_FP16=0` forces float32 for a fidelity comparison.
 """
 
-FPS = 25
+FPS = int(os.environ.get("AVATAR_MUSETALK_FPS", 25))
 """
 The reference frame rate, and the rate audio features are chunked against.
 
 Must match the renderer's `frame_interval_ms` or lip motion drifts against speech over a
-long turn -- slowly enough to look like bad sync rather than a bug.
+long turn -- slowly enough to look like bad sync rather than a bug. Both read
+`AVATAR_MUSETALK_FPS` for exactly that reason; see `musetalk.TARGET_FPS` for why a rate below
+25 is sometimes the honest choice rather than a compromise.
 """
 
 
@@ -211,7 +229,7 @@ class TorchMuseTalkBackend:
         self.model_root = Path(
             model_root or os.environ.get("MUSETALK_ROOT", str(default_root))
         )
-        self.batch_size = int(os.environ.get("AVATAR_MUSETALK_BATCH", batch_size))
+        self._requested_batch_size = batch_size
         self.jpeg_quality = jpeg_quality or int(
             os.environ.get("AVATAR_JPEG_QUALITY", JPEG_QUALITY)
         )
@@ -220,6 +238,9 @@ class TorchMuseTalkBackend:
         )
         self.device = ""
         self._models: dict[str, Any] = {}
+        # Set in `load()`, once the device is known -- the right batch size depends on it, and
+        # measured badly enough on the wrong one to be worth deferring.
+        self.batch_size = int(os.environ.get("AVATAR_MUSETALK_BATCH", batch_size))
 
     # ------------------------------------------------------------------ load
 
@@ -249,6 +270,9 @@ class TorchMuseTalkBackend:
                 "Throughput will not resemble the published figures, and any number "
                 "measured here must be reported with this device attached to it."
             )
+
+        if "AVATAR_MUSETALK_BATCH" not in os.environ:
+            self.batch_size = BATCH_SIZE_BY_DEVICE.get(self.device, BATCH_SIZE)
 
         checkout = _checkout()
         if not (checkout / "musetalk").is_dir():
