@@ -230,7 +230,17 @@ export default function InterviewPage({ params }: { params: Promise<{ id: string
   const status = STATUS[state];
 
   return (
-    <div className="flex min-h-dvh flex-col bg-base">
+    /*
+      `h-dvh` and `overflow-hidden`, not `min-h-dvh`.
+
+      A minimum height is the right choice for a document and the wrong one for a call: it lets
+      the page grow with its content, so nothing in the tree has a definite height, so the
+      captions list's `overflow-y-auto` had nothing to overflow *within*. It grew instead, pushed
+      the room past the viewport, and the whole window scrolled -- taking the video and the call
+      controls off screen with it. Fixing it here rather than capping the panel is what makes the
+      scroll land inside the transcript, which is the only part that should ever scroll.
+    */
+    <div className="flex h-dvh flex-col overflow-hidden bg-base">
       <header className="flex items-center gap-3 border-b border-hair px-6 py-3">
         {/* The way out. The room has no sidebar by design, and without this the only exit was the
             browser's back button — which leaves the room without ever calling `leave()`, so the
@@ -278,8 +288,10 @@ export default function InterviewPage({ params }: { params: Promise<{ id: string
         </div>
       ) : null}
 
-      <main className="flex min-h-0 flex-1 flex-col gap-4 p-6 lg:flex-row">
-        <div className="relative min-h-72 flex-1 overflow-hidden rounded-xl border border-hair bg-black">
+      <main className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden p-6 lg:flex-row">
+        {/* `min-h-0` so this can give up height instead of forcing the column taller than the
+            window; `min-h-48` keeps it from collapsing to nothing when captions are long. */}
+        <div className="relative min-h-48 min-w-0 flex-1 overflow-hidden rounded-xl border border-hair bg-black">
           {/* Both surfaces mounted, one hidden: attaching a track to an element that does not
               exist yet silently does nothing, and that failure looks exactly like black video. */}
           <video
@@ -336,14 +348,17 @@ export default function InterviewPage({ params }: { params: Promise<{ id: string
         </div>
 
         {showCaptions ? (
-          <aside className="flex max-h-[70vh] min-h-0 w-full flex-col rounded-xl border border-hair bg-glass lg:max-h-none lg:w-96">
+          <aside className="flex max-h-[45vh] min-h-0 w-full flex-col overflow-hidden rounded-xl border border-hair bg-glass lg:max-h-none lg:w-96">
             <div className="border-b border-hair px-5 py-3">
               <p className="text-[13px] font-medium text-ink">Captions</p>
               <p className="mt-0.5 text-[11.5px] text-ink-low">
                 What was heard, and what the interviewer said
               </p>
             </div>
-            <div ref={scroller} className="flex-1 space-y-2.5 overflow-y-auto px-5 py-4">
+            <div
+              ref={scroller}
+              className="min-h-0 flex-1 space-y-2.5 overflow-y-auto overscroll-contain px-5 py-4"
+            >
               {transcript.length === 0 ? (
                 <p className="py-6 text-center text-[12.5px] text-ink-low">Say hello to begin.</p>
               ) : null}
