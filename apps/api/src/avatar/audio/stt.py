@@ -55,6 +55,14 @@ QUERY = {
     # are the cheapest way to see how far behind the finaliser is running, which is the
     # exact gap this design accepts by keeping turn detection local.
     "interim_results": "true",
+    # Endpointing, so Deepgram decides an utterance has ended from the audio rather than
+    # waiting to be told. Without it a final only arrives when the stream is finalised or
+    # closed -- and this transcriber is never closed mid-interview, so finals never came.
+    "endpointing": "300",
+    # And a hard backstop: emit a final at least this often even mid-speech. An interview
+    # answer can run past any endpointing window, and a transcript that only materialises
+    # when someone stops talking is not one a turn boundary can rely on.
+    "utterance_end_ms": "1000",
 }
 
 
@@ -112,6 +120,26 @@ class DeepgramSTT:
         self._socket: object | None = None
         self._reader: asyncio.Task[None] | None = None
         self._finals: list[str] = []
+        self._latest_interim = ""
+        """
+        The most recent non-final transcript.
+
+
+        Kept as a fallback because `take_transcript` is called at the turn boundary, and
+        Deepgram's finals are not synchronous with it: a final arrives on endpointing or when
+        the
+        stream is finalised, neither of which is guaranteed to have happened by the moment the
+        turn-taking policy declares the turn over. Measured on this exact path -- 3 interim
+        results, zero finals, and a turn recorded as `[3.7s of speech, no transcript]` for a
+        sentence Deepgram had already transcribed correctly.
+
+
+        Falling back to an interim is a real trade: it can be a word or two behind the final,
+        and
+        it is not punctuated as well. Against that, the alternative was throwing the whole
+        transcript away, which is what the interview did for 10 of 11 turns.
+        
+        """
         self.interim_count = 0
         self.bytes_sent = 0
         self.reconnects = 0
@@ -178,6 +206,10 @@ class DeepgramSTT:
         """
         text = " ".join(self._finals).strip()
         self._finals.clear()
+        if not text:
+            # No final for this turn. Return what Deepgram had heard rather than nothing.
+            text = self._latest_interim.strip()
+        self._latest_interim = ""
         return text
 
     async def _read_loop(self) -> None:
@@ -208,8 +240,10 @@ class DeepgramSTT:
             return
         if payload.get("is_final"):
             self._finals.append(text)
+            self._latest_interim = ""
         else:
             self.interim_count += 1
+            self._latest_interim = text
 
     async def aclose(self) -> None:
         socket, self._socket = self._socket, None
@@ -221,7 +255,9 @@ class DeepgramSTT:
         if socket is not None:
             with contextlib.suppress(Exception):
                 # Tells Deepgram to finalise rather than dropping the stream mid-word.
-                await socket.send(json.dumps({"type": "CloseStream"}))  # type: ignore[attr-defined]
+                await socket.send(  # type: ignore[attr-defined]
+                    json.dumps({"type": "CloseStream"})
+                )
             with contextlib.suppress(Exception):
                 await socket.close()  # type: ignore[attr-defined]
 
