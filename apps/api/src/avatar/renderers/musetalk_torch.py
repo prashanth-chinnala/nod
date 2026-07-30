@@ -437,6 +437,9 @@ class TorchMuseTalkBackend:
         frames = self._read_frames(reference_path)
         detector = self._models["landmarks"]
 
+        # Inner-lip separation per frame, for picking a clean handover point later. Landmarks
+        # 62 and 66 are the centre of the upper and lower inner lip in the iBUG-68 layout.
+        lip_gaps: list[float] = []
         kept: list[Any] = []
         coords: list[tuple[int, int, int, int]] = []
         latents: list[Any] = []
@@ -463,6 +466,11 @@ class TorchMuseTalkBackend:
                 frame, list(box), fp=self._models["parser"], mode=PARSING_MODE
             )
 
+            marks = found.landmarks
+            face_height = max(1.0, float(np.max(marks[:, 1]) - np.min(marks[:, 1])))
+            # Normalised by face height so the measure survives a subject at any distance.
+            lip_gaps.append(abs(float(marks[66][1] - marks[62][1])) / face_height)
+
             kept.append(frame)
             coords.append(box)
             latents.append(self._models["vae"].get_latents_for_unet(crop))
@@ -475,6 +483,26 @@ class TorchMuseTalkBackend:
                 "A reference must show one front-facing person."
             )
 
+        # The reference frames, JPEG-encoded, to stand in as the idle loop. This is what makes
+        # the persona present between turns instead of a placeholder: the reference *is* a
+        # person
+        # sitting still, which is exactly what an idle loop should be. Encoded once here rather
+        # than per session -- it is the same bytes every time.
+        idle_jpegs = [self._encode(frame) for frame in kept]
+
+        # Which frames are usable as a handover point. `IdleLoop` needs at least one frame whose
+        # mouth is closed, or the switch to rendered frames lands on an open mouth and jumps.
+        #
+        # Relative, not a fixed threshold: a reference of someone talking never reaches a
+        # genuinely closed mouth, so an absolute cut-off would return nothing and preparation
+        # would fail on a legal reference. The quietest quarter of frames is always non-empty
+        # and
+        # is always the best available choice -- and for a still expanded to a clip, every frame
+        # is identical, so every frame qualifies, which is correct.
+        ordered = sorted(range(len(lip_gaps)), key=lambda i: lip_gaps[i])
+        closed_count = max(1, len(ordered) // 4)
+        mouth_closed = sorted(ordered[:closed_count])
+
         # Cycled forward-then-backward so the reference loop has no jump cut at the seam --
         # the same reason the placeholder idle loop waits for a clean exit frame.
         return {
@@ -485,6 +513,9 @@ class TorchMuseTalkBackend:
             "mask_boxes": mask_boxes + mask_boxes[::-1],
             "usable_frames": len(kept),
             "source_frames": len(frames),
+            "idle_jpegs": idle_jpegs + idle_jpegs[::-1],
+            "idle_mouth_closed": mouth_closed
+            + [len(idle_jpegs) * 2 - 1 - i for i in mouth_closed],
         }
 
     # ---------------------------------------------------------------- render

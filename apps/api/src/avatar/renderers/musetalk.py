@@ -49,6 +49,7 @@ from avatar.contracts import (
 from avatar.contracts import (
     TARGET_FPS as CONTRACT_TARGET_FPS,
 )
+from avatar.mixer import IdleLoop
 
 TARGET_FPS = CONTRACT_TARGET_FPS
 """
@@ -90,17 +91,20 @@ WINDOW_MS = 640
 """
 How much audio to accumulate before rendering a batch, in milliseconds.
 
-**Milliseconds, not frames, and that distinction was a real bug.** This was `WINDOW_FRAMES = 16`,
-which is 640ms at 25fps -- correct. But a frame count means the window's *duration* moves with the
-frame rate, so dropping to 8fps to match what the hardware could sustain silently stretched it to
-2000ms. Nothing looked wrong: the renderer produced correct frames at a sustainable rate, and the
-first one still arrived 4.2 seconds into the turn, by which time the avatar's audio had nearly
-finished playing and `SPEAKING -> IDLE` drained the queue. 16 frames rendered, 16 discarded, zero
-shown. The window is a latency budget, and a latency budget denominated in frames is not one.
 
-The floor is Whisper needing context either side of a frame to encode it; the ceiling is latency,
-since no frame emits until its window is full. 640ms is upstream's, and it is the whole of the
-first-frame cost that this stage controls.
+**Milliseconds, not frames, and that distinction was a real bug.** This was `WINDOW_FRAMES =
+16`, which is 640ms at 25fps -- correct. But a frame count means the window's *duration* moves
+with the frame rate, so dropping to 8fps to match what the hardware could sustain silently
+stretched it to 2000ms. Nothing looked wrong: the renderer produced correct frames at a
+sustainable rate, and the first one still arrived 4.2 seconds into the turn, by which time the
+avatar's audio had nearly finished playing and `SPEAKING -> IDLE` drained the queue. 16 frames
+rendered, 16 discarded, zero shown. The window is a latency budget, and a latency budget
+denominated in frames is not one.
+
+
+The floor is Whisper needing context either side of a frame to encode it; the ceiling is
+latency, since no frame emits until its window is full. 640ms is upstream's, and it is the whole
+of the first-frame cost that this stage controls.
 """
 
 WINDOW_FRAMES = max(1, round(WINDOW_MS / FRAME_INTERVAL_MS))
@@ -110,9 +114,10 @@ CONTEXT_MS = 80
 """
 Already-consumed audio prepended to each window, in milliseconds. Same reasoning as `WINDOW_MS`.
 
+
 Without it, every window boundary is a discontinuity in the audio features and the mouth visibly
-jumps at the window rate -- the characteristic streaming-talking-head artifact, and periodic enough
-to be unmistakable once seen.
+jumps at the window rate -- the characteristic streaming-talking-head artifact, and periodic
+enough to be unmistakable once seen.
 """
 
 CONTEXT_FRAMES = max(1, round(CONTEXT_MS / FRAME_INTERVAL_MS))
@@ -341,6 +346,40 @@ class MuseTalkRenderer:
             _IDENTITIES.pop(next(iter(_IDENTITIES)))
         _IDENTITIES[reference_path] = identity
         return identity
+
+    def idle_loop(self, identity: object) -> IdleLoop | None:
+        """
+        An idle loop built from this persona's own reference frames, or None.
+
+
+        **Why the renderer supplies this, not the server.** Between turns the mixer shows
+        `placeholder_idle_loop` -- a 256x144 grey rectangle with two eyes. So a candidate saw a
+        placeholder, then a real face when the interviewer spoke, then the placeholder again:
+        the
+        persona appeared only while talking, and the canvas changed aspect ratio each way, which
+        reads as the product switching between two different things.
+
+
+        The reference clip already *is* the person sitting still and looking ahead -- the upload
+        guidance asks for exactly that -- so it is the correct idle loop, and nothing has to be
+        generated. Between turns the candidate now sees the same face at the same size, not
+        speaking. Which is what standing by looks like.
+
+
+        Returns None when the artifact has no encoded frames, so an older prepared identity or a
+        different backend degrades to the placeholder rather than failing.
+        
+        """
+        if not isinstance(identity, MuseTalkIdentity):
+            return None
+        prepared = identity.prepared
+        if not isinstance(prepared, dict):
+            return None
+        frames = prepared.get("idle_jpegs")
+        closed = prepared.get("idle_mouth_closed")
+        if not frames or not closed:
+            return None
+        return IdleLoop(frames, closed)
 
     def start_session(self, identity: object) -> object:
         """

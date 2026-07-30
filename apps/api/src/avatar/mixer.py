@@ -125,6 +125,18 @@ class FrameMixer:
         self.frames_repeated = 0
         self.frames_discarded = 0
 
+    def set_idle(self, idle: IdleLoop) -> None:
+        """
+        Replace the idle loop, once, at session start.
+
+
+        Exists so a renderer can supply an idle loop made from the persona's own reference
+        frames instead of the grey placeholder -- see `MuseTalkRenderer.idle_loop`. Called from
+        `SessionOrchestrator.start` before any frame is produced, which is why this does not
+        have to reason about swapping mid-playback.
+        """
+        self._idle = idle
+
     # -- source selection ---------------------------------------------------
 
     @property

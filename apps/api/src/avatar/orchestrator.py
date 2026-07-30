@@ -220,6 +220,16 @@ class SessionOrchestrator:
         reached only through the protocol -- which is what rule 3 protects.
         """
         identity = await asyncio.to_thread(self._renderer.prepare_identity, identity_reference)
+
+        # A renderer that can show the persona standing by is asked for one. Optional by
+        # design: the stub has no face to stand by with, so it does not implement this and
+        # the placeholder remains. `getattr` rather than a required protocol method for
+        # exactly that reason.
+        offer = getattr(self._renderer, "idle_loop", None)
+        if callable(offer):
+            idle = offer(identity)
+            if idle is not None:
+                self._mixer.set_idle(idle)
         self._render_session = self._renderer.start_session(identity)
         await self._transport.open_track()
         self._last_activity = self._clock()
