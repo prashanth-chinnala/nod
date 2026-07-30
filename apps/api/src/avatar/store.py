@@ -13,6 +13,11 @@ simultaneously, or a collection grows past a few thousand rows, this should be r
 than extended. Writing that down now is cheaper than discovering the boundary later: the `Store`
 surface is small enough that swapping the backing for SQL is a contained change.
 
+That boundary has since been reached on the first count, so `store_postgres.py` implements the
+same six methods over PostgreSQL and `make_store()` at the bottom of this file chooses between
+them. This module is unchanged apart from that choice: it is still the default, still what CI
+runs, and still what a clean clone gets.
+
 Atomic replace matters even at this size. A half-written JSON file is a corrupted resource that
 fails on read forever, and a crash mid-write is exactly when it would happen — so every write
 goes to a temporary file in the same directory and is renamed over the target, which POSIX
@@ -23,6 +28,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import tempfile
 import uuid
 from collections.abc import Iterator
@@ -174,5 +180,58 @@ class Store:
             raise
 
 
-store = Store()
+STORE_ENV = "AVATAR_STORE"
+"""
+Which backend the process uses: `postgres` selects `PostgresStore`, anything else selects this
+file store.
+
+The default is the file store and has to stay that way. The README promises a clean clone runs
+with no services, and a default that needed a database would make a connection error the first
+thing a new reader saw.
+"""
+
+
+def make_store() -> Store:
+    """
+    The one place the backend is chosen.
+
+    Read from the environment at call time rather than from a module-level constant, so a test
+    can set the variable and call this without reimporting the module.
+
+    `store_postgres` is imported here rather than at module scope for two reasons. It keeps
+    psycopg out of every process that does not use it -- the same rule every optional extra in
+    this project follows. And it is what makes the import cycle work at all: that module needs
+    `Store` as its base class, so it imports this one, and this call happens after `Store`
+    exists.
+
+    **The one import order that cannot work, and why it fails loudly instead.** The cycle only
+    resolves in one direction. If `avatar.store_postgres` is the first `avatar` module a process
+    imports *and* `AVATAR_STORE=postgres`, then this line runs while that module is still on its
+    own first statement and `PostgresStore` does not exist yet. Python's own message for that
+    blames a circular import, which sends the reader to the wrong file, so the case is detected
+    and named here. The caller's fix is one line -- import `avatar.store` (or anything that
+    already does, like `avatar.server`) first.
+
+    **This is read at import, which constrains where the variable can come from.** The backend
+    is chosen when this module is first imported, so anything that wants `AVATAR_STORE` from an
+    env file has to load that file before the first `avatar` import -- which is why
+    `avatar/server.py` calls `config.load_env()` above its own imports, and says so there. Any
+    other entry point (a script, `apps/assistant`) sees only real environment variables.
+    `AVATAR_DATA_DIR` has the same shape, and has had it since `DATA_ROOT` was written.
+    """
+    if os.environ.get(STORE_ENV, "").strip().lower() == "postgres":
+        partial = sys.modules.get("avatar.store_postgres")
+        if partial is not None and not hasattr(partial, "PostgresStore"):
+            raise RuntimeError(
+                "avatar.store_postgres is mid-import, so it cannot provide PostgresStore yet: "
+                "it was the first avatar module imported and it needs Store from here. Import "
+                "avatar.store (or avatar.server) before it, or unset AVATAR_STORE."
+            )
+        from avatar.store_postgres import PostgresStore
+
+        return PostgresStore()
+    return Store()
+
+
+store = make_store()
 """Process-wide default. Tests construct their own against a tmp_path."""

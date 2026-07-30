@@ -79,6 +79,14 @@ line-length = 96
 src = ["src", "tests"]
 target-version = "py311"
 
+[tool.ruff.lint.per-file-ignores]
+# `server.py` calls `config.load_env()` above its `avatar` imports, on purpose: `avatar.store`
+# chooses its backend from AVATAR_STORE at import time and the routers pull it in transitively, so
+# loading the env files after them read the variable too late — the API served JSON files while
+# reporting no error. Nineteen `noqa` comments would say the same thing nineteen times; this says
+# it once, where a reader looking for the rule will find it.
+"src/avatar/server.py" = ["E402"]
+
 [tool.ruff.lint]
 # En dash, em dash and typographic quotes are intentional in prose. RUF001/RUF002 exist to
 # catch homoglyphs pasted from elsewhere; mangling real punctuation to satisfy them would
@@ -115,6 +123,7 @@ module = [
   "cv2.*",
   "musetalk.*",
   "livekit.*",
+  "psycopg.*",
 ]
 ignore_missing_imports = true
 

@@ -1,15 +1,15 @@
 """
 Proof that the Postgres store and the JSON-file store are the same store.
 
-**What is under test is substitutability, not SQL.** `AVATAR_STORE=postgres` swaps the backing of
-a surface that seven routers call directly, and every one of them returns records *exactly as the
-store wrote them* — no response model, deliberately, so that a field written by a newer build
-cannot vanish from the console. That decision makes the store's return shape part of the API's
-contract: a key the file store writes and Postgres does not (or the reverse — `agent_name` is the
-tempting one) is a console field that appears or disappears when an operator flips an environment
-variable, with no error anywhere. So most of these tests run the same call against both backends
-and compare, rather than asserting against a shape written out here, which would only prove that
-this file and one backend agree.
+**What is under test is substitutability, not SQL.** `AVATAR_STORE=postgres` swaps the backing
+of a surface that all eight routers call directly, and every one of them returns records
+*exactly as the store wrote them* — no response model, deliberately, so that a field written by
+a newer build cannot vanish from the console. That decision makes the store's return shape part
+of the API's contract: a key the file store writes and Postgres does not (or the reverse —
+`agent_name` is the tempting one) is a console field that appears or disappears when an operator
+flips an environment variable, with no error anywhere. So most of these tests run the same call
+against both backends and compare, rather than asserting against a shape written out here, which
+would only prove that this file and one backend agree.
 
 **Why the deliberate divergences are also tested.** Two behaviours are supposed to differ. A
 dangling foreign key is accepted by the file store and refused by Postgres — that refusal is the
@@ -90,10 +90,11 @@ def _store_class() -> type[Any]:
     """
     Find the store class in `avatar.store_postgres`.
 
-    Named-first rather than "the only class in the module", because a module is allowed to define
-    helpers, and a scan that happened to find one would bind these tests to whichever class was
-    defined first. `__module__` is checked so a re-exported `avatar.store.Store` — which would
-    make every test below pass by testing the file store twice — cannot be picked up.
+    Named-first rather than "the only class in the module", because a module is allowed to
+    define helpers, and a scan that happened to find one would bind these tests to whichever
+    class was defined first. `__module__` is checked so a re-exported `avatar.store.Store` —
+    which would make every test below pass by testing the file store twice — cannot be picked
+    up.
     """
     module = _backend()
     for name in ("PostgresStore", "PgStore", "Store"):
@@ -136,7 +137,8 @@ def _sql(dsn: str, statement: str, params: tuple[Any, ...] = ()) -> list[tuple[A
 
     Used for the two assertions that cannot be made through the store surface: that a typed
     column mirrors its doc key, and that the reference the database is enforcing is the one the
-    doc claims. Asking the store to prove that would be asking it to confirm its own bookkeeping.
+    doc claims. Asking the store to prove that would be asking it to confirm its own
+    bookkeeping.
     """
     psycopg = _psycopg()
     with psycopg.connect(dsn, autocommit=True) as conn, conn.cursor() as cur:
@@ -425,7 +427,9 @@ def test_create_returns_the_same_record_as_the_file_store(
     """
     prefix, body = _body_for(collection)
 
-    assert_interchangeable(pg.create(collection, prefix, body), fs.create(collection, prefix, body))
+    assert_interchangeable(
+        pg.create(collection, prefix, body), fs.create(collection, prefix, body)
+    )
 
 
 @pytest.mark.parametrize("collection", sorted(BODIES))
@@ -490,23 +494,19 @@ def test_list_is_newest_first(pg: Any, fs: Store) -> None:
     ordering key from `now()`, which no monkeypatch reaches. Sleeping past a second boundary is
     the one approach that holds whichever source the timestamp comes from.
     """
-    created = []
+    created: list[dict[str, Any]] = []
     for index, name in enumerate(("Oldest", "Middle", "Newest")):
         prefix, body = _body_for("rubrics")
-        created.append(
-            (
-                pg.create("rubrics", prefix, {**body, "name": name}),
-                fs.create("rubrics", prefix, {**body, "name": name}),
-            )
-        )
+        created.append(pg.create("rubrics", prefix, {**body, "name": name}))
+        fs.create("rubrics", prefix, {**body, "name": name})
         if index < 2:
             time.sleep(1.05)  # `created_at` has second precision; a tie has no defined order
 
-    assert [row["name"] for row in pg.list("rubrics")] == ["Newest", "Middle", "Oldest"]
-    assert [row["name"] for row in pg.list("rubrics")] == [
-        row["name"] for row in fs.list("rubrics")
-    ]
-    assert [row["id"] for row in pg.list("rubrics")] == [pair[0]["id"] for pair in reversed(created)]
+    listed = pg.list("rubrics")
+
+    assert [row["name"] for row in listed] == ["Newest", "Middle", "Oldest"]
+    assert [row["name"] for row in listed] == [row["name"] for row in fs.list("rubrics")]
+    assert [row["id"] for row in listed] == [row["id"] for row in reversed(created)]
 
 
 # -- missing ids -----------------------------------------------------------------------
@@ -517,9 +517,9 @@ def test_a_missing_id_raises_the_same_notfound_class(pg: Any, fs: Store) -> None
     Prevents every 404 in the console becoming a 500.
 
     Each router catches `avatar.store.NotFound` by name and maps it to a 404. A backend that
-    raised its own not-found type — or let psycopg's "no rows" surface — would turn "you followed
-    a stale link" into "the server is broken", and the operator's next step would be to read a
-    traceback instead of the page.
+    raised its own not-found type — or let psycopg's "no rows" surface — would turn "you
+    followed a stale link" into "the server is broken", and the operator's next step would be to
+    read a traceback instead of the page.
     """
     for missing in ("face_nope", "../../etc/passwd"):
         with pytest.raises(NotFound):
@@ -542,8 +542,8 @@ def test_delete_removes_it_from_get_and_from_list(pg: Any) -> None:
     """
     Prevents a delete that only unlinks one of the two read paths.
 
-    A row soft-deleted for the detail view but still returned by `list` is a resource the console
-    shows and cannot open, which reads as data corruption rather than as a deletion.
+    A row soft-deleted for the detail view but still returned by `list` is a resource the
+    console shows and cannot open, which reads as data corruption rather than as a deletion.
     """
     prefix, body = _body_for("guardrails")
     created = pg.create("guardrails", prefix, body)
@@ -563,10 +563,10 @@ def test_a_patch_setting_a_key_to_null_clears_it(pg: Any, fs: Store) -> None:
     Prevents the regression the file store was fixed for: a picker that cannot be cleared.
 
     Dropping `None` from a patch makes "not sent" and "explicitly cleared" the same request, so
-    detaching a rubric from an agent silently does nothing while the console shows a control that
-    appears to work. `doc || '{"rubric_id": null}'` preserves the fix because jsonb concatenation
-    sets a key to null rather than removing it — which is the specific reason the design says to
-    merge with `||` and not to strip nulls first.
+    detaching a rubric from an agent silently does nothing while the console shows a control
+    that appears to work. `doc || '{"rubric_id": null}'` preserves the fix because jsonb
+    concatenation sets a key to null rather than removing it — which is the specific reason the
+    design says to merge with `||` and not to strip nulls first.
 
     The key must still be *present* and null, not absent: the console distinguishes "no rubric"
     from a field it was never told about.
@@ -636,28 +636,25 @@ def test_a_patch_replaces_a_nested_value_whole(pg: Any, fs: Store) -> None:
     assert_interchangeable(patched, reference)
 
 
-def test_id_and_created_at_survive_a_patch_that_tries_to_change_them(
-    pg: Any, fs: Store
-) -> None:
+def test_a_patch_cannot_change_an_id_on_either_backend(pg: Any, fs: Store) -> None:
     """
-    Prevents one resource silently becoming another, and prevents list order being rewritable.
+    Prevents one resource silently becoming another.
 
-    No router's patch model has an `id` or `created_at` field, so this cannot arrive over HTTP
-    today — the store is the layer that has to hold the rule, because the assistant and the
-    scripts call it directly. On Postgres the id half is doubly enforced: the schema's
-    `doc->>'id' = id` CHECK means a merged-in id is an error rather than a record that serves
-    itself under one id while claiming another.
+    No router's patch model has an `id` field, so this cannot arrive over HTTP — the store is
+    the layer that has to hold the rule, because the assistant and the scripts call it directly.
+    On Postgres it is enforced twice: the store drops the key, and the schema's
+    `doc->>'id' = id` CHECK means a merged-in id would be an error rather than a record that
+    serves itself under one id while claiming another.
     """
     prefix, body = _body_for("faces")
     pg_face = pg.create("faces", prefix, body)
     fs_face = fs.create("faces", prefix, body)
-    hostile = {"id": "face_hijacked", "created_at": "1999-01-01T00:00:00+00:00", "name": "Kept"}
+    hostile = {"id": "face_hijacked", "name": "Kept"}
 
     patched = pg.update("faces", pg_face["id"], dict(hostile))
     reference = fs.update("faces", fs_face["id"], dict(hostile))
 
     assert patched["id"] == pg_face["id"]
-    assert patched["created_at"] == pg_face["created_at"]
     assert patched["name"] == "Kept", "the legitimate part of the patch was dropped too"
     assert patched["updated_at"] >= patched["created_at"]
     assert_interchangeable(patched, reference)
@@ -666,15 +663,58 @@ def test_id_and_created_at_survive_a_patch_that_tries_to_change_them(
         pg.get("faces", "face_hijacked")
 
 
+def test_created_at_is_the_one_divergence_in_the_merge(
+    pg: Any, fs: Store, postgres: str
+) -> None:
+    """
+    Pins the single place the two backends do not behave the same, so it stays a decision.
+
+    `Store.update`'s docstring says "`id` and `created_at` are immutable" and its code enforces
+    only the first: `record.update(patch)` then re-pins the id, so a patch carrying `created_at`
+    rewrites it on the file store. `PostgresStore.update` drops both, and argues for the
+    stricter half — `created_at` is what `list` orders on and what the typed column records as
+    the true insert time, so honouring such a patch would reorder the console and leave the two
+    copies permanently out of step.
+
+    Recorded as an assertion rather than left implicit because a divergence nobody wrote down is
+    how the two backends stop being interchangeable one key at a time. This one is out of reach
+    of the API: every patch model is `extra="forbid"` and none declares `created_at`, so nothing
+    an operator can do reaches it. The callers that bypass the routers — the assistant, the
+    scripts — are what make it worth asserting at all.
+
+    Either half changing breaks this test on purpose. If the file store starts protecting the
+    key, the backends agree and the docstring becomes true; if Postgres stops, list ordering
+    becomes patchable. Both are decisions for the human, and both should fail a test first.
+    """
+    prefix, body = _body_for("faces")
+    pg_face = pg.create("faces", prefix, body)
+    fs_face = fs.create("faces", prefix, body)
+    backdated = {"created_at": "1999-01-01T00:00:00+00:00", "name": "Kept"}
+
+    patched = pg.update("faces", pg_face["id"], dict(backdated))
+    reference = fs.update("faces", fs_face["id"], dict(backdated))
+
+    assert patched["created_at"] == pg_face["created_at"], "a patch moved created_at"
+    assert reference["created_at"] == "1999-01-01T00:00:00+00:00", (
+        "the file store now protects created_at too — the divergence is gone and its docstring "
+        "is finally true; delete this test and fold the key back into the id test above"
+    )
+    assert patched["name"] == reference["name"] == "Kept", "the rest of the patch was dropped"
+    assert sorted(patched) == sorted(reference), "the divergence must be one key's value"
+
+    column = _sql(postgres, "select created_at from faces where id = %s", (pg_face["id"],))
+    assert column[0][0].year != 1999, "the typed column no longer holds the true insert time"
+
+
 def test_a_patched_reference_updates_the_typed_column_too(pg: Any, postgres: str) -> None:
     """
     Prevents a foreign key that is enforced against a value nothing reads.
 
-    The doc is what the API returns; the typed column is what the database constrains. If a patch
-    updates only the doc, the column keeps pointing at the old rubric — so `ON DELETE RESTRICT`
-    protects a reference the agent no longer has, and lets the operator delete the rubric it
-    actually uses. Nothing would fail until a candidate connected. Checked in SQL because this is
-    the one property the store cannot be asked to confirm about itself.
+    The doc is what the API returns; the typed column is what the database constrains. If a
+    patch updates only the doc, the column keeps pointing at the old rubric — so `ON DELETE
+    RESTRICT` protects a reference the agent no longer has, and lets the operator delete the
+    rubric it actually uses. Nothing would fail until a candidate connected. Checked in SQL
+    because this is the one property the store cannot be asked to confirm about itself.
     """
     rubric_prefix, rubric_body = _body_for("rubrics")
     first = pg.create("rubrics", rubric_prefix, {**rubric_body, "name": "First"})
@@ -781,8 +821,8 @@ def test_turns_survive_the_update_call_the_router_actually_makes(pg: Any, fs: St
     Prevents an appended turn being dropped, reordered, or losing its timings.
 
     `append_turn` reads the array, appends and calls `update(..., {"turns": turns})`, so this is
-    the exact call the child table has to serve. Both turns here carry `epoch: 1`, which is not a
-    mistake: a barge-in during `THINKING` leaves the epoch where it was, so two turns in one
+    the exact call the child table has to serve. Both turns here carry `epoch: 1`, which is not
+    a mistake: a barge-in during `THINKING` leaves the epoch where it was, so two turns in one
     session legitimately share one — and a child table keyed on `(session_id, epoch)` would
     reject the second, losing precisely the interrupted turns that the latency figures are drawn
     from.
@@ -815,6 +855,61 @@ def test_turns_survive_the_update_call_the_router_actually_makes(pg: Any, fs: St
     assert stored[0]["perceived_total_ms"] == 4161.0
 
 
+def test_two_concurrent_appends_both_land_and_neither_wins(
+    pg_store: Callable[[], Any], postgres: str
+) -> None:
+    """
+    Prevents the lost turn, on the one method that can actually prevent it.
+
+    `append_turn` is Postgres-only — the file store has no such method, so this is the one test
+    here that is not a parity test, and it is included because the turn append is the race the
+    schema was designed around. Two writers appending at once through `update(turns=[...])`
+    still lose one, because that call sends a whole array assembled in Python; only an insert
+    that allocates `seq` inside the statement can be safe, and that is what this exercises.
+
+    Both turns carry `epoch: 1` — see the test above for why that is legitimate — so this also
+    demonstrates why the key is `(session_id, seq)`: two rows with one epoch, both kept, in
+    arrival order.
+
+    The ended-session half is the same race in the guard rather than in the insert: a turn from
+    a socket that closed a moment ago must not land after `ended_at`, or the record claims a
+    conversation continued past its own end.
+    """
+    writer_one, writer_two = pg_store(), pg_store()
+    session = writer_one.create("sessions", "sess", _session_body())
+    barrier = threading.Barrier(2)
+
+    def append(store: Any, heard: str) -> Any:
+        barrier.wait(timeout=10)
+        return store.append_turn(session["id"], {**TURN, "heard": heard})
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [
+            pool.submit(append, writer_one, "first writer"),
+            pool.submit(append, writer_two, "second writer"),
+        ]
+        sequences = sorted(future.result(timeout=30) for future in futures)
+
+    assert sequences == [0, 1], f"two appends produced {sequences}, so one overwrote the other"
+    stored = writer_one.get("sessions", session["id"])["turns"]
+    assert sorted(turn["heard"] for turn in stored) == ["first writer", "second writer"]
+    assert [turn["epoch"] for turn in stored] == [1, 1]
+    counted = _sql(
+        postgres, "select count(*) from turns where session_id = %s", (session["id"],)
+    )
+    assert counted == [(2,)]
+
+    writer_one.update("sessions", session["id"], {"ended_at": now_iso()})
+    try:
+        writer_two.append_turn(session["id"], {**TURN, "heard": "too late"})
+    except Exception:
+        pass  # the type is the store's business; what matters is that nothing was written
+    else:
+        pytest.fail("a turn was appended to a session that had already ended")
+
+    assert len(writer_one.get("sessions", session["id"])["turns"]) == 2
+
+
 def test_two_overlapping_patches_to_one_session_both_survive(
     pg_store: Callable[[], Any], postgres: str
 ) -> None:
@@ -823,15 +918,15 @@ def test_two_overlapping_patches_to_one_session_both_survive(
     another writer patched a different field at the same moment.
 
     Three writers touch a live session — the recording hook from `/rtc`, the coverage snapshot,
-    and the turn appender — and today they are safe only by accident of being one process. Nobody
-    would see the first `uvicorn --workers 2` break it: a lost `recording` block looks like a
-    session that was never recorded.
+    and the turn appender — and today they are safe only by accident of being one process.
+    Nobody would see the first `uvicorn --workers 2` break it: a lost `recording` block looks
+    like a session that was never recorded.
 
     Two stores, not one shared store, because two workers are two connections; a shared store
     object could serialise the writes internally and the test would pass without proving
-    anything. Ten rounds, asserted after each, because a single overlap can interleave harmlessly
-    by luck — a read-modify-write backend fails a round quickly, and a merge in one statement
-    cannot fail any of them.
+    anything. Ten rounds, asserted after each, because a single overlap can interleave
+    harmlessly by luck — a read-modify-write backend fails a round quickly, and a merge in one
+    statement cannot fail any of them.
     """
     left, right = pg_store(), pg_store()
     session = pg_store().create("sessions", "sess", _session_body())
@@ -893,5 +988,5 @@ def test_the_file_store_loses_a_write_when_two_appends_overlap(fs: Store) -> Non
     fs.update("sessions", session["id"], {"turns": [*seen_by_second, second_turn]})
 
     stored = fs.get("sessions", session["id"])["turns"]
-    assert stored == [second_turn], "the file store no longer loses the first turn — update this"
     assert len(stored) == 1, "one of the two appended turns is gone, with no error anywhere"
+    assert stored == [second_turn], "the first turn no longer loses — update this test"

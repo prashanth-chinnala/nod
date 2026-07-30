@@ -32,21 +32,22 @@ import os
 from collections.abc import AsyncIterator
 from typing import Any
 
-from avatar.config import load_env, loaded_files
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+
+# Above the `assistant` imports for the same reason `avatar/server.py` does it: `avatar.store`
+# reads AVATAR_STORE at import time and the tool modules pull it in, so loading the env files
+# afterwards would leave this service on the file store while the runtime used Postgres -- two
+# services disagreeing about where the records are, with nothing in either log to say so.
+# It also carries AVATAR_DATA_DIR, which must be absolute and shared: this service started from
+# its own directory once opened an empty store and reported "no interviews have been scored"
+# about a pipeline with several.
+from avatar.config import load_env, loaded_files  # noqa: E402
+
+_FROM_ENV_FILE = load_env()
 from pydantic import BaseModel, ConfigDict, Field
 from sse_starlette.sse import EventSourceResponse
 
-# Before anything reads the environment, matching the runtime. Without it the model
-# configuration is silently absent and the assistant answers every question by failing to
-# reach a provider.
-#
-# It also carries AVATAR_DATA_DIR, which has to be absolute and shared. `avatar.store` defaults
-# to a relative "data", so this service started from its own directory opened an empty store and
-# answered "no interviews have been scored" about a pipeline with several -- confidently, and
-# with nothing wrong in any log.
-_FROM_ENV_FILE = load_env()
 
 app = FastAPI(title="nod assistant", docs_url=None, redoc_url=None)
 

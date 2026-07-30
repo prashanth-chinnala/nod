@@ -33,6 +33,22 @@ from typing import Any
 from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 
+# Loaded before every `avatar` import below, and the position is load-bearing rather than tidy.
+# Without it .env was inert: every run needed `set -a && . ./.env && set +a` in front of it, and
+# forgetting produced a session that silently fell back to every placeholder -- no error, just
+# quietly the wrong system.
+#
+# It has to be *above* the imports because `avatar.store` chooses its backend from
+# AVATAR_STORE at import time, and the routers pull that module in transitively. Loading the
+# env files after them read AVATAR_STORE too late to matter: the API answered from JSON files
+# while reporting no error, and a rubric created through it was invisible in psql.
+# `avatar.config` imports nothing from this package, so it is safe to reach for first. The
+# alternative -- a lazy proxy around the store -- adds indirection at every call site to solve
+# an ordering problem that one line solves.
+from avatar.config import load_env, loaded_files
+
+_FROM_ENV_FILE = load_env()
+
 from avatar.agent_config import ResolvedAgent, build_llm_with_tools, resolve_for_session
 from avatar.api import (
     agents,
@@ -54,7 +70,6 @@ from avatar.audio.turn_detection import (
     TurnEvent,
 )
 from avatar.audio.vad import FRAME_MS, build_vad
-from avatar.config import load_env, loaded_files
 from avatar.contracts import RendererConfig
 from avatar.idle import placeholder_idle_loop
 from avatar.knowledge.augment import with_knowledge, with_pronunciation
@@ -67,11 +82,6 @@ from avatar.state import State
 from avatar.store import store
 from avatar.telemetry import STAGE_TURN_DETECT, Telemetry
 from avatar.transport.websocket import WebSocketTransport
-
-# Before any os.environ.get below. Without this, .env was inert: every run needed
-# `set -a && . ./.env && set +a` in front of it, and forgetting produced a session that
-# silently fell back to every placeholder -- no error, just quietly the wrong system.
-_FROM_ENV_FILE = load_env()
 
 FRAME_WIDTH = 256
 FRAME_HEIGHT = 144
@@ -216,6 +226,12 @@ async def config() -> dict[str, object]:
         "tts_voice": os.environ.get("AVATAR_TTS_VOICE", "(adapter default)"),
         "stt": STT_NAME,
         "vad": VAD_NAME,
+        # Which store the process actually resolved to, not which one was configured. The
+        # distinction earned its place: AVATAR_STORE was read after the routers had already
+        # imported `avatar.store`, so the API served JSON files while `.env.development`
+        # said postgres and nothing anywhere disagreed. Reporting the live object would have
+        # made that visible in one request instead of a psql query that came up empty.
+        "store": type(store).__name__,
         "env_files_read": loaded_files(),
         "loaded_from_env_file": sorted(_FROM_ENV_FILE),
     }
