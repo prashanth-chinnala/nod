@@ -115,6 +115,22 @@ export function useSession(apiBase: string, sessionId?: string) {
   const socketRef = useRef<WebSocket | null>(null);
   const audioRef = useRef<AudioContext | null>(null);
   /*
+    The playback sample rate, in a ref rather than read from `hello` state.
+
+    `playAudio` used to begin `if (!ctx || !hello) return;`, and that dropped every audio message
+    of every session. `socket.onmessage` closes over the `playAudio` it was given when the socket
+    opened, and at that instant `hello` is still null -- the server sends it immediately after,
+    but the closure never sees the updated state. So the guard was permanently true: the face
+    rendered, because `drawFrame` needs nothing from `hello`, and the interviewer was silent.
+
+    A ref is the fix rather than adding `hello` to a dependency list, because re-creating
+    `connect` when `hello` arrives would tear down and reopen the socket that just delivered it.
+
+    Defaulted to the server's fixed rate, so audio arriving before `hello` still plays instead of
+    being dropped -- the failure this replaces.
+  */
+  const sampleRateRef = useRef(16_000);
+  /*
     Whether the browser is refusing to play the audio we are already receiving.
 
     This existed only for the WebRTC leg, via LiveKit's `canPlaybackAudio`, and the WebSocket leg
@@ -192,11 +208,11 @@ export function useSession(apiBase: string, sessionId?: string) {
 
   const playAudio = useCallback((pcm: Uint8Array, epoch: number) => {
     const ctx = audioRef.current;
-    if (!ctx || !hello) return;
+    if (!ctx) return;
     const samples = pcm.byteLength / 2;
     if (!samples) return;
 
-    const buffer = ctx.createBuffer(1, samples, hello.sample_rate);
+    const buffer = ctx.createBuffer(1, samples, sampleRateRef.current);
     const channel = buffer.getChannelData(0);
     const view = new DataView(pcm.buffer, pcm.byteOffset, pcm.byteLength);
     for (let i = 0; i < samples; i++) channel[i] = view.getInt16(i * 2, true) / 32768;
@@ -233,7 +249,7 @@ export function useSession(apiBase: string, sessionId?: string) {
       }
     };
     src.start(startAt);
-  }, [hello, send]);
+  }, [send]);
 
   const drawFrame = useCallback(async (payload: Uint8Array, epoch: number) => {
     const canvas = canvasRef.current;
@@ -287,6 +303,11 @@ export function useSession(apiBase: string, sessionId?: string) {
     switch (message.type) {
       case "hello":
         setHello(message as unknown as Hello);
+        // Also into the ref the audio path reads. `hello` state is invisible to the closure
+        // `socket.onmessage` already captured, which is what silenced playback entirely.
+        if (typeof message.sample_rate === "number" && message.sample_rate > 0) {
+          sampleRateRef.current = message.sample_rate;
+        }
         break;
       case "flush_audio":
         flushAudio();
