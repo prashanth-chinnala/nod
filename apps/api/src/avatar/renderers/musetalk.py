@@ -225,6 +225,22 @@ def reset_identity_cache() -> None:
     _IDENTITIES.clear()
 
 
+def forget_identity(reference_path: str) -> bool:
+    """
+    Drop one prepared identity. True if there was one to drop.
+
+    Called when a face is deleted. An entry here holds roughly a gigabyte of that person's
+    frames, masks and latents, so leaving it behind after the operator asked for the face to be
+    removed would keep the likeness resident in memory -- and, because the record naming whose
+    face it is goes at the same moment, resident with nothing left to attribute it to.
+
+    Takes a path rather than a face id because that is what the cache is keyed by, and because
+    this module must not know that faces have ids: it renders references, and the API layer is
+    what maps one to the other.
+    """
+    return _IDENTITIES.pop(reference_path, None) is not None
+
+
 class MuseTalkRenderer:
     """
     Satisfies `TalkingHeadRenderer` structurally, like the stub does.

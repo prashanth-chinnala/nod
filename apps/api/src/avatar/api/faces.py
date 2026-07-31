@@ -30,6 +30,7 @@ store is the authority on what a face is; this module is the authority on what m
 from __future__ import annotations
 
 import os
+import shutil
 import time
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -348,16 +349,67 @@ async def update_face(face_id: str, body: FaceUpdate) -> dict[str, Any]:
 @router.delete("/{face_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_face(face_id: str) -> None:
     """
-    Hard delete, and deliberately not cascading.
+    Hard delete: the record, every file it points at, and any identity prepared from it.
 
-    An agent may reference this face id. Rewriting those agents to keep the data tidy would
-    change a configuration nobody asked to change; a dangling id that shows up as "missing face"
-    at session start is the smaller and more visible problem.
+    **The media goes too, and that is the correction here.** A face is a photograph or a video
+    of a real person. Leaving it on disk after the operator asked for it to be removed means the
+    delete button quietly did not do what it says -- and it means the only record of whose face
+    it is has just been deleted, so what remains is unattributable biometric data that nobody
+    can safely clean up later. `voices` already did this; `faces` not doing it was a known gap.
+
+    Four things exist per face and all four go: the reference the renderer reads, the original
+    upload it was derived from, the thumbnail, and the LivePortrait output directory if the
+    photograph was animated. The prepared identity in the renderer's cache goes with them.
+
+    **Still deliberately not cascading to agents.** An agent may hold this face id. Rewriting
+    those agents to keep the data tidy would change a configuration nobody asked to change, and
+    a dangling id that surfaces as "missing face" at session start is the smaller, louder
+    problem. Files are different from foreign keys: nothing reads a file by accident.
     """
+    from avatar import media
+
     try:
-        store.delete(COLLECTION, face_id)
+        record = store.get(COLLECTION, face_id)
     except NotFound as exc:
         raise _not_found(face_id) from exc
+
+    # Confined to the media directory before anything is unlinked. These paths come from a
+    # record rather than from a request, so this is not the front line -- but "delete whatever
+    # path this row contains" is a sentence worth never writing, and one hand-edited JSON file
+    # is the whole distance between it and being literally true.
+    root = media.MEDIA_ROOT.resolve()
+    for key in ("reference_path", "source_path", "thumbnail_path"):
+        raw = record.get(key)
+        if not raw:
+            continue
+        path = Path(str(raw)).resolve()
+        if not path.is_relative_to(root):
+            print(f"faces: refusing to delete {path} for {face_id}: outside {root}", flush=True)
+            continue
+        path.unlink(missing_ok=True)
+        # LivePortrait writes its frames into `<stem>-animated/` beside the source it animated,
+        # and that directory is the largest thing on disk per face. Leaving it would make the
+        # delete look like it worked while reclaiming almost none of the space.
+        animated = path.parent / f"{path.stem}-animated"
+        if animated.is_dir() and animated.resolve().is_relative_to(root):
+            shutil.rmtree(animated, ignore_errors=True)
+
+    # The prepared identity too, if this process holds one. It is about a gigabyte of that
+    # person's frames and latents and would otherwise stay resident until restart -- with the
+    # record that named whose face it was already gone.
+    #
+    # Imported here rather than at module scope: this module is part of the API surface and has
+    # to stay importable with no renderer installed, and `musetalk` is a renderer module.
+    try:
+        from avatar.renderers.musetalk import forget_identity
+
+        for key in ("reference_path", "source_path"):
+            if record.get(key):
+                forget_identity(str(record[key]))
+    except ImportError:
+        pass
+
+    store.delete(COLLECTION, face_id)
 
 
 @router.post("/{face_id}/prepare", status_code=status.HTTP_202_ACCEPTED)

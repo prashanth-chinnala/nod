@@ -27,6 +27,7 @@ type Turn = {
   heard: string;
   said: string;
   transcribed: boolean;
+  silent: boolean;
   llm_ttft_ms: number | null;
   tts_first_audio_ms: number | null;
   first_frame_ms: number | null;
@@ -194,9 +195,13 @@ export default function SessionsPage() {
               <Row key={`${turn.epoch}-${index}`}>
                 <Cell mono dim>{turn.epoch}</Cell>
                 <Cell>
-                  <span className={turn.transcribed ? "" : "italic text-warn"}>
-                    {turn.heard || "—"}
-                  </span>
+                  {turn.silent ? (
+                    <span className="italic text-ink-low">(silence — re-prompted)</span>
+                  ) : (
+                    <span className={turn.transcribed ? "" : "italic text-warn"}>
+                      {turn.heard || "—"}
+                    </span>
+                  )}
                 </Cell>
                 <Cell dim>
                   {turn.said || "—"}

@@ -559,3 +559,152 @@ def test_router_is_mounted_under_faces() -> None:
     """Prevents a prefix or tag change silently moving every URL the console fetches."""
     assert faces.router.prefix == "/faces"
     assert faces.router.tags == ["faces"]
+
+
+# -- deleting a face deletes the person's media -----------------------------
+
+
+@pytest.fixture
+def media_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """
+    A throwaway media directory, patched over the real one.
+
+    `delete_face` confines every unlink to `media.MEDIA_ROOT`, so a test that did not redirect
+    it would be asserting against the developer's actual media directory -- and the assertion it
+    would make is "this file is gone".
+    """
+    from avatar import media
+
+    root = tmp_path / "media"
+    root.mkdir()
+    monkeypatch.setattr(media, "MEDIA_ROOT", root)
+    return root
+
+
+def face_with_media(
+    client: TestClient, root: Path, *, animated: bool = False
+) -> dict[str, Any]:
+    """A face record whose three paths exist on disk, plus optionally an animation directory."""
+    paths = {
+        "reference_path": root / "ref-abc123.mp4",
+        "source_path": root / "ref-abc123.png",
+        "thumbnail_path": root / "ref-abc123-thumb.jpg",
+    }
+    for path in paths.values():
+        path.write_bytes(b"not really a video, but a real file")
+    if animated:
+        frames = root / "ref-abc123-animated"
+        frames.mkdir()
+        (frames / "out.mp4").write_bytes(b"generated")
+
+    record = make_face(client, path=str(paths["reference_path"]))
+    faces.store.update(
+        "faces", record["id"], {key: str(value) for key, value in paths.items()}
+    )
+    return dict(faces.store.get("faces", record["id"]))
+
+
+def test_deleting_a_face_deletes_every_file_it_pointed_at(
+    client: TestClient, media_root: Path
+) -> None:
+    """
+    The gap this closes. A face is a real person's likeness; delete has to mean delete.
+
+    Before this, the record went and all three files stayed -- which is worse than not offering
+    the button, because the row naming whose face it was is exactly what got removed.
+    """
+    record = face_with_media(client, media_root)
+    assert client.delete(f"/faces/{record['id']}").status_code == 204
+
+    assert sorted(p.name for p in media_root.iterdir()) == []
+    assert client.get(f"/faces/{record['id']}").status_code == 404
+
+
+def test_deleting_an_animated_face_removes_the_generated_frames(
+    client: TestClient, media_root: Path
+) -> None:
+    """
+    LivePortrait's output directory is the largest thing on disk per face.
+
+    Leaving it would make the delete look like it worked while reclaiming almost no space, which
+    is the kind of success that gets discovered when a volume fills up.
+    """
+    record = face_with_media(client, media_root, animated=True)
+    frames = media_root / "ref-abc123-animated"
+    assert frames.is_dir()
+
+    assert client.delete(f"/faces/{record['id']}").status_code == 204
+    assert not frames.exists()
+
+
+def test_delete_refuses_a_path_outside_the_media_directory(
+    client: TestClient, media_root: Path, tmp_path: Path
+) -> None:
+    """
+    A record pointing somewhere else loses its row but keeps that file.
+
+    These paths are written by the server, never by a request, so this is not the front line. It
+    is the guard that keeps "delete whatever path this row contains" from ever being literally
+    true -- one bad migration or one hand-edited JSON file is the whole distance otherwise.
+    """
+    outsider = tmp_path / "not-media" / "important.mp4"
+    outsider.parent.mkdir()
+    outsider.write_bytes(b"someone else's file")
+
+    record = make_face(client, path=str(outsider))
+    faces.store.update("faces", record["id"], {"reference_path": str(outsider)})
+
+    assert client.delete(f"/faces/{record['id']}").status_code == 204
+    assert outsider.exists(), "a path outside the media root must not be unlinked"
+
+
+def test_delete_still_succeeds_when_the_files_are_already_gone(
+    client: TestClient, media_root: Path
+) -> None:
+    """
+    A half-deleted face must be fully deletable, not a permanent row.
+
+    Files disappear for reasons the store does not know about -- a wiped volume, a manual
+    cleanup, an interrupted earlier delete. If a missing file raised here, the only way to
+    remove the row would be editing the store by hand.
+    """
+    record = face_with_media(client, media_root)
+    for key in ("reference_path", "source_path", "thumbnail_path"):
+        Path(str(record[key])).unlink()
+
+    assert client.delete(f"/faces/{record['id']}").status_code == 204
+    assert client.get(f"/faces/{record['id']}").status_code == 404
+
+
+def test_deleting_one_face_leaves_another_faces_media_alone(
+    client: TestClient, media_root: Path
+) -> None:
+    """Deletion is scoped to the record asked for -- worth saying, in a shared directory."""
+    keeper = media_root / "ref-keep99.mp4"
+    keeper.write_bytes(b"a different person")
+    other = make_face(client, name="Grace", path=str(keeper))
+    faces.store.update("faces", other["id"], {"reference_path": str(keeper)})
+
+    record = face_with_media(client, media_root)
+    assert client.delete(f"/faces/{record['id']}").status_code == 204
+
+    assert keeper.exists()
+    assert client.get(f"/faces/{other['id']}").status_code == 200
+
+
+def test_deleting_a_face_forgets_its_prepared_identity(
+    client: TestClient, media_root: Path
+) -> None:
+    """
+    The cached identity goes too, because it is a gigabyte of the person's frames.
+
+    Asserted through the renderer's own cache rather than a mock, so it fails if the cache key
+    ever stops being the reference path -- which is the coupling that would silently break this.
+    """
+    from avatar.renderers.musetalk import _IDENTITIES
+
+    record = face_with_media(client, media_root)
+    _IDENTITIES[str(record["reference_path"])] = object()  # type: ignore[assignment]
+
+    assert client.delete(f"/faces/{record['id']}").status_code == 204
+    assert str(record["reference_path"]) not in _IDENTITIES

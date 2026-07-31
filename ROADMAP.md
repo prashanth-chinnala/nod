@@ -170,4 +170,3 @@ Not future work — things that are wrong or missing in shipped paths.
   incomplete.
 - **Calibration anchors have no rubric field.** The assistant can propose one and verifies the
   quote, but there is nowhere to promote it into.
-- **Deleting a face leaves its media.** The clip, thumbnail and generated still-clip all survive.

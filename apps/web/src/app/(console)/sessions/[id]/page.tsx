@@ -49,6 +49,7 @@ type Turn = {
   heard: string;
   said: string;
   transcribed: boolean;
+  silent: boolean;
   llm_ttft_ms: number | null;
   tts_first_audio_ms: number | null;
   first_frame_ms: number | null;
@@ -477,7 +478,22 @@ export default function ReportPage({ params }: { params: Promise<{ id: string }>
                 happen. Position is the real identity of a record in an append-only list. */}
             {session.turns.map((turn, index) => (
               <div key={index} className="space-y-2">
-                {turn.heard ? (
+                {/* Three distinct cases, and conflating any two of them loses the thing a
+                    reviewer is reading the transcript for. Words: show them. Silence: say so,
+                    because a re-prompt with no candidate line above it looks like a question
+                    asked twice for no reason. Speech that failed to transcribe: say that
+                    instead, and differently — it is a configuration fault, not a quiet
+                    candidate, and it is the one that needs someone to act. */}
+                {turn.silent ? (
+                  <div className="flex gap-3">
+                    <span className="w-20 shrink-0 pt-0.5 text-[10.5px] tracking-[0.07em] uppercase text-ink-low">
+                      silence
+                    </span>
+                    <p className="min-w-0 flex-1 text-[13px] italic leading-relaxed text-ink-low">
+                      The candidate did not answer, so the interviewer re-prompted.
+                    </p>
+                  </div>
+                ) : turn.heard || !turn.transcribed ? (
                   <div className="flex gap-3">
                     <span className="w-20 shrink-0 pt-0.5 text-[10.5px] tracking-[0.07em] uppercase text-ink-low">
                       candidate

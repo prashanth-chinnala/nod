@@ -251,7 +251,13 @@ def transcript_text(turns: Sequence[Mapping[str, Any]]) -> str:
     lines: list[str] = []
     for turn in turns:
         answered = str(turn.get("heard") or "").strip()
-        if answered:
+        if turn.get("silent"):
+            # Stated, not omitted. A silent turn has no `heard`, so without this line the
+            # transcript shows the interviewer asking twice in a row for no visible reason,
+            # and a model reading that is as likely to conclude the interviewer was
+            # repetitive as that the candidate went quiet. Silence is also signal itself.
+            lines.append("Candidate: [no answer - twelve seconds of silence]")
+        elif answered:
             if turn.get("transcribed", True):
                 lines.append(f"Candidate: {answered}")
             else:

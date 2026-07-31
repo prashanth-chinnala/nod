@@ -112,17 +112,22 @@ configuration.
    expiring, single-use candidate link. Everything else on this list is secondary.
 2. **Consent and retention for reference media.** Who uploaded this face, on whose authority, and
    when is it deleted? There is no consent record and no retention policy today.
-3. **Deletion that actually deletes.** Removing a face should remove the clip, the thumbnail, the
-   generated still-clip and any cached identity. Currently only the record goes.
+3. ~~**Deletion that actually deletes.**~~ **Done.** Removing a face now removes the reference,
+   the original upload, the thumbnail, the LivePortrait output directory, and the prepared
+   identity in the renderer's cache — roughly a gigabyte of that person's frames that used to
+   stay resident until restart. Unlinking is confined to the media directory, so a record
+   pointing elsewhere loses its row and keeps its file. What is still missing is the *reason* to
+   delete: item 2 above, a consent record and a retention policy, so that deletion is triggered
+   by something other than an operator remembering.
 4. **Self-hosted STT and TTS**, which is what makes "no candidate data leaves" true rather than
    aspirational.
 5. **Rate limiting and upload quotas.** `MAX_UPLOAD_BYTES` is 200 MB per file and there is no
    per-caller limit, so filling a disk is easy.
 6. **Audit trail.** The assistant's writes are attributed, but nothing else records who changed a
    rubric or deleted a session.
-7. **A stuck-job reaper.** A crash mid-enrollment leaves a row claiming `preparing` forever, which
-   `PREPARABLE` will not accept again. Availability rather than security, but it is the same missing
-   piece — a real job queue.
+7. ~~**A stuck-job reaper.**~~ **Done.** `avatar/jobs.py` claims each row with a timestamp and
+   fails anything a dead process left behind at startup, so a crash mid-enrollment no longer makes
+   a face permanently unenrollable.
 
 ---
 
