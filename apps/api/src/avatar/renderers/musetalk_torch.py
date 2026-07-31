@@ -149,6 +149,16 @@ model trained on boxes from full-resolution frames. Cheaper to be right and resi
 """
 
 HALF_PRECISION_DEVICES = ("cuda", "mps")
+
+FALSY = ("0", "false", "False", "no", "No")
+"""
+What counts as off in `AVATAR_MUSETALK_FP16`.
+
+Named because the rule now has two readers: the load, and the cache key that has to predict
+what the load will decide. Two inlined copies of a truthiness test is how they end up
+disagreeing, and the failure that produces is the quiet kind -- a cache key saying float32 while
+handing back float16 weights.
+"""
 """
 Which devices run the U-Net and VAE in float16.
 
@@ -205,6 +215,52 @@ def _checkout() -> Path:
     return Path(__file__).resolve().parents[3] / "vendor" / "MuseTalk"
 
 
+def _half_precision(device: str) -> bool:
+    """Whether weights for `device` are float16. The single reader of `AVATAR_MUSETALK_FP16`."""
+    if device not in HALF_PRECISION_DEVICES:
+        return False
+    return os.environ.get("AVATAR_MUSETALK_FP16", "1") not in FALSY
+
+
+_MODELS: dict[str, dict[str, Any]] = {}
+"""
+Loaded weights, shared by every backend instance in this process.
+
+**Why this is module-level, and what it cost to find out.** `load()`'s docstring has always said
+"called once per process; paying it per session is exactly the cold-start cost PROCESS.md 1.4
+argues against" -- and the dict it filled was an instance attribute, so that was never true.
+`renderers.build` returns a fresh backend per session, so every session reloaded 3.8 GB of
+weights: the U-Net, the VAE, whisper, the face parser and the landmark detector.
+
+Measured live before the fix, with warm-up having already loaded everything once: the
+candidate's audio arrived at 6.2 s and the first frame of that turn at **22.9 s**. Sixteen
+seconds of a person's face frozen while their interviewer talked over it -- and 23 s is exactly
+what `load()` measures on a T4, which is how the cause was identified rather than guessed. Seven
+frames arrived for forty-nine chunks of audio: by the time the models were ready the turn was
+over.
+
+This is the second time this exact mistake has been made here. `_IDENTITIES` is module-level for
+the same reason and its docstring explains the same reasoning; enrollment warmed a cache the
+session then ignored. Warm-up loading models into an instance nobody else could see was the same
+bug one layer down, and it was invisible because warm-up correctly reported success: it *had*
+loaded the models, into a renderer that was then thrown away.
+
+Keyed by device and dtype, because those are what the weights were built for -- `bench_renderer`
+sweeps precisions in one process and must not be handed float16 weights when it asked for
+float32.
+"""
+
+
+def reset_model_cache() -> None:
+    """
+    Drop every loaded model. For tests, and for freeing a device deliberately.
+
+    Nothing in the runtime should call this: a session that unloaded shared weights would take
+    the models out from under every other session in the process.
+    """
+    _MODELS.clear()
+
+
 class TorchMuseTalkBackend:
     """
     MuseTalk's realtime pipeline, driven one window at a time instead of one file at a time.
@@ -243,6 +299,19 @@ class TorchMuseTalkBackend:
         # measured badly enough on the wrong one to be worth deferring.
         self.batch_size = int(os.environ.get("AVATAR_MUSETALK_BATCH", batch_size))
 
+    def _cache_key(self) -> str:
+        """
+        Which set of weights this instance needs, for `_MODELS`.
+
+        Device and precision, because those are what the weights were built for. Read from the
+        environment rather than from `self`, so the key is available before `load()` has decided
+        anything -- and so a process that flips `AVATAR_MUSETALK_FP16` between instances gets
+        two entries instead of silently reusing the wrong dtype, which is what `bench_renderer`
+        does when it sweeps precisions.
+        """
+        dtype = "float16" if _half_precision(self.device) else "float32"
+        return f"{self.device}/{dtype}"
+
     def _cpu(self) -> Any:
         """
         The thread that does blending and JPEG encoding.
@@ -277,6 +346,15 @@ class TorchMuseTalkBackend:
         import torch
 
         self.device = _device()
+        # Before anything expensive. Another instance in this process may already hold exactly
+        # these weights, in which case this is the whole of `load()` -- which is the difference
+        # between a session's first frame at 2.9 s and at 22.9 s.
+        shared = _MODELS.get(self._cache_key())
+        if shared is not None:
+            self._models = shared
+            if "AVATAR_MUSETALK_BATCH" not in os.environ:
+                self.batch_size = BATCH_SIZE_BY_DEVICE.get(self.device, BATCH_SIZE)
+            return
         if self.device != "cuda":
             # Loud rather than quietly slow. A non-CUDA run is not a failure -- the brief
             # explicitly permits reporting real numbers on a lighter setup -- but it must
@@ -329,9 +407,7 @@ class TorchMuseTalkBackend:
 
         from avatar.renderers.landmarks import LandmarkDetector
 
-        half = self.device in HALF_PRECISION_DEVICES and os.environ.get(
-            "AVATAR_MUSETALK_FP16", "1"
-        ) not in ("0", "false", "no")
+        half = _half_precision(self.device)
 
         vae = VAE(model_path=str(self.model_root / "sd-vae"), use_float16=half)
         # `VAE.__init__` sets `self.device = "cuda" if torch.cuda.is_available() else "cpu"`,
@@ -393,6 +469,7 @@ class TorchMuseTalkBackend:
             "landmarks": detector,
             "dtype": dtype,
         }
+        _MODELS[self._cache_key()] = self._models
 
     # --------------------------------------------------------------- prepare
 
@@ -720,11 +797,19 @@ class TorchMuseTalkBackend:
             return out.getvalue()
 
     def unload(self) -> None:
-        """Drop weights and empty the device cache. Safe to call twice."""
+        """
+        Drop weights and empty the device cache. Safe to call twice.
+
+        Evicts the shared entry too, because the weights are shared and clearing only this
+        instance's reference would leave them loaded with nobody able to reach them -- a leak
+        that looks like a successful free. Nothing in the runtime calls this; `bench_renderer`
+        does, between precisions, and it needs the memory actually returned.
+        """
         if self._pool is not None:
             self._pool.shutdown(wait=True)
             self._pool = None
-        self._models.clear()
+        _MODELS.pop(self._cache_key(), None)
+        self._models = {}
         try:
             import torch
 

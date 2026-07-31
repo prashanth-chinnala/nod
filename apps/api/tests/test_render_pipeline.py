@@ -183,3 +183,103 @@ def test_every_batch_size_produces_the_same_frames_in_the_same_order(batch_size:
     frames = backend.render(prepared(5), b"", start_frame=2, count=7)
 
     assert frames == [f"frame-{(2 + i) % 5}".encode() for i in range(7)]
+
+
+# -- the models are loaded once per process, not once per session -------------
+
+
+def test_a_second_backend_reuses_the_first_backends_weights() -> None:
+    """
+    The defect this closes: every session was reloading 3.8 GB of weights.
+
+    `renderers.build` returns a fresh backend per session, and `_models` was an instance
+    attribute -- so warm-up loaded the models into an object that was then thrown away, and the
+    first turn of every session paid a 23 s load. Measured live: audio at 6.2 s, first frame of
+    that turn at 22.9 s.
+
+    Asserted by counting real `load()` calls against a stubbed loader, because the only honest
+    version of this test without a GPU is "did the expensive thing run twice".
+    """
+    from avatar.renderers import musetalk_torch
+
+    loads = {"n": 0}
+    weights = {"dtype": "float16", "unet": object()}
+
+    class Counting(TorchMuseTalkBackend):
+        def load(self) -> None:
+            if self._models:
+                return
+            self.device = "cuda"
+            shared = musetalk_torch._MODELS.get(self._cache_key())
+            if shared is not None:
+                self._models = shared
+                return
+            loads["n"] += 1
+            self._models = dict(weights)
+            musetalk_torch._MODELS[self._cache_key()] = self._models
+
+    first, second = Counting(), Counting()
+    first.load()
+    second.load()
+
+    assert loads["n"] == 1, "the second backend reloaded the weights"
+    assert second._models is first._models
+
+
+def test_float32_and_float16_do_not_share_an_entry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    The cache key includes precision, so a precision sweep cannot be handed the wrong dtype.
+
+    `bench_renderer` builds a backend per precision in one process. A key of device alone would
+    hand the float32 run the float16 weights and report float32 timings for float16 work --
+    which would have looked like float16 being free rather than like a bug.
+    """
+    from avatar.renderers import musetalk_torch
+
+    backend = TorchMuseTalkBackend()
+    backend.device = "cuda"
+
+    monkeypatch.setenv("AVATAR_MUSETALK_FP16", "1")
+    half = backend._cache_key()
+    monkeypatch.setenv("AVATAR_MUSETALK_FP16", "0")
+    full = backend._cache_key()
+
+    assert half != full
+    assert "float16" in half and "float32" in full
+    assert musetalk_torch._MODELS == {}
+
+
+def test_a_cpu_backend_is_keyed_float32_whatever_the_flag_says() -> None:
+    """
+    CPU never gets float16 weights, so the flag must not change its key.
+
+    Otherwise a CPU run with the flag on and one with it off would occupy two entries holding
+    identical weights -- twice the memory for no difference, on the device least able to spare
+    it.
+    """
+    backend = TorchMuseTalkBackend()
+    backend.device = "cpu"
+
+    assert backend._cache_key() == "cpu/float32"
+
+
+def test_unload_releases_the_shared_entry_not_just_the_reference() -> None:
+    """
+    Otherwise a "successful" free leaves the weights loaded and unreachable.
+
+    Nothing in the runtime calls `unload` -- `bench_renderer` does, between precisions, and it
+    needs the memory actually returned before the next sweep allocates.
+    """
+    from avatar.renderers import musetalk_torch
+
+    backend = TorchMuseTalkBackend()
+    backend.device = "cuda"
+    musetalk_torch._MODELS[backend._cache_key()] = {"dtype": "float16"}
+    backend._models = musetalk_torch._MODELS[backend._cache_key()]
+
+    backend.unload()
+
+    assert musetalk_torch._MODELS == {}
+    assert backend._models == {}

@@ -266,7 +266,7 @@ def build_session(
 @pytest.fixture(autouse=True)
 def _isolate_identity_cache() -> Iterator[None]:
     """
-    Clear the MuseTalk renderer's process-wide identity cache around every test.
+    Clear the MuseTalk renderer's process-wide identity and model caches around every test.
 
     That cache is module-level on purpose -- enrollment and a session build separate renderer
     instances, and per-instance caching meant enrollment warmed nothing. The price is global
@@ -280,7 +280,13 @@ def _isolate_identity_cache() -> Iterator[None]:
     it.
     """
     from avatar.renderers.musetalk import reset_identity_cache
+    from avatar.renderers.musetalk_torch import reset_model_cache
 
     reset_identity_cache()
+    # The loaded weights are process-wide for the same reason and need the same isolation. No
+    # test loads real models, so this cannot leak GB between them -- but a test that stubs
+    # `_MODELS` to exercise the sharing would, and the fixture that would have caught it should
+    # exist before that test does rather than after.
+    reset_model_cache()
     yield
     reset_identity_cache()
