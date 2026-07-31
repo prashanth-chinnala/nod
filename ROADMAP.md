@@ -63,7 +63,16 @@ verified on the T4. Cost moved to 196.8 s of start-up, where nobody is waiting.
 
 Remaining: a face switch still evicts and re-prepares, because the identity cache holds two.
 
-### 2. Frames still discarded — 33 to 79 per turn
+### 2. A second GPU, or one model at a time
+Voice cloning works and is wired in, but the renderer and the cloner cannot share one T4:
+`avatar_first_frame` degrades from 2.3–3.0 s to 28–42 s when the sidecar is active. Not memory —
+compute contention, because sentence *n+1* is synthesised while frames for sentence *n* render.
+
+The sidecar is already a separate process, so pointing `AVATAR_VOICE_SERVICE` at another host is
+configuration. Before spending anything, try a smaller batch size and a lower `AVATAR_FPS` to see
+whether the headroom exists on one card.
+
+### 3. Frames still discarded — 33 to 79 per turn
 Frames are delivered now, but a third to a half of a turn's frames still miss their slot. The cause
 is first-frame latency, not throughput: the turn's audio finishes before the renderer catches up and
 `FrameMixer._drain()` discards the remainder. Warming (item 1) should take a bite out of this;

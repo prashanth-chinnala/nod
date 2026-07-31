@@ -341,6 +341,48 @@ Model load is 32.9 s, which start-up warming already covers.
   `perth/__init__.py` catches the `ImportError` and sets the class to `None` — so the failure
   surfaces as `TypeError: 'NoneType' object is not callable` several frames away from the cause.
 
+## 4e. Voice cloning in production — and why it does not fit on one T4
+
+The sidecar works end to end: upload a 20 s reference, audition it through the API, attach it to an
+agent, and a session speaks in that voice. Verified — 8.0 s of speech-shaped audio (peak 12,923,
+RMS 1,590) in a real turn, with the interviewer asking a question about what the candidate had just
+said.
+
+Sidecar throughput matches the spike:
+
+| | |
+|---|---|
+| Model load | 36.9 s (once, `POST /warm`) |
+| 5.5 s sentence | 3,888 ms — RTF **0.70** |
+| 9.1 s sentence | 5,140 ms — RTF **0.56** |
+
+**But the renderer and the voice cloner cannot share one T4.** Same face, same reference, same
+prompt, only the voice engine changed:
+
+| | Hosted (Deepgram Aura) | Cloned (sidecar) |
+|---|---|---|
+| `tts_first_audio` | **290 ms** | **4,848 ms** |
+| `avatar_first_frame` | 2.3 – 3.0 s | **28,108 – 41,757 ms** |
+| `frames_discarded` | 33 – 79 | 81 |
+
+Two separate costs, and it is worth keeping them apart:
+
+* **The voice itself is 16× slower than hosted** for a long sentence — 4.8 s against 290 ms. That is
+  the honest, expected price of self-hosting, and RTF below 1.0 means it stays bounded.
+* **The renderer degrades 10×**, which is not expected and is the real problem. It is not memory:
+  3.9 GB (renderer) plus 3.6 GB (voice) of 15 GB, with 6 GB of host RAM free. It is compute
+  contention — sentence *n+1* is synthesised while frames for sentence *n* are rendering, by design,
+  so the two models fight for the same SMs for the whole turn.
+
+So on a single T4 the choice is **a self-hosted face with a hosted voice, or a self-hosted voice with
+no face**. Both models at once needs a second GPU, which is also the clean fix: the sidecar is
+already a separate process, so pointing `AVATAR_VOICE_SERVICE` at another host is configuration
+rather than work. That the architecture makes this a one-line change is the payoff for the process
+boundary the dependency collision forced.
+
+Not measured: whether a smaller batch size or a lower `AVATAR_FPS` recovers enough headroom to make
+both viable on one card. Worth trying before buying anything.
+
 ## 5. Speech and audio
 
 | | Measured |
