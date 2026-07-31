@@ -347,6 +347,21 @@ class MuseTalkRenderer:
         _IDENTITIES[reference_path] = identity
         return identity
 
+    def load(self) -> None:
+        """
+        Load the models without preparing anything.
+
+        Exists for warm-up. Loading is otherwise triggered lazily by the first
+        `prepare_identity`, with two consequences worth removing: the load's cost is
+        attributed to that face rather than reported separately, and an installation with no
+        face attached to any agent warms nothing -- so the first candidate still pays 27s for
+        weights even though there was nothing to enroll.
+
+        Idempotent; the backend returns immediately if it is already loaded.
+        """
+        self.backend.load()
+        self._loaded = True
+
     def idle_loop(self, identity: object) -> IdleLoop | None:
         """
         An idle loop built from this persona's own reference frames, or None.

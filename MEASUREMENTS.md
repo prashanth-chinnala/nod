@@ -220,11 +220,23 @@ the system it measures.
 | | |
 |---|---|
 | Warm — identity already in the process cache | **1.52 – 1.57 s** to first frame |
-| Cold — 100-frame identity, after a restart | 70.2 s |
-| Cold — 550-frame identity, evicted by a face switch | 150.3 s |
+| **First session after a restart, with start-up warming** | **2.9 s** |
+| Cold, before warming existed — 100-frame identity | 70.2 s |
+| Cold, before warming existed — 550-frame identity | 150.3 s |
 
-The cold figures are model load plus enrollment paid in front of whoever arrives first. The
-identity cache holds two entries, so switching between four faces evicts and re-prepares.
+Start-up warming moved that cost off the first candidate: **2.9 s instead of 70–150 s**, a 24–52×
+improvement on the session that matters most. The work is identical and was simply being done at
+the least useful moment. What it costs instead is start-up time — 196.8 s to load the models and
+prepare two attached faces, during which the server does not accept traffic:
+
+| | |
+|---|---|
+| `warmup`, 550-frame face | 148.7 s |
+| `warmup`, 268-frame face | 48.1 s |
+| total before serving | 196.8 s |
+
+The identity cache holds two entries, so switching between more faces than that still evicts and
+re-prepares — a face switch is the one remaining path that pays the full cost.
 
 ### Standing by
 

@@ -56,13 +56,12 @@ inspected — not "the code exists and the tests pass".
 
 ## Next
 
-### 1. Cold start — the worst number a candidate can hit
-The first session after a restart waits **70–150 s** while models load and the attached face
-enrolls. Warm both at startup: load the models, then prepare every face attached to an agent. The
-identity cache already exists and is process-wide; nothing fills it until someone arrives.
+### ~~1. Cold start~~ — done
+Was **70–150 s** on the first session after a restart. `avatar/warmup.py` loads the models and
+prepares the attached faces from the app's lifespan, before traffic is accepted: **2.9 s** now,
+verified on the T4. Cost moved to 196.8 s of start-up, where nobody is waiting.
 
-This is first because it is the only item on this list that a candidate experiences as the product
-being broken.
+Remaining: a face switch still evicts and re-prepares, because the identity cache holds two.
 
 ### 2. Frames still discarded — 33 to 79 per turn
 Frames are delivered now, but a third to a half of a turn's frames still miss their slot. The cause
