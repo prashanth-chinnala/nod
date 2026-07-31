@@ -104,8 +104,28 @@ CUDA is unknown.
 |---|---|---|
 | Load all five models | 11.2 – 20.2 s | 27.1 s |
 | Prepare, 1-frame still | 5.7 – 7.0 s | 16.3 s |
-| Prepare, 150-frame clip | 109.5 s (730 ms/frame) | not measured |
-| Prepare, 550-frame clip | 233.9 s (425 ms/frame) | not measured |
+| Prepare, 150-frame clip | 109.5 s | **82.3 s** |
+| Prepare, 550-frame clip | 233.9 s | **126.3 s** |
+
+Enrollment on the T4, measured through the API across five real references:
+
+| Frames | Enrollment | ms/frame |
+|---|---|---|
+| 100 (still expanded to a clip) | 44.2 s | 442 |
+| 150 (6 s video) | 82.3 s | 549 |
+| 268 (10.7 s video) | 81.0 s | 302 |
+| 500 (20 s constructed video) | 155.5 s | 311 |
+| 550 (22 s video) | 126.3 s | 230 |
+
+**Not linear, and the shape is the useful part.** A fixed cost dominates below ~250 frames — model
+load plus first-call CUDA warm-up — so ms/frame falls from 442 to 230 as the clip lengthens. The
+150-frame case being *slower in total* than the 268-frame case is not noise from a single run being
+unlucky; both were cold-process runs and the fixed cost swamps 118 frames of work. Subtracting the
+fixed component, marginal cost is roughly 0.23 s/frame.
+
+Practical consequence: **a longer reference is close to free.** 550 frames cost 1.5× what 150 did
+while giving a 22 s loop instead of a 6 s one, which is the difference between a loop a candidate
+notices and one they do not.
 
 Enrollment through the API (`POST /faces/{id}/prepare`, 150 frames, M1 Pro): **109,468 ms**,
 150/150 frames usable. Before enrollment was switched off the stub it reported
@@ -159,9 +179,14 @@ From the session's own telemetry, not from instrumentation added for the test.
 | `avatar_first_frame` | 127,200 ms | 95,865 ms | 82,713 ms |
 | `frames_discarded` | 58 | 72 | 39 |
 
-**169 frames rendered, 0 delivered.** Every frame missed its slot and the mixer dropped it,
-which is the barge-in design working as intended — stale artifacts die at the consumer. The
-candidate saw the placeholder idle loop throughout while the interviewer talked.
+**169 frames rendered; the `frames_discarded` counts above are real telemetry.** Every frame that
+was dropped missed its slot, which is the barge-in design working as intended — stale artifacts die
+at the consumer. The candidate saw the placeholder idle loop for most of every turn while the
+interviewer talked.
+
+An earlier version of this section said "0 delivered". That part was wrong and §4b explains why: the
+probe measuring delivery could not parse the frame header. Left visible rather than silently
+corrected, because the mistake is instructive.
 
 **This is the second figure that was wrong by being measured on the wrong device**, in a subtler
 way: 3.3 fps looked like "choppy but watchable" until a real session showed it means *nothing
@@ -169,6 +194,52 @@ renders*. A renderer that misses its target does not degrade gracefully; it fail
 `AVATAR_MUSETALK_FPS` exists because of this run.
 
 ---
+
+## 4b. Live session — Tesla T4, MuseTalk, `AVATAR_FPS=8`
+
+The same three-turn shape as §4, after moving to CUDA and lowering the frame rate to one the
+hardware sustains.
+
+| | M1 Pro @ 25fps | Tesla T4 @ 8fps |
+|---|---|---|
+| `avatar_first_frame`, turn 1 | 127,200 ms | 9,336 ms |
+| turn 2 | 95,865 ms | 4,189 ms |
+| turn 3 | 82,713 ms | 2,297 – 3,025 ms |
+| `frames_discarded` per turn | 58 / 72 / 39 | 79 / 33 / 50 |
+| frames delivered | 0 | **all of them** |
+
+**A correction belongs here, because the earlier version of this file was wrong.** §4 reported
+"169 frames rendered, 0 delivered" on the Mac. The `frames_discarded` counts were real telemetry;
+"0 delivered" was a broken probe — it looked for JPEG magic at byte 0, and every frame carries a
+13-byte header (`kind:u8, pts:u32, epoch:u32, length:u32`). Frames were being delivered. The
+lesson kept rather than quietly fixed: an instrument that reads zero should be suspected before
+the system it measures.
+
+### Session start, T4
+
+| | |
+|---|---|
+| Warm — identity already in the process cache | **1.52 – 1.57 s** to first frame |
+| Cold — 100-frame identity, after a restart | 70.2 s |
+| Cold — 550-frame identity, evicted by a face switch | 150.3 s |
+
+The cold figures are model load plus enrollment paid in front of whoever arrives first. The
+identity cache holds two entries, so switching between four faces evicts and re-prepares.
+
+### Standing by
+
+After the idle loop became the reference frames rather than the placeholder:
+
+| | |
+|---|---|
+| Frames delivered while idle | **60 of 60 real face**, 0 placeholder (was 8 of 60) |
+| Frame-to-frame change, real 22 s reference | mean 0.39, **peak 1.17** |
+| Frame-to-frame change, still expanded to a clip | 0.00 — identical frames |
+| Frame-to-frame change, constructed drift from a still | 0.54, no peaks |
+| Bandwidth at 512 px tall | 29 – 32 KB/frame ≈ 1.9 – 2.1 Mbps at 8 fps |
+
+The peak against the mean is what separates a real reference from a synthetic one: 1.17 against a
+0.39 mean is blinks and head shifts. Uniform 0.54 with no peaks is one photograph being moved.
 
 ## 5. Speech and audio
 
@@ -184,6 +255,23 @@ client per request puts every turn on the slow path.
 `ToneTTS` is not measured because it is not speech — it emits a sine wave of the correct
 duration, and every agent defaulted to it, which is why no voice was audible until one was
 switched to Deepgram.
+
+### Two silent failures, with the numbers that found them
+
+**Audio was arriving and never playing.** Measured at the socket: 3.20 s of PCM per turn, peak
+12,708, RMS 2,896 — speech-shaped, not the sine a tone would give. Measured in the browser:
+AudioContext `running`, gain `1`, and **zero buffer sources started**. A guard on React state that
+`socket.onmessage` had closed over before that state existed was discarding every message.
+Buffer sources started went **0 → 79**.
+
+**Speech was heard and never transcribed:** 10 of 11 turns. Deepgram returned **3 interim results
+and 0 finals**, and only finals were accumulated. With `endpointing=300` and trailing silence,
+**finals: 1**. Round-tripped through Deepgram TTS so the expected text was exact:
+
+| | |
+|---|---|
+| expected | I led the migration of our payments service off a shared database. |
+| got | I led the migration of our payment service off a shared database. |
 
 ---
 
@@ -204,23 +292,24 @@ format).
 Not fetched, deliberately: `dwpose` (400 MB — mmpose is substituted), `syncnet` (training only),
 MuseTalk v1.0 (superseded by v1.5).
 
-Download on the Lightning Studio: 3.8 GB in **under 3 minutes**. On the Mac it took
-substantially longer; the figure was not timed precisely and is not quoted.
+Download on the Lightning Studio: 3.8 GB in **under 3 minutes** (1.3 GB in the first 25 s). On the
+Mac it took substantially longer; the figure was not timed precisely and is not quoted.
 
 ---
 
 ## 7. Frame size and bandwidth
 
-| Reference | Output frame | JPEG q82 | At 25fps |
+| Reference | Output frame | JPEG q82 | Bitrate |
 |---|---|---|---|
-| 1024×1536 (uncapped) | 1024×1536 | 249 KB | ~50 Mbps |
-| capped at 512 tall | 341×512 | not yet measured | — |
+| 1024×1536 (uncapped) | 1024×1536 | 249 KB | ~50 Mbps at 25fps |
+| capped at 512 tall | ~384×512 | **29 – 32 KB** | **1.9 – 2.1 Mbps at 8fps** |
 
 The 50 Mbps figure is why `MAX_OUTPUT_HEIGHT = 512` exists. MuseTalk blends the repainted mouth
 into the *whole* reference frame, so output resolution is the reference's, not the model's — and
 the model works at 256×256 regardless, so the surrounding pixels were never generated detail.
 
-The capped size has not been measured. It should be, before any bandwidth claim is made.
+A 24× reduction, and the model output is untouched — the U-Net works at 256×256 either way, so
+what was discarded is reference background, not generated detail.
 
 ---
 
@@ -248,12 +337,14 @@ frame being *visible* was invisible to every earlier measurement.
 Stated rather than filled:
 
 - **No CUDA float32 comparison.** The fp16 default is not in doubt; the ratio on CUDA is unknown.
-- **No T4 enrollment figure** for a multi-frame reference.
-- **No frame-size measurement** after the 512 px cap, so no bandwidth claim.
+- **No output-quality comparison** between the substituted landmark detector and RTMPose.
 - **No measurement on a card larger than a T4**, which is the obvious next question given that a
   T4 is 2.9× short.
-- **No end-to-end session on CUDA yet** — §4 is the Mac. The `frames_discarded` count on a T4 at
-  a sustainable frame rate is the number that decides whether this is demoable, and it does not
-  exist yet.
+- **`frames_discarded` is still 33 – 79 per turn on the T4.** Frames are delivered now, but a
+  third to a half of a turn's frames still miss their slot. First-frame latency, not throughput,
+  is what drives this: the turn's audio finishes before the renderer has caught up, and
+  `FrameMixer._drain()` discards the remainder.
+- **No measurement with the models warmed at startup**, which is the obvious fix for the cold
+  70 – 150 s and probably for a share of the discards.
 - **No output-quality comparison against MuseTalk's published samples.** The landmark detector is
   substituted, so the crop can differ by a pixel or two; whether that is visible is unmeasured.

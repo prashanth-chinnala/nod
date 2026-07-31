@@ -1,263 +1,130 @@
 # nod
 
-A prototype real-time conversational avatar: audio in, lip-synced talking-head video
-out, streamed to a browser, with session lifecycle and interruption handling.
+A real-time conversational avatar for technical interviews. A candidate opens a link, sees a face,
+and has a conversation: the interviewer listens, decides what to ask next from a competency plan,
+speaks in a real voice, and is scored afterwards against a rubric.
 
-Built as the Exterview Head of Engineering take-home. The reasoning, the
-model-selection memo, the build-vs-buy recommendation, and the migration plan live in
-[PROCESS.md](PROCESS.md); this file is only how to run what exists.
+Self-hosted. The renderer, the store and the console all run on hardware you control.
 
-> **Status: the session layer is complete; the talking-head model is not integrated.**
-> With credentials this runs a real spoken conversation today — real transcription, a real
-> LLM, a real synthesised voice, and working interruption. What is missing is the **face**:
-> no talking-head model is wired in, so the avatar is five rectangles whose mouth height
-> tracks the audio in real time. See [What works today](#what-works-today) for the exact
-> boundary and [PROCESS.md](PROCESS.md) §3.3.3 for the measured latency budget.
+**Current state:** working end to end on an NVIDIA T4 with a real face, a real voice and real
+transcription. Not yet real time — measured at 8.7 fps against a 25 fps target, and this repository
+says so rather than rounding up. Every figure in [MEASUREMENTS.md](MEASUREMENTS.md) came from a run;
+where a number does not exist, that file says so.
 
-## Quick start
+---
 
-```bash
-python3 -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev,server]"
-uvicorn avatar.server:app
-```
-
-That serves JSON and a WebSocket, and nothing else — **there is no HTML here.** The
-interface lives in `apps/web`, which is a separate app on its own port:
-
-```bash
-pnpm install && pnpm dev          # from the repo root — console on :3000
-```
-
-Then open **<http://localhost:3000>**, create a session, and follow the candidate link.
-
-The API works with **no credentials at all** — every default is a placeholder that needs no
-key and no network. To hear a real voice and hold a real conversation, see
-[Configuration](#configuration).
-
-To verify a whole session headlessly, with no browser at all:
-
-```bash
-python scripts/smoke_session.py     # 17 assertions over a real socket
-```
-
-That script drives a real session over a real socket and asserts the properties a
-screenshot cannot show: that presentation timestamps are strictly monotonic, that
-stale-epoch artifacts were provably dropped rather than merely overtaken, and that
-end-to-end latency was measured to browser paint rather than to the socket write.
-
-## Configuration
-
-Every component is chosen by an environment variable, and **every default is a working
-no-credential one** — a clean clone runs with no env file at all, on placeholders for the
-LLM, TTS, transcriber, and renderer. Create a file with whichever services you have:
-
-```bash
-printf 'AVATAR_LLM=openai\nDEEPGRAM_API_KEY=...\n' > .env.development
-chmod 600 .env.development      # every .env* is gitignored; none may be committed
-```
-
-It is loaded automatically at server import — see
-[`src/avatar/config.py`](src/avatar/config.py). No `source` step, no `python-dotenv`.
-Three candidates are read in descending precedence — `.env.development`, `.env.local`,
-`.env` — so shared defaults can live in one file and the handful you are changing in
-another, without duplicating the rest. `AVATAR_ENV_FILE=/path/to/file` skips the search
-entirely, for a mounted secret or a path outside the repo.
-
-**A real environment variable always wins over every file**, so
-`AVATAR_TTS=tone uvicorn ...` still overrides, and CI cannot be clobbered by a stray file.
-
-`GET /config` reports which implementation each boundary resolved to, and which variable
-*names* came from the file — never their values.
-
-| Variable | Default | Options |
-|---|---|---|
-| `AVATAR_RENDERER` | `stub` | `stub` (no GPU) · the chosen model, once it is integrated |
-| `AVATAR_LLM` | `scripted` | `scripted` · `openai` · `anthropic` |
-| `AVATAR_TTS` | `tone` | `tone` · `deepgram` |
-| `AVATAR_STT` | `none` | `none` · `deepgram` |
-| `AVATAR_VAD` | `energy` | `energy` (no deps) · `silero` (needs `.[vad]`, **never executed**) |
-| `AVATAR_LLM_MODEL` | adapter default | any model the chosen endpoint serves |
-| `AVATAR_TTS_VOICE` | `aura-2-thalia-en` | any Aura voice |
-| `OPENAI_BASE_URL` | vendor default | any OpenAI-compatible endpoint — see below |
-| `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `DEEPGRAM_API_KEY` | unset | credentials |
-
-### Any OpenAI-compatible endpoint
-
-`AVATAR_LLM=openai` plus `OPENAI_BASE_URL` reaches far more than OpenAI, because Ollama,
-LM Studio, and vLLM all speak the same wire format. **A local model therefore needs no new
-adapter and no key at all** — which makes a fully offline, zero-cost interviewer a config
-change:
-
-| Target | `OPENAI_BASE_URL` | Key |
-|---|---|---|
-| Local Ollama | `http://localhost:11434/v1` | none needed |
-| Ollama Cloud | `https://ollama.com/v1` | your Ollama key |
-| LM Studio | `http://localhost:1234/v1` | none needed |
-| OpenAI | *(omit)* | your OpenAI key |
-
-### Running it for real
-
-```bash
-# .env.development holds the keys; no prefixes needed
-uvicorn avatar.server:app
-curl -s localhost:8000/config | python3 -m json.tool   # confirm what resolved
-```
-
-If `/config` shows `scripted`, `tone`, or `none` when you expected otherwise, no env file
-was picked up and you are measuring placeholders. Its `env_files_read` field names the
-files that were actually read, which is the fastest way to tell "the value is wrong" from
-"the file was never opened".
-
-### Secrets
-
-**No env file is tracked, and none may become one.** `.gitignore` covers `.env` and every
-`.env.*`; nothing is exempted. This repository is published, and a key committed to a
-public repo is scraped within minutes and cannot be un-published — rewriting history does
-not help, because the crawlers already have it.
-
-There is deliberately no `.env.example`: a committed template is one `git add -f` away from
-being a committed key, and the table above already documents every variable. Worth running
-yourself rather than taking on trust:
-
-```bash
-git ls-files | grep -E '^\.env'      # must print nothing
-```
-
-If you run the model spike on a hosted notebook, put credentials in that platform's secret
-store rather than in a cell — anything typed into a cell is saved inside the `.ipynb`.
-
-## What works today
+## What it does
 
 | | |
 |---|---|
-| Session state machine — start/stop, listening, thinking, speaking, cancelling | Working, tested |
-| Barge-in via turn-epoch invalidation, stale artifacts provably dropped | Working, verified end-to-end |
-| Constant-cadence frame mixer, idle-loop fallback, starvation handling | Working, tested. Measured at 25.4fps |
-| WebSocket streaming of frames and audio to a browser | Working |
-| Browser client — canvas, Web Audio, mic capture, live telemetry | Working, no build step |
-| History truncated to audio the client **acknowledged playing** | Working, tested |
-| End-to-end latency measured to browser paint, not to socket write | Working |
-| A renderer behind a Protocol, with a GPU-free implementation | Working, tested |
-| Server-side turn-taking policy — onset, hysteresis, retraction, end-of-turn | Working, 30 tests |
-| Real transcription (Deepgram Nova) | Working. Transcribed 5.48s of real speech exactly |
-| Real voice (Deepgram Aura-2) | Working. ~380ms warm time-to-first-audio |
-| Real LLM — two adapters, any OpenAI-compatible endpoint | Working via Ollama Cloud |
-| `.env` loaded automatically; `GET /config` reports what resolved | Working |
-| **A talking-head model of any kind** | **Not built** — needs a GPU; the spike failed in setup (PROCESS.md §2.2.1) |
-| **A real voice activity detector** | **Partly.** The policy is real and tested; the detector under it is an energy gate. `SileroVad` is written and **never executed** |
-| Frame encoding | Working. PNG, stdlib zlib. **108.10 KB → 0.57 KB per frame, 22.2 → 0.12 Mbps** |
-| Client jitter buffer | Working. 150ms lead, underruns counted and surfaced |
+| **Two-way conversation** | streaming transcription, barge-in, turn detection tuned per agent |
+| **A real face** | MuseTalk repaints the mouth of a reference clip you upload, in step with the speech |
+| **Asks what matters** | a competency plan chooses the next question and tracks coverage |
+| **Scores afterwards** | an asynchronous judge produces labelled verdicts with verified quotes |
+| **Reviewable** | full transcript, per-stage latency, and an optional H.264 recording |
+| **A console** | agents, faces, rubrics, knowledge, guardrails, pronunciations, sessions, reports |
+| **An assistant** | asks questions across interviews and proposes rubric changes a human commits |
 
-The headline numbers the brief asks for — first-frame latency and fps for a real
-talking-head model — read `NOT YET MEASURED` in [PROCESS.md](PROCESS.md) §3.3, because
-they do not exist yet. §3.3.1–3.3.3 have the numbers that do, each with a note on what it
-actually measures.
+---
 
-**The measurement that matters most** (§3.3.3, every component real): a full conversational
-turn takes **3.7–5.4s** against a sub-second target — and **none of the three dominant
-terms is the renderer.** End-of-turn detection is 700ms of deliberate policy, LLM
-time-to-first-token 1.9–3.2s, TTS time-to-first-audio 0.9–1.3s. A perfect zero-latency
-talking-head model would still leave ~3.4s, so "more GPU" demonstrably does not close this
-gap.
+## Documentation
 
-## Requirements
-
-Python 3.11 or newer. **No GPU, no model weights, and no network** are needed for
-anything currently in the repo.
-
-A GPU becomes a requirement only when the talking-head model is integrated. The intended
-target is a Colab/Kaggle free-tier T4; the weight-download step and the real hardware
-requirements will be documented here once the model spike has actually produced throughput
-figures. It has not — see [PROCESS.md](PROCESS.md) §2.2.1.
-
-## Run the checks
-
-```bash
-pytest -m "not gpu"                        # 199 tests, ~0.6s, no GPU
-ruff check src tests && ruff format --check src tests
-mypy src/avatar
-```
-
-That is exactly what [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs, and it
-installs only `[dev]` — pytest, ruff, mypy, no ML dependency and no web stack. The suite
-is fast because every collaborator is injected and the clock is faked, so a test that
-needs a simulated second gets it in microseconds.
-
-## Layout
-
-```
-src/avatar/
-  contracts.py         dataclasses + the five Protocols. Imports nothing from the package.
-  state.py             State enum, transition table, frame-source table. All data.
-  orchestrator.py      SessionOrchestrator — every state transition lives here
-  mixer.py             FrameMixer, IdleLoop — cadence and presentation timestamps
-  telemetry.py         emit call sites; structured JSON, subscribable
-  idle.py              placeholder idle loop + loader for a real prepared clip
-  llm.py               sentence chunker + scripted interviewer
-  bmp.py               twenty-line BMP encoder, so nothing needs Pillow
-  server.py            FastAPI. The only module that imports a web framework.
-  config.py            loads .env at import; a real env var always wins
-  llm_anthropic.py     Claude adapter + the LLM registry
-  llm_openai.py        OpenAI adapter — also Ollama / LM Studio / vLLM via base_url
-  audio/turn_detection.py  onset / hysteresis / retraction / end-of-turn. Pure policy.
-  audio/vad.py         EnergyVad (no deps) + SileroVad (torch, never executed)
-  audio/tts.py         ToneTTS — real timing, fake voice
-  audio/tts_deepgram.py    Aura. container=none matters; see the docstring
-  audio/stt.py         Deepgram Nova. Transcribes; decides nothing
-  transport/websocket.py   wire codec + Transport. No framework dependency.
-  renderers/           build() registry + StubRenderer (no GPU, no deps)
-tests/                 553 tests, including the boundary enforcement
-scripts/               headless end-to-end verification, and the GPU model spike
-notebooks/             the model spike harness
-```
-
-The interface is not here. `apps/web` is a Next.js app serving the console and the
-candidate-facing interview page; this app serves JSON and a WebSocket only.
-
-## Documentation map
-
-| File | What it is |
+| | |
 |---|---|
-| [PROCESS.md](PROCESS.md) | Architecture document, model-selection memo, build-vs-buy memo, and migration plan |
-| [notebooks/m0_musetalk_v2.ipynb](notebooks/m0_musetalk_v2.ipynb) | The model spike harness — the one remaining path to a real face. Gates on imports, audits every checkpoint, and refuses to report fps without an output file |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | the boundaries, the interview loop, why cancellation is an integer |
+| [MODELS.md](MODELS.md) | every model, why it was chosen over the alternatives, what would replace it |
+| [MEASUREMENTS.md](MEASUREMENTS.md) | every measured figure with its device — and the gaps, named |
+| [OPERATIONS.md](OPERATIONS.md) | running it on a laptop and on a GPU host, and what to expect |
+| [SECURITY.md](SECURITY.md) | the auth posture, stated rather than implied, and what real faces change |
+| [ROADMAP.md](ROADMAP.md) | done, next, and deliberately deferred |
+| [PROCESS.md](PROCESS.md) | the engineering log: what was tried, what failed, and why |
 
-## The module boundary
+---
 
-Nothing in `contracts.py`, `state.py`, `telemetry.py`, `mixer.py`, or
-`orchestrator.py` may import torch, CUDA, or a renderer implementation. That is what
-keeps CI GPU-free, and it is the mechanical proof that the ML model is one bounded,
-swappable piece rather than a claim to that effect.
+## Run it
 
-[`tests/test_boundaries.py`](tests/test_boundaries.py) enforces it by parsing each
-module's imports from its AST, so the assertion is that the dependency is absent from
-the graph — not merely that it happened not to be installed. Swapping the model is a
-change to one `RendererConfig` value, and that too is a test.
+### Without a GPU
 
-If CI ever needs a GPU package in order to import, a boundary has been broken. Fix the
-boundary; do not add the dependency.
-
-## Recording an interview
-
-Recording is a property of the LiveKit room, not code in this repo — but it needs a recorder to be
-running, which the SFU binary does not include. `docker-compose.yml` brings up the three pieces:
-the SFU, an egress worker, and the Redis bus they find each other over.
+Every default is a working, credential-free one, so this runs on a clean clone with no env file.
 
 ```bash
-docker compose --env-file .env.development up -d      # SFU + egress + redis
-AVATAR_RECORD=1 uvicorn avatar.server:app --reload    # recording is opt-in
+pip install -e "apps/api[dev,server,tts,llm]"
+uvicorn avatar.server:app                     # API on :8000
+curl -s localhost:8000/config                 # which implementation each boundary resolved to
+python apps/api/scripts/smoke_session.py      # headless end-to-end check, 17 assertions
 ```
 
-Finished files land in `recordings/` (gitignored — they are interviews). A 1m37s two-way call
-produced a 7.0 MB MP4: H.264 1280x720 at 30fps, AAC 44.1kHz stereo.
+```bash
+cd apps/web && pnpm install && pnpm dev        # console on :3000
+```
 
-Two settings are not optional and both fail silently if wrong:
+You get the stub renderer — a placeholder face driven by audio amplitude — a sine-wave voice and a
+scripted interviewer. Everything else is real: the state machine, turn taking, barge-in, the
+competency plan, the store and the scoring path.
 
-- **`--env-file .env.development`** — the SFU takes its key pair from there, so it and the runtime
-  cannot disagree, and nothing secret is tracked.
-- **`LIVEKIT_NODE_IP`** — the address the SFU advertises for media. It must be reachable by the
-  browser *and* by the egress container, so loopback does not work: to a container, `127.0.0.1` is
-  itself. Use your LAN address (`ipconfig getifaddr en0`).
+`smoke_session.py` asserts the things a screenshot cannot show — that presentation timestamps are
+strictly monotonic, that stale-epoch artifacts were provably dropped rather than merely overtaken,
+and that latency was measured to browser paint rather than to the socket write.
 
-`AVATAR_RECORD` is off by default. Recording an interview has consent and retention consequences
-and should not switch itself on because an SFU happens to be configured.
+### With a GPU, and a real face
+
+```bash
+cd apps/api
+./scripts/setup_musetalk.sh                    # venv, MuseTalk, 3.7 GB of weights, all verified
+AVATAR_RENDERER=musetalk uvicorn avatar.server:app
+```
+
+Then upload a reference on the console's **Faces** screen — a clip of one person sitting still and
+looking at the camera, 20 seconds or more — press Prepare, and attach it to an agent.
+
+`setup_musetalk.sh` opens with `set -euo pipefail`, and that is the point. It replaces upstream's
+`download_weights.sh`, which has no `set -e` and ends by printing "✅ All weights have been
+downloaded successfully!" unconditionally — which is how the first attempt finished with 96 MB on
+disk and exit code 0. `scripts/fetch_musetalk_weights.py` opens and checks every artifact:
+HTML-page detection first, because that names the cause, then a size floor, then a container-format
+check. Nothing is reported present unless it was read.
+
+See [OPERATIONS.md](OPERATIONS.md) for a GPU host and the numbers to expect.
+
+### Configuration
+
+Credentials go in `.env.development` (or `.env.local`, or `.env`, in descending precedence), loaded
+at server import — there is no `source` step. A real environment variable always beats every file.
+Every `.env*` is gitignored with no exemption; `/config` reports which files were read, never their
+contents.
+
+| | |
+|---|---|
+| `AVATAR_RENDERER` | `stub` or `musetalk` |
+| `AVATAR_FPS` | target frame rate. 25 is the default and the target; lower it to match the hardware |
+| `AVATAR_STORE` | unset for JSON files, `postgres` for Postgres |
+| `AVATAR_LLM` / `AVATAR_TTS` / `AVATAR_STT` | which provider each boundary resolves to |
+| `AVATAR_MEDIA_DIR` / `AVATAR_DATA_DIR` | **set these absolutely.** Both default to relative paths, and two services started from different directories will disagree about where the data is |
+
+---
+
+## Tests
+
+```bash
+cd apps/api && pytest -m "not gpu"             # 715 tests: no GPU, no weights, no network
+ruff check src tests && mypy src/avatar
+```
+
+That property is enforced rather than hoped for. `tests/test_boundaries.py` fails if
+`orchestrator.py`, `mixer.py`, `state.py` or `contracts.py` acquires an ML dependency, and it checks
+`sys.modules` after importing the orchestration layer rather than trusting the source.
+
+---
+
+## Two things to know before judging it
+
+**It is not real time yet.** 114.7 ms/frame on a T4 against a 40 ms budget. The per-stage split says
+where that goes — VAE decode 58.8 ms, CPU blending and JPEG 43.5 ms, the U-Net only 12.4 ms — so the
+next work is a faster decode and moving blending off the critical path, not a bigger GPU. MuseTalk's
+paper reports 30+ fps; that is a different card, and it does not include our blending and encoding.
+We quote our own number with our own hardware attached.
+
+**There is no authentication.** None, anywhere. The candidate link is not a credential, and the
+assistant will read any transcript in the store. A stated development posture —
+[SECURITY.md](SECURITY.md) explains why storing real people's faces and voices changes that
+calculation.

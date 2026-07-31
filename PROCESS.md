@@ -1,6 +1,22 @@
-# PROCESS.md
+# PROCESS.md — engineering log
 
-Real-time conversational avatar — architecture research, prototype, and build-vs-buy recommendation.
+> **This is a historical document, kept deliberately.** It records the first phase of the project:
+> the architecture research, the model-selection reasoning, and the measured latency budget, written
+> when no talking-head model was integrated and everything ran on an M1 Pro with no CUDA.
+>
+> **It is out of date as a description of the system.** A real face renders on a GPU now, the store
+> is Postgres, and several figures here were superseded — including two that turned out to be wrong
+> because they were measured on the wrong device. For the current state read
+> [ARCHITECTURE.md](ARCHITECTURE.md), [MODELS.md](MODELS.md), [MEASUREMENTS.md](MEASUREMENTS.md) and
+> [OPERATIONS.md](OPERATIONS.md).
+>
+> It survives because the reasoning is still the reasoning: why the module boundary exists, why
+> cancellation is an integer, why turn detection stayed local, and what the alternatives were. A
+> decision log is worth more when it includes the state of knowledge at the time — including the
+> parts later proved wrong. Corrections are recorded in MEASUREMENTS.md rather than edited into the
+> text here.
+
+Real-time conversational avatar — architecture research, prototype, and model-selection reasoning.
 
 | | |
 |---|---|
