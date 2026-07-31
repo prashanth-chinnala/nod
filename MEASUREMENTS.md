@@ -253,6 +253,60 @@ After the idle loop became the reference frames rather than the placeholder:
 The peak against the mean is what separates a real reference from a synthetic one: 1.17 against a
 0.39 mean is blinks and head shifts. Uniform 0.54 with no peaks is one photograph being moved.
 
+## 4c. Generative enrollment — LivePortrait, spiked on the T4
+
+The question a still reference raises is whether a model can add motion to a photograph **without
+changing whose face it is**. If identity drifts, the result is a stranger — worse than a frozen
+head. So that was measured first, before anything was built.
+
+`KwaiVGI/LivePortrait`, 2.0 GB of weights, identity from `man.png` and motion from 12 s of a real
+person.
+
+| | |
+|---|---|
+| Generation, 300 frames | 124 s (~414 ms/frame, CPU ONNX providers) |
+| **Identity: face-proportion deviation** | **3.6% overall** |
+| — inter-ocular / face width | 3.9% |
+| — nose length | 4.0% |
+| — mouth width | 2.3% |
+| — chin to nose bridge | 1.9% |
+| — nostril width | 5.9% |
+
+Scale-invariant landmark ratios, generated frames against the source photograph. Under ~5% is the
+same face's geometry, and a side-by-side of the source and four generated frames confirms it
+visually — the head pose and gaze shift while the person does not.
+
+### The full chain, live
+
+`man.png` → LivePortrait → MuseTalk enrollment (300 frames, 94.4 s) → a session:
+
+| | Still, frozen | Still + LivePortrait | Real human video |
+|---|---|---|---|
+| Standing-by motion, mean | 0.00 | **0.69** | 0.39 |
+| Standing-by motion, peak | 0.00 | **1.31** | 1.17 |
+| First frame | — | 1.83 s | 1.52 s |
+| Real-face frames delivered | 45/45 | **45/45** | 50/50 |
+
+The peak matters more than the mean. A frozen still is 0.00. A crop-window drift constructed with
+ffmpeg was 0.54 *with no peaks* — uniform motion, one photograph being moved. LivePortrait's 1.31
+peak against a 0.69 mean is the signature of discrete events, and it exceeds the real human's 1.17.
+
+### The finding that changes the design
+
+**The driving video, not the model, is the limit.** Measuring eye aspect ratio every frame — a blink
+lasts 3–4 frames at 25 fps, so sampling every 5th frame misses them entirely, which invalidated a
+first attempt at this measurement:
+
+| | EAR mean | EAR min | blink-shaped dips |
+|---|---|---|---|
+| Driving video (real person, 6 s) | 0.323 | 0.269 | **0** |
+| Generated (the man) | 0.294 | 0.216 | **2** |
+
+The driving clip contains no blinks in that window, and the output has two — LivePortrait adds eye
+motion of its own. So output quality is bounded by the motion source, and the product consequence
+is concrete: **ship one canonical idle driving clip** — a person sitting still, blinking naturally,
+small head movements — as a bundled asset, and any uploaded photograph can be animated with it.
+
 ## 5. Speech and audio
 
 | | Measured |

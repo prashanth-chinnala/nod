@@ -128,10 +128,25 @@ Candidates, cheapest first:
 Because this stage is offline, the hardware constraint is soft: renting a larger GPU for the
 minutes one face takes is legitimate, and keeps the T4 for serving.
 
-**Unresolved, and it decides the choice: identity preservation.** If the generated clip's face
-drifts from the uploaded photo, the result is a stranger — worse than a frozen head, and
-unacceptable for a real person's persona. No candidate has been evaluated on this yet, and the
-evaluation is a spike with output to look at, not a benchmark table.
+**Resolved by a spike, and the answer picked the model: `KwaiVGI/LivePortrait`.**
+
+Identity preservation is its design rather than a hoped-for property — implicit keypoints transfer
+expression and head motion from a driving video onto a source portrait, and it explicitly does not
+swap faces. Measured on the T4: **3.6% face-proportion deviation** from the source photograph, and
+a visual side-by-side confirms the same person across generated frames. The full chain renders live
+— photo → LivePortrait → MuseTalk → browser, 45/45 real-face frames, standing-by motion peaking at
+1.31 against a real human's 1.17 and a frozen still's 0.00. Figures in
+[MEASUREMENTS.md](MEASUREMENTS.md) §4c.
+
+It also beat the alternatives on fit, not just results. SadTalker and the diffusion animators
+*generate* motion from audio or noise; LivePortrait *transfers* it from a clip we choose, which is
+why identity survives and why the output is controllable. 2.0 GB of weights, comfortable on a T4,
+414 ms/frame with CPU ONNX providers — irrelevant for work that happens once per face.
+
+**The limit is the driving video, not the model.** Measured every frame, the driving clip contained
+zero blinks in the window tested and the output contained two — the model adds eye motion, but
+output quality is bounded by the motion source. The product consequence: ship one canonical idle
+driving clip as a bundled asset, and any uploaded photograph can be animated with it.
 
 An interim measure exists and its limits should be stated plainly: a reference clip can be
 constructed from a still by drifting a crop window with two non-harmonic sine terms. Verified
