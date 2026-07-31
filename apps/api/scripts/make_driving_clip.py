@@ -2,21 +2,21 @@
 """
 Build the driving clip that gives an uploaded photograph its motion.
 
-**Why this is a script and not a committed asset.** It produces an `.mp4`, and every `.mp4` in this
-repository is gitignored -- deliberately, because that rule is what keeps interview recordings and a
-real person's reference media out of git. Carving an exemption for one file is how that rule starts
-eroding. So the clip is derived, at setup time, from the MuseTalk checkout that is already required.
+**Why this is a script and not a committed asset.** It produces an `.mp4`, and every `.mp4` here
+is gitignored -- deliberately, because that rule keeps interview recordings and a real person's
+reference media out of git. Carving an exemption for one file is how such a rule erodes. So the
+clip is derived at setup time, from the MuseTalk checkout that is already required.
 
-**Why the choice of segment is the important part.** LivePortrait *transfers* motion; it does not
-invent it. Measured during the spike: the driving clip used contained **zero blinks** in the window
-tested, and the animated output contained two -- so the model adds a little eye motion of its own,
-and borrows everything else. A driving clip of someone sitting rigidly produces a persona that sits
-rigidly. Which makes this file, not the model, the highest-leverage thing to improve.
+**Why the choice of segment is the important part.** LivePortrait *transfers* motion, it does
+not invent it. Measured during the spike: the driving clip used contained **zero blinks** in the
+window tested, and the animated output contained two -- so the model adds a little eye motion of
+its own and borrows the rest. A driving clip of someone sitting rigidly produces a persona that
+sits rigidly, which makes this file, not the model, the highest-leverage thing to improve.
 
-So the segment is picked by measurement rather than by eye: every candidate window is scored on how
-much the eyes actually move, using inner-eye aspect ratio per frame, and the best-scoring window
-wins. A blink lasts 3-4 frames at 25fps, so this samples every frame -- an earlier attempt at this
-measurement sampled every fifth and reported no blinks at all in a clip that had them.
+So the segment is picked by measurement rather than by eye: every candidate window is scored on
+how much the eyes actually move, and the best-scoring one wins. Every frame is sampled, because
+a blink spans 3-4 frames at 25fps and an earlier attempt at this measurement sampled every fifth
+and reported no blinks at all in a clip that had them.
 
     .venv-musetalk/bin/python scripts/make_driving_clip.py
     .venv-musetalk/bin/python scripts/make_driving_clip.py --source my_clip.mp4
@@ -37,7 +37,8 @@ WINDOW_SECONDS = 20.0
 How long the clip runs.
 
 The reference loops forward then backward, so a 20s clip repeats every 40s -- past the point a
-candidate notices. It is also `RECOMMENDED_VIDEO_SECONDS`, so a face built from it uploads with no
+candidate notices. It is also `RECOMMENDED_VIDEO_SECONDS`, so a face built from it uploads with
+no
 warning.
 """
 
@@ -114,9 +115,11 @@ def main() -> int:
         print(f"source is {frames} frames, shorter than the window -- using all of it")
     else:
         # Standard deviation of eye openness across the window. Blinks are the only thing that
-        # moves this much, so the window with the most variance is the one with the most blinking.
+        # moves this much, so the window with the most variance is the one with the most
+        # blinking.
         scores = [
-            (float(np.std(openness[i : i + span])), i) for i in range(0, frames - span, FPS // 2)
+            (float(np.std(openness[i : i + span])), i)
+            for i in range(0, frames - span, FPS // 2)
         ]
         score, best_start = max(scores)
         worst = min(scores)[0]
@@ -126,7 +129,7 @@ def main() -> int:
         )
 
     if score < 0.005:
-        # Stated rather than silently accepted. The clip will still work; the personas built from
+        # Stated rather than silently accepted. The clip still works; the personas built from
         # it will not blink, which is the one thing this whole path exists to add.
         print(
             "!! the best window has almost no eye motion, so animated faces will not blink. "
