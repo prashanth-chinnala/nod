@@ -64,6 +64,16 @@ class WarmupReport:
     """Why nothing was warmed. Empty when warming ran."""
 
     models_ms: int | None = None
+    first_render_ms: int | None = None
+    """
+    How long one throwaway frame took, which is the cost a candidate would otherwise have paid.
+
+    Reported rather than merely spent, because it is the answer to "the first turn is slower
+    than the rest". Expect it to be far above the steady-state per-frame figure: it includes
+    cuDNN choosing convolution algorithms, the landmark detector's first inference, and every
+    lazy allocation in the stack. On a T4 the steady state is 78 ms and this was measured in
+    seconds.
+    """
     faces_warmed: list[str] = field(default_factory=list)
     faces_failed: list[str] = field(default_factory=list)
     total_ms: int | None = None
@@ -75,6 +85,7 @@ class WarmupReport:
         return {
             "warm": not self.error,
             "models_ms": self.models_ms,
+            "first_render_ms": self.first_render_ms,
             "faces_warmed": self.faces_warmed,
             "faces_failed": self.faces_failed,
             "total_ms": self.total_ms,
@@ -156,22 +167,67 @@ def _warm_blocking() -> WarmupReport:
         print(f"warmup: models loaded in {result.models_ms} ms", flush=True)
 
     limit = int(os.environ.get("AVATAR_IDENTITY_CACHE", 2))
+    warmed: list[object] = []
     for face_id, path in _references_to_warm(limit):
         mark = time.perf_counter()
         try:
-            renderer.prepare_identity(path)
+            identity = renderer.prepare_identity(path)
         except Exception as exc:
             result.faces_failed.append(f"{face_id}: {type(exc).__name__}: {exc}")
             print(f"warmup: {face_id} FAILED: {type(exc).__name__}: {exc}", flush=True)
             continue
         result.faces_warmed.append(face_id)
+        warmed.append(identity)
         print(
             f"warmup: {face_id} prepared in {round((time.perf_counter() - mark) * 1000)} ms",
             flush=True,
         )
 
+    if warmed:
+        _warm_one_frame(renderer, warmed[0], result)
+
     result.total_ms = round((time.perf_counter() - started) * 1000)
     return result
+
+
+def _warm_one_frame(renderer: object, identity: object, result: WarmupReport) -> None:
+    """
+    Render one throwaway frame, so a candidate does not pay for the first one.
+
+    **Why loading the weights was not enough.** Measured live after the model cache was made
+    process-wide: the second turn of a session had its first frame 1.4 s behind the audio, and
+    the *first* turn 6.9 s behind. The difference is everything that happens lazily on a first
+    forward pass -- cuDNN selecting convolution algorithms for these tensor shapes, the landmark
+    detector's first inference, the whisper feature extractor's first call, and each allocator
+    arena being created. None of it is triggered by `load()`, which only puts weights on the
+    device, and none of it by `prepare_identity`, which does not run the U-Net at all.
+
+    Silence is the right driver: this exists to make the code paths hot, and the cost of a
+    forward pass is a function of tensor shapes rather than of what the audio says.
+
+    Never raises. A warm-up that cannot render is not a reason to refuse to serve -- the same
+    session would then fail loudly for the candidate instead, which is worse -- so the failure
+    is recorded and startup continues.
+    """
+    render = getattr(renderer, "render", None)
+    prepared = getattr(identity, "prepared", identity)
+    if not callable(render):
+        return
+
+    mark = time.perf_counter()
+    try:
+        # 640 ms of 16 kHz mono silence: one render window, so the batching is exercised too.
+        render(prepared, b"\x00\x00" * 10_240, start_frame=0, count=1)
+    except Exception as exc:
+        result.faces_failed.append(f"first render: {type(exc).__name__}: {exc}")
+        print(f"warmup: first render FAILED: {type(exc).__name__}: {exc}", flush=True)
+        return
+    result.first_render_ms = round((time.perf_counter() - mark) * 1000)
+    print(
+        f"warmup: first frame rendered in {result.first_render_ms} ms "
+        "(the cost the first candidate would otherwise have paid)",
+        flush=True,
+    )
 
 
 async def warm() -> None:

@@ -183,3 +183,85 @@ def test_loaded_files_reports_names_only(tmp_path: Path) -> None:
 
     assert reported == [str(tmp_path / ".env.development")]
     assert not any("hunter2" in entry for entry in reported)
+
+
+def test_warmup_renders_a_frame_so_the_first_candidate_does_not(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Loading the weights is not enough; the first forward pass has its own cost.
+
+    Measured live after the model cache became process-wide: turn two's first frame was 1.4 s
+    behind its audio and turn one's was 6.9 s behind. cuDNN algorithm selection, the landmark
+    detector's first inference and every lazy allocation happen on a first render, and neither
+    `load()` nor `prepare_identity` triggers any of it.
+    """
+    from avatar import warmup
+
+    calls: list[dict[str, object]] = []
+
+    class Renderer:
+        def load(self) -> None:
+            return None
+
+        def prepare_identity(self, path: str) -> object:
+            return {"prepared": path}
+
+        def render(
+            self, prepared: object, pcm: bytes, *, start_frame: int, count: int
+        ) -> list[bytes]:
+            calls.append({"prepared": prepared, "pcm": len(pcm), "count": count})
+            return [b"frame"]
+
+    # Patched at its source, not on `warmup`: `_warm_blocking` imports `build` inside the
+    # function, so a module attribute on `warmup` is never consulted.
+    import avatar.renderers
+
+    monkeypatch.setattr(avatar.renderers, "build", lambda config: Renderer())
+    monkeypatch.setattr(warmup, "_references_to_warm", lambda limit: [("face_1", "a.mp4")])
+    monkeypatch.setenv("AVATAR_RENDERER", "musetalk")
+
+    report = warmup._warm_blocking()
+
+    assert len(calls) == 1, "warmup did not render a frame"
+    assert calls[0]["pcm"] == 20_480, "one 640 ms window of 16 kHz mono silence"
+    assert report.first_render_ms is not None
+    assert report.faces_warmed == ["face_1"]
+
+
+def test_a_warmup_render_that_fails_does_not_stop_the_server(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Recorded and reported, never raised.
+
+    Refusing to serve because a throwaway frame failed would turn a slow first turn into no
+    interview at all -- and the same failure would surface for the candidate anyway, with the
+    reason in front of them instead of in the operator's log.
+    """
+    from avatar import warmup
+
+    class Renderer:
+        def load(self) -> None:
+            return None
+
+        def prepare_identity(self, path: str) -> object:
+            return {"prepared": path}
+
+        def render(self, *args: object, **kwargs: object) -> list[bytes]:
+            raise RuntimeError("no CUDA context")
+
+    # Patched at its source, not on `warmup`: `_warm_blocking` imports `build` inside the
+    # function, so a module attribute on `warmup` is never consulted.
+    import avatar.renderers
+
+    monkeypatch.setattr(avatar.renderers, "build", lambda config: Renderer())
+    monkeypatch.setattr(warmup, "_references_to_warm", lambda limit: [("face_1", "a.mp4")])
+    monkeypatch.setenv("AVATAR_RENDERER", "musetalk")
+
+    report = warmup._warm_blocking()
+
+    assert report.first_render_ms is None
+    assert any("first render" in reason for reason in report.faces_failed)
+    assert report.faces_warmed == ["face_1"], "the face still warmed"
+    assert not report.error, "a failed test frame is not a warmup error"
