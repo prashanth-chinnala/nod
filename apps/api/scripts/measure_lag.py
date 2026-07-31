@@ -1,0 +1,298 @@
+#!/usr/bin/env python3
+"""
+Measure how far the video trails the audio in a live turn, and where the gap comes from.
+
+**Why this script exists rather than another reading of the throughput benchmark.**
+`bench_renderer.py` answers "how fast can this card turn audio into frames" and it now answers
+78.4 ms/frame. That is not the number a candidate experiences. What they experience is a mouth
+still moving after the sentence finished, and that has three separate causes the throughput
+figure cannot separate:
+
+  1. **Start-up.** The first frame of a turn cannot exist before one render window of audio
+     does, so a window is a floor on how late video begins.
+  2. **Throughput.** If the renderer produces fewer frames per second than the mixer emits, the
+     gap grows for the whole turn instead of staying constant.
+  3. **Drain.** When the audio ends, frames already queued still have to go somewhere. `offer()`
+     discards those rather than showing them, which is correct -- a mouth moving in silence is
+     worse than no mouth -- but the count is a direct measure of how much video was behind.
+
+Two earlier attempts at this failed on harness plumbing, so this one deliberately reuses
+`smoke_session.py`'s socket, mic and observer rather than reimplementing them. The only thing
+added is a clock on each arrival.
+
+**What it reports and what it cannot.** Arrival timestamps are taken in this process, so they
+include the socket but not a browser's decode or compositor. That makes every figure a lower
+bound on what a person sees, which is the safe direction for a number used to decide whether to
+spend money on a GPU. `first_paint` is acknowledged the way the browser does it, so the server's
+own `avatar_first_frame` is reported alongside and the two can be compared.
+
+    uvicorn avatar.server:app &
+    python scripts/measure_lag.py --turns 3 --json lag.json
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import statistics
+import sys
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+try:
+    import websockets
+except ModuleNotFoundError:  # pragma: no cover - operator error, not a code path
+    sys.exit("needs the server extras: pip install -e '.[dev,server]'")
+
+from smoke_session import (  # noqa: E402  (path is set above)
+    MIC_SILENCE_FRAMES,
+    MIC_SPEECH_FRAMES,
+    TURN_TIMEOUT_SECONDS,
+    URL,
+    speak_into_the_mic,
+)
+
+from avatar.contracts import FRAME_INTERVAL_MS, TARGET_FPS  # noqa: E402
+from avatar.transport.websocket import Kind, decode  # noqa: E402
+
+
+@dataclass
+class Arrival:
+    """One artifact off the wire, with the moment it got here."""
+
+    at: float
+    epoch: int
+    pts_ms: int
+    audio_ms: float = 0.0
+
+
+@dataclass
+class Turn:
+    """Everything observed for one epoch."""
+
+    epoch: int
+    video: list[Arrival] = field(default_factory=list)
+    audio: list[Arrival] = field(default_factory=list)
+    first_frame_ms: float | None = None
+    discarded: int = 0
+
+    def report(self) -> dict[str, object]:
+        """
+        The three causes, separated.
+
+        `trailing_gap_ms` is the headline: how long video kept arriving after the last audio
+        did. Positive means the candidate saw a mouth moving in silence, or would have if those
+        frames were not discarded. Negative means video finished first, the healthy direction.
+        """
+        if not self.video or not self.audio:
+            return {"epoch": self.epoch, "usable": False}
+
+        audio_first, audio_last = self.audio[0].at, self.audio[-1].at
+        video_first, video_last = self.video[0].at, self.video[-1].at
+        spoken_ms = sum(a.audio_ms for a in self.audio)
+        wall_ms = (video_last - video_first) * 1000
+
+        return {
+            "epoch": self.epoch,
+            "usable": True,
+            "audio_chunks": len(self.audio),
+            "video_frames": len(self.video),
+            "frames_discarded": self.discarded,
+            "spoken_ms": round(spoken_ms),
+            # Video that arrived after the audio stopped. The number the whole script is for.
+            "trailing_gap_ms": round((video_last - audio_last) * 1000),
+            # Cause 1: how much later than the first audio the first frame appeared.
+            "video_start_lag_ms": round((video_first - audio_first) * 1000),
+            # Cause 2: frames per second actually delivered across the turn, against the target.
+            # A ratio below 1.0 means the gap grew for the whole turn rather than staying put.
+            "delivered_fps": round(len(self.video) / max(wall_ms / 1000, 1e-9), 1),
+            "fps_target": TARGET_FPS,
+            "server_first_frame_ms": self.first_frame_ms,
+            # Frames needed to cover the speech, against frames that arrived. A shortfall is
+            # video the mixer had to repeat or the turn simply never got.
+            "frames_for_the_speech": round(spoken_ms / FRAME_INTERVAL_MS),
+        }
+
+
+async def observe(socket: object, turns: dict[int, Turn], stop: asyncio.Event) -> None:
+    """
+    Consume everything the server sends, stamping arrivals.
+
+    Deliberately a near-copy of `smoke_session.observe` rather than an import: that one exists
+    to assert, and bolting a second purpose onto it would make the assertions harder to read.
+    The one behaviour that must not diverge is the acknowledgements -- without `audio_played`
+    the server has no evidence anything was heard, and without `first_paint` there is no
+    `avatar_first_frame`.
+    """
+    sample_rate = 16_000
+    while not stop.is_set():
+        try:
+            message = await asyncio.wait_for(socket.recv(), timeout=0.25)  # type: ignore[attr-defined]
+        except TimeoutError:
+            continue
+        except websockets.exceptions.ConnectionClosed:
+            return
+
+        now = time.monotonic()
+        if isinstance(message, bytes):
+            envelope = decode(message)
+            turn = turns.setdefault(envelope.epoch, Turn(epoch=envelope.epoch))
+            if envelope.kind is Kind.VIDEO:
+                turn.video.append(Arrival(at=now, epoch=envelope.epoch, pts_ms=envelope.pts_ms))
+                if len(turn.video) == 1 and envelope.epoch:
+                    await socket.send(  # type: ignore[attr-defined]
+                        json.dumps({"type": "first_paint", "epoch": envelope.epoch})
+                    )
+            else:
+                chunk_ms = len(envelope.payload) / 2 / sample_rate * 1000
+                turn.audio.append(
+                    Arrival(
+                        at=now,
+                        epoch=envelope.epoch,
+                        pts_ms=envelope.pts_ms,
+                        audio_ms=chunk_ms,
+                    )
+                )
+                await socket.send(  # type: ignore[attr-defined]
+                    json.dumps(
+                        {
+                            "type": "audio_played",
+                            "ms": round(chunk_ms),
+                            "epoch": envelope.epoch,
+                        }
+                    )
+                )
+            continue
+
+        payload = json.loads(message)
+        kind = payload.get("type")
+        if kind == "hello":
+            sample_rate = int(payload.get("sample_rate", 16_000))
+        elif kind == "stats":
+            # Session-wide rather than per-turn, so it is attributed to whichever turn is open.
+            # Recorded as a delta so the last turn does not inherit every earlier discard.
+            total = int(payload["frames_discarded"])
+            already = sum(t.discarded for t in turns.values())
+            if turns and total > already:
+                latest = turns[max(turns)]
+                latest.discarded += total - already
+        elif (
+            kind == "event"
+            and payload.get("event") == "latency"
+            and str(payload["stage"]) == "avatar_first_frame"
+        ):
+            epoch = int(payload.get("epoch", 0))
+            turns.setdefault(epoch, Turn(epoch=epoch)).first_frame_ms = float(payload["ms"])
+
+
+async def wait_for_quiet(turns: dict[int, Turn], *, settle: float, timeout: float) -> None:
+    """
+    Wait until nothing has arrived for `settle` seconds.
+
+    A fixed sleep is what broke the earlier attempts: sized against the placeholder stack it
+    fired before any audio existed, and sized against a slow one it padded every measurement.
+    This waits for the turn to actually go quiet, which is also the event being measured.
+    """
+    deadline = time.monotonic() + timeout
+    last_seen = 0.0
+    while time.monotonic() < deadline:
+        arrivals = [a.at for turn in turns.values() for a in (*turn.video, *turn.audio)]
+        newest = max(arrivals, default=0.0)
+        if newest and newest == last_seen and time.monotonic() - newest > settle:
+            return
+        last_seen = newest
+        await asyncio.sleep(0.1)
+
+
+async def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--turns", type=int, default=3, help="how many turns to speak")
+    parser.add_argument("--url", default=URL)
+    parser.add_argument("--json", help="also write the full result here")
+    parser.add_argument(
+        "--settle",
+        type=float,
+        default=2.0,
+        help="seconds of silence that count as a turn being over",
+    )
+    args = parser.parse_args()
+
+    turns: dict[int, Turn] = {}
+    stop = asyncio.Event()
+
+    async with websockets.connect(args.url, max_size=None) as socket:
+        await socket.send(json.dumps({"type": "start", "reference": "reference.mp4"}))
+        watcher = asyncio.create_task(observe(socket, turns, stop))
+        try:
+            for index in range(args.turns):
+                print(f"turn {index + 1} of {args.turns}: speaking...", flush=True)
+                await speak_into_the_mic(socket, MIC_SPEECH_FRAMES, MIC_SILENCE_FRAMES)
+                await wait_for_quiet(
+                    turns, settle=args.settle, timeout=TURN_TIMEOUT_SECONDS
+                )
+        finally:
+            stop.set()
+            await watcher
+
+    # Epoch 0 is the idle loop, which belongs to no turn and would drag every average toward
+    # whatever the standing-by animation does.
+    measured = [turn.report() for epoch, turn in sorted(turns.items()) if epoch]
+    usable = [r for r in measured if r["usable"]]
+
+    print(f"\n=== {len(usable)} turn(s) measured, target {TARGET_FPS} fps ===\n")
+    header = (
+        f"{'epoch':>6} {'spoken':>8} {'frames':>7} {'need':>6} {'fps':>6} "
+        f"{'start lag':>10} {'TRAILING':>10} {'discarded':>10}"
+    )
+    print(header)
+    for r in usable:
+        print(
+            f"{r['epoch']:>6} {r['spoken_ms']:>7}ms {r['video_frames']:>7} "
+            f"{r['frames_for_the_speech']:>6} {r['delivered_fps']:>6} "
+            f"{r['video_start_lag_ms']:>9}ms {r['trailing_gap_ms']:>9}ms "
+            f"{r['frames_discarded']:>10}"
+        )
+
+    result: dict[str, object] = {"turns": measured, "fps_target": TARGET_FPS}
+    if usable:
+        trailing = [float(r["trailing_gap_ms"]) for r in usable]  # type: ignore[arg-type]
+        fps = [float(r["delivered_fps"]) for r in usable]  # type: ignore[arg-type]
+        start = [float(r["video_start_lag_ms"]) for r in usable]  # type: ignore[arg-type]
+        result["summary"] = {
+            "trailing_gap_ms_median": round(statistics.median(trailing)),
+            "trailing_gap_ms_worst": round(max(trailing)),
+            "delivered_fps_median": round(statistics.median(fps), 1),
+            "video_start_lag_ms_median": round(statistics.median(start)),
+        }
+        summary = result["summary"]
+        assert isinstance(summary, dict)
+        print(
+            f"\nmedian trailing gap {summary['trailing_gap_ms_median']} ms "
+            f"(worst {summary['trailing_gap_ms_worst']}), "
+            f"delivered {summary['delivered_fps_median']} fps against {TARGET_FPS}, "
+            f"video started {summary['video_start_lag_ms_median']} ms after audio"
+        )
+        # Stated as a verdict, because "1900 ms" means nothing without a threshold. Lip-sync
+        # tolerance in broadcast is about 100 ms of video lag before it is noticeable.
+        gap = float(summary["trailing_gap_ms_median"])
+        if gap <= 100:
+            print("      -> within the ~100 ms a viewer does not notice.")
+        else:
+            print(f"      -> {gap / 100:.0f}x the ~100 ms a viewer does not notice.")
+    else:
+        print("!! no usable turn: no turn produced both audio and video", file=sys.stderr)
+
+    if args.json:
+        Path(args.json).write_text(json.dumps(result, indent=2))
+        print(f"\nwrote {args.json}")
+    return 0 if usable else 1
+
+
+if __name__ == "__main__":
+    sys.exit(asyncio.run(main()))
