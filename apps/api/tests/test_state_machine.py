@@ -175,6 +175,34 @@ async def test_idle_reprompt_fires_after_the_timeout(
     await settle(orch)
 
 
+async def test_the_reprompt_announces_itself_so_the_server_can_record_it(
+    build_session: Callable[..., SessionOrchestrator], clock: FakeClock
+) -> None:
+    """
+    The re-prompt must emit `heard`, because that event is what opens a turn record.
+
+    The server builds turns from telemetry rather than from explicit writes, so a generation
+    with no `heard` in front of it is spoken to the candidate and stored nowhere -- which is
+    exactly what happened to every silence re-prompt until this assertion existed. Empty text
+    with `silent=True`: nothing was said, and the marker that goes into conversation history
+    must not reach the transcript the scorer quotes from.
+    """
+    events: list[dict[str, object]] = []
+    orch = build_session(idle_reprompt_seconds=12.0)
+    orch._telemetry.subscribe(events.append)
+    await orch.start("reference.mp4")
+
+    clock.advance(13.0)
+    await orch.on_idle_tick()
+
+    announcements = [e for e in events if e.get("event") == "heard"]
+    assert len(announcements) == 1, events
+    assert announcements[0]["silent"] is True
+    assert announcements[0]["text"] == ""
+    assert announcements[0]["transcribed"] is False
+    await settle(orch)
+
+
 async def test_idle_reprompt_does_not_fire_before_the_timeout(
     build_session: Callable[..., SessionOrchestrator], clock: FakeClock
 ) -> None:

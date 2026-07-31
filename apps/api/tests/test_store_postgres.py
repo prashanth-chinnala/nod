@@ -393,6 +393,7 @@ TURN: dict[str, Any] = {
     "first_frame_ms": 4136.0,
     "perceived_total_ms": 4161.0,
     "interrupted": False,
+    "silent": False,
 }
 
 VOLATILE = ("id", "created_at", "updated_at")

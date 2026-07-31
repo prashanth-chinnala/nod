@@ -43,7 +43,7 @@ another.
 its target does not degrade gracefully; it fails completely. The mixer drops any frame that
 misses its slot, so at 3.3 fps against a 25fps clock every frame is late and every frame is
 discarded -- measured on an M1 Pro, three turns rendered 169 frames and delivered zero, and the
-candidate watched the placeholder while the interviewer talked. A Tesla T4 measures 8.7 fps,
+candidate watched the placeholder while the interviewer talked. A Tesla T4 measures 12.8 fps,
 which fails the same way for the same reason.
 
 So on hardware that cannot hold 25fps, lowering this is the difference between choppy video and

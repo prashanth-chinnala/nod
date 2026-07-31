@@ -642,6 +642,7 @@ class BrowserSession:
                     "heard": str(record.get("text", "")),
                     "said": "",
                     "transcribed": bool(record.get("transcribed")),
+                    "silent": bool(record.get("silent")),
                     "interrupted": False,
                     "llm_ttft_ms": None,
                     "tts_first_audio_ms": None,

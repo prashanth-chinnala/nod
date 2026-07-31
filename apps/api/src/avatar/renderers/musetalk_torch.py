@@ -15,7 +15,7 @@ What it does *not* do is reach 25fps on either device measured so far. Both figu
 `scripts/bench_renderer.py` output, float16, best batch size for that device:
 
     M1 Pro, 16 GB, MPS      301 ms/frame    3.3 fps    7.5x the 40 ms budget
-    Tesla T4, 15 GB, CUDA   114.7 ms/frame  8.7 fps    2.9x the budget
+    Tesla T4, 15 GB, CUDA    78.4 ms/frame  12.8 fps   2.0x the budget
 
 A T4 is 2.6x the Mac and still short. The per-stage split says where the remaining time goes,
 and it is not where it was on MPS: the U-Net is down to 12.4 ms/frame at batch 16, while VAE
@@ -88,7 +88,7 @@ Measured, ms/frame, median of 4 runs after warm-up:
         4              305                  128.3
         6              413                    ---
         8              355                  126.0
-       16              ---                  114.7
+       16              ---                  121.6
        32             1565                    ---
 
 MPS is flat to 4 then degrades badly -- 32 is 5x worse than 3 -- which is memory pressure on
@@ -625,9 +625,10 @@ class TorchMuseTalkBackend:
         The GPU half: audio embedding -> U-Net -> VAE decode. Returns raw 256x256 faces.
 
         Split from the blending below so the two can overlap. They are different hardware: this
-        is 71.2 ms/frame of GPU (12.4 U-Net, 58.8 VAE) and blending plus JPEG is 43.5 ms/frame
-        CPU on 4 vCPU. Run in sequence they sum to 114.7; run concurrently the CPU half hides
-        behind the next batch's GPU work and the frame costs what the GPU costs.
+        is 70.1 ms/frame of GPU (12.3 U-Net, 57.8 VAE) and blending plus JPEG is 51.5 ms/frame
+        CPU on 4 vCPU. Run in sequence they measured 124.7 ms/frame; run concurrently, 78.4 --
+        so the overlap recovers all but ~8 ms of the CPU half. 1.59x, for no change to the
+        model, and it leaves VAE decode as 74% of what remains.
         """
         import torch
 

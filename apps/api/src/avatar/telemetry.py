@@ -180,7 +180,9 @@ class Telemetry:
         self.increment("stale_dropped", kind=kind)
         self._emit("stale_dropped", kind=kind, stale_epoch=stale_epoch, current_epoch=current)
 
-    def heard(self, text: str, *, epoch: int, transcribed: bool) -> None:
+    def heard(
+        self, text: str, *, epoch: int, transcribed: bool, silent: bool = False
+    ) -> None:
         """
         What the transcriber produced for a turn, and whether it produced anything.
 
@@ -194,9 +196,18 @@ class Telemetry:
         `transcribed=False` marks the fallback path, where a turn is known to have
         contained speech but no text came back. That case must be loud, because the
         conversation continues plausibly without it and nothing else reveals the gap.
+
+        `silent=True` is the different case: no speech at all, and the silence watchdog
+        opened this turn instead of the candidate. It has to be a separate flag rather than
+        an empty `text`, because an empty `text` already means the fallback path above --
+        and a quiet candidate must not read as broken transcription.
         """
-        self.increment("heard", transcribed=str(transcribed).lower())
-        self._emit("heard", text=text, epoch=epoch, transcribed=transcribed)
+        self.increment(
+            "heard", transcribed=str(transcribed).lower(), silent=str(silent).lower()
+        )
+        self._emit(
+            "heard", text=text, epoch=epoch, transcribed=transcribed, silent=silent
+        )
 
     def said(self, sentence: str, *, epoch: int) -> None:
         """

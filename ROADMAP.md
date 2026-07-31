@@ -77,31 +77,44 @@ whether the headroom exists on one card.
 only a stale epoch, so these are frames still queued when the turn's audio ended. Showing them would
 animate a mouth in silence.
 
-The defect is the lag. The renderer starts ~3 s late and has ~8% headroom (8.7 fps against an 8 fps
-target), so it cannot catch up inside a turn. Candidates: more headroom via a lower `AVATAR_FPS`, or
-less first-frame latency via a shorter render window. **Neither is measured** — two attempts failed
-on harness plumbing, and the confounded figures I do have (81 at 8 fps, 46 at 6 fps, both with the
-voice sidecar competing) are not worth acting on. Measure this properly first.
+The defect is the lag, and **the analysis under it has changed** — it used to read "~8% headroom
+(8.7 fps against an 8 fps target), so it cannot catch up inside a turn." At the measured 12.8 fps
+the headroom against an 8 fps target is **60%**, so a renderer that starts late now *can* catch up,
+and the question is no longer whether but how fast. Two contributors were also fixed on the way:
+`render()` was over-delivering up to `batch_size - 1` frames past what the window asked for (15
+surplus frames at batch 16), and the CPU half of a frame is no longer on the critical path.
 
-### 3. The 2.9× to real time
-114.7 ms/frame against 40 ms. The split says where to look, and it is not the U-Net:
+**Still not measured live.** The throughput figures are §2 of `MEASUREMENTS.md`; what a candidate
+perceives is a different measurement and two earlier attempts at it failed on harness plumbing. The
+old figures (81 discards at 8 fps, 46 at 6 fps) predate all three changes and are also confounded by
+the voice sidecar competing for the card, so they are not a baseline to compare against. This needs
+one clean live run, not a tuning pass.
 
-| stage | ms/frame |
-|---|---|
-| VAE decode | 58.8 |
-| blend + JPEG (CPU, 4 vCPU) | 43.5 |
-| U-Net | 12.4 |
+### 4. The 2.0× to real time
+78.4 ms/frame against 40 ms, down from 124.7. **The CPU half is done** — the item that used to sit
+here read "get blending off the critical path — it is CPU work on four cores that could run
+concurrently with the next batch", and that is now what `render()` does, measured at 1.59×.
 
-So: a faster decode, and get blending off the critical path — it is CPU work on four cores that
-could run concurrently with the next batch. A bigger GPU alone would only shrink the smallest term.
+What is left is one term:
 
-### ~~4. Generative enrollment~~ — done
+| stage | hardware | ms/frame |
+|---|---|---|
+| **VAE decode** | GPU | **57.8** |
+| U-Net | GPU | 12.3 |
+| blend + JPEG | CPU | 51.5, now hidden behind the GPU |
+
+74% of a frame is one `AutoencoderKL.decode` at 256×256, and there is no CPU work left to hide
+behind it. The honest options are a faster decoder (TAESD-class tiny decoder, TensorRT, or fp8 on a
+card that supports it — none measured here), or a bigger card. Unlike before, a bigger GPU would now
+shrink the term that actually dominates.
+
+### ~~5. Generative enrollment~~ — done
 A photograph uploaded with `animate=true` is animated by LivePortrait before enrollment: 500 frames,
 20.0 s, standing-by motion 0.40 mean / 0.69 peak against 0.00 for the same still. Enrollment is a
 background job now — `POST /prepare` answers 202 in 0.018 s, claims the row with a timestamp, and
 stale rows are reaped at startup.
 
-### 4b. The original ask, for reference
+#### The original ask, for reference
 A still reference holds one pose forever; that is what "repaint the mouth of the frames you were
 given" means with one frame. The fix is offline: generate a reference clip with real motion at
 enrollment, then lip-sync it live. Candidates and the open question — identity preservation — are in
@@ -110,12 +123,19 @@ enrollment, then lip-sync it live. Candidates and the open question — identity
 **Spike before building.** MuseTalk was written entirely against its README and every signature was
 wrong; a batch size derived on MPS was backwards on CUDA. The same discipline applies here.
 
-### 5. A real job queue
-Enrollment is synchronous HTTP taking minutes, and nothing reaps a row a crash left in `preparing`.
-That is tolerable now and it is the first hard blocker for item 4. Redis is already running for
-egress.
+### ~~6. A real job queue~~ — done, and deliberately not Redis
+Enrollment used to be synchronous HTTP taking minutes, and nothing reaped a row a crash left in
+`preparing` — which made the face permanently unenrollable, because `PREPARABLE` will not accept
+that status again. `avatar/jobs.py` closes all three failure modes: the request returns 202, the row
+is claimed with a timestamp, and startup fails anything a dead process left behind.
 
-### 6. Authentication
+Redis is already running for egress and a queue on it would have been the conventional answer. It
+would also have been the wrong one at this size: one API process and one GPU means a distributed
+broker buys nothing but a second failure mode. What the problem needed was an immediate response,
+pollable status, and crash recovery — three small things. The `status` field is the contract a real
+queue would preserve, so this stays a one-line swap the moment a second process or a GPU pool exists.
+
+### 7. Authentication
 See [SECURITY.md](SECURITY.md). There is none, anywhere, by documented choice — and that choice was
 made when references were vendor demo assets. A store of real people's faces and voices is
 biometric data, and this stops being deferrable the moment the first real face is uploaded.

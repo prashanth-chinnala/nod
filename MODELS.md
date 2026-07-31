@@ -77,11 +77,13 @@ candidate. Designing toward it is reasonable; building on it is not.
 
 ### The one claim we cannot reproduce
 
-MuseTalk's paper reports **30+ fps at 256×256**. We measure **8.7 fps** on a T4 (batch 16,
+MuseTalk's paper reports **30+ fps at 256×256**. We measure **12.8 fps** on a T4 (batch 16,
 float16). That gap is not a defect in either place, and the per-stage split explains most of it:
 
 - The U-Net — the part the paper is about — is **12.4 ms/frame**, comfortably real time.
-- **VAE decode is 58.8 ms** and **CPU blending plus JPEG encode is 43.5 ms**, together 89% of our
+- **VAE decode is 57.8 ms** and **CPU blending plus JPEG encode is 51.5 ms**. The second of those
+  two is now overlapped with the GPU and largely free; the first is 74% of what a frame costs and
+  is the whole remaining gap. Together they were 89% of our
   frame budget. A paper measuring the model does not include our blending and encoding, and a T4
   is not the card those figures come from.
 

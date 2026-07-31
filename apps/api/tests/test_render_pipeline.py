@@ -2,8 +2,9 @@
 The two-stage render pipeline: the GPU half and the CPU half overlap, and order survives.
 
 `render()` used to decode a batch and then blend it, in sequence, on one thread. Measured on a
-T4 that is 71.2 ms of GPU followed by 43.5 ms of CPU per frame, and the CPU half is the GPU
-sitting idle. It now runs batch N's blending on a worker thread while batch N+1 decodes.
+T4 that is 70.1 ms of GPU followed by 51.5 ms of CPU per frame, and the CPU half is the GPU
+sitting idle. It now runs batch N's blending on a worker thread while batch N+1 decodes, which
+measured 124.7 -> 78.4 ms/frame: 1.59x, for no change to the model.
 
 **Why this file exists.** Overlapping introduces exactly one new way to be wrong, and it is a
 bad one: frames leaving in the wrong order. That is not a crash, it is a mouth that plays back

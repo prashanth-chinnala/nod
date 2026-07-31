@@ -7,7 +7,7 @@ speaks in a real voice, and is scored afterwards against a rubric.
 Self-hosted. The renderer, the store and the console all run on hardware you control.
 
 **Current state:** working end to end on an NVIDIA T4 with a real face, a real voice and real
-transcription. Not yet real time — measured at 8.7 fps against a 25 fps target, and this repository
+transcription. Not yet real time — measured at 12.8 fps against a 25 fps target, and this repository
 says so rather than rounding up. Every figure in [MEASUREMENTS.md](MEASUREMENTS.md) came from a run;
 where a number does not exist, that file says so.
 
@@ -118,8 +118,9 @@ That property is enforced rather than hoped for. `tests/test_boundaries.py` fail
 
 ## Two things to know before judging it
 
-**It is not real time yet.** 114.7 ms/frame on a T4 against a 40 ms budget. The per-stage split says
-where that goes — VAE decode 58.8 ms, CPU blending and JPEG 43.5 ms, the U-Net only 12.4 ms — so the
+**It is not real time yet.** 78.4 ms/frame on a T4 against a 40 ms budget, down from 124.7 once the
+CPU half of a frame was overlapped with the GPU half. The per-stage split says where the rest goes —
+VAE decode 57.8 ms, and the U-Net only 12.3 ms — so the
 next work is a faster decode and moving blending off the critical path, not a bigger GPU. MuseTalk's
 paper reports 30+ fps; that is a different card, and it does not include our blending and encoding.
 We quote our own number with our own hardware attached.

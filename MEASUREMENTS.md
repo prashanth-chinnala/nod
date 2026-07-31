@@ -37,10 +37,25 @@ Best batch size per device, float16, median of 4 runs after 2 warm-up runs.
 | Device | ms/frame | fps | vs 40 ms budget (25fps) |
 |---|---|---|---|
 | M1 Pro / MPS | 301 | 3.3 | 7.5× over |
-| Tesla T4 / CUDA | 114.7 | 8.7 | 2.9× over |
+| Tesla T4 / CUDA, stages in sequence | 124.7 | 8.0 | 3.1× over |
+| **Tesla T4 / CUDA, CPU overlapped with GPU** | **78.4** | **12.8** | **2.0× over** |
 
-**Neither device reaches 25fps.** A T4 is 2.6× the Mac and still 2.9× short. MuseTalk's
+**Neither device reaches 25fps.** A T4 is 2.6× the Mac and still 2.0× short. MuseTalk's
 published realtime figures are not from a T4 and do not reproduce on one.
+
+**The overlap is the largest single win measured so far: 1.59×, for no change to the model.**
+A frame is GPU work (U-Net, VAE decode) followed by CPU work (resize, blend, JPEG), and running
+them in sequence left the GPU idle for 38% of every frame. `render()` now submits batch N's CPU
+half to a worker thread while batch N+1 occupies the GPU. Both figures above are the same
+`render()` method on byte-identical input, measured in the same process minutes apart — §2.2's
+stage table is what predicted the win, and 78.4 ms against a GPU-only floor of ~70 ms is how
+much of the CPU half is now genuinely hidden rather than merely moved.
+
+Two consequences worth stating plainly:
+
+- **The remaining gap is almost entirely VAE decode** — 57.8 of 78.4 ms, 74% of the frame. There
+  is no more CPU work left to hide behind it.
+- **The stage table no longer sums to the total**, and that is the point rather than an error.
 
 ### 2.1 Batch size — the two curves disagree
 
@@ -54,7 +69,7 @@ ms/frame. Upstream's default is 8, which is wrong on both.
 | 4 | 305 | 128.3 |
 | 6 | 413 | — |
 | 8 | 355 | 126.0 |
-| 16 | — | **114.7** |
+| 16 | — | **121.6** |
 | 32 | 1565 | out of memory |
 
 MPS is flat to 4 and then collapses — 32 is 5× worse than 3 — which is memory pressure on
@@ -66,22 +81,30 @@ It is now a per-device table.
 
 ### 2.2 Where the time goes — Tesla T4, batch 16
 
-| stage | ms/frame | share |
-|---|---|---|
-| positional encoding | 0.0 | ~0% |
-| U-Net forward | 12.4 | 11% |
-| **VAE decode** | **58.8** | **51%** |
-| blend into frame (CPU) | 26.2 | 23% |
-| JPEG encode (CPU) | 17.3 | 15% |
-| total | 114.7 | |
+Stages timed in isolation, so this is where the work is — not what a frame now costs.
+
+| stage | hardware | ms/frame | share of the sum |
+|---|---|---|---|
+| positional encoding | GPU | 0.0 | ~0% |
+| U-Net forward | GPU | 12.3 | 10% |
+| **VAE decode** | **GPU** | **57.8** | **48%** |
+| blend into frame | CPU | 27.8 | 23% |
+| JPEG encode | CPU | 23.7 | 19% |
+| sum of stages | | 121.6 | |
+| **a real frame, overlapped** | | **78.4** | |
+
+The gap between the last two rows is the CPU half hiding behind the GPU half. GPU stages total
+70.1 ms, so 78.4 means the overlap recovers all but ~8 ms of the 51.5 ms of CPU work.
 
 Two things follow, and neither was true on MPS, where the U-Net dominated at 1546 ms/frame in
 float32:
 
 - **VAE decode is the bottleneck**, and it is fixed 256×256 work — so downscaling the reference
   does not touch it. That idea was proposed and discarded for exactly this reason.
-- **blend + JPEG = 43.5 ms, 38% of the frame, and both are CPU work** on 4 vCPU. The next real
-  gains are a faster decode and getting blending off the critical path, not a bigger batch.
+- **blend + JPEG = 51.5 ms and both are CPU work** on 4 vCPU. This was the actionable finding:
+  it named "get blending off the critical path" as a real fix, and doing that returned 1.59×.
+  With it done, a faster VAE decode is the only remaining lever of that size, and a bigger batch
+  is still not one — the curve is flat past 16.
 
 ### 2.3 float16 versus float32 — M1 Pro only
 

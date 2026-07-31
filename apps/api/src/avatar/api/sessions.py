@@ -55,6 +55,7 @@ class Turn(BaseModel):
     first_frame_ms: float | None = Field(default=None, ge=0)
     perceived_total_ms: float | None = Field(default=None, ge=0)
     interrupted: bool = False
+    silent: bool = False
 
 
 class SessionCreate(BaseModel):

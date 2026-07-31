@@ -103,7 +103,7 @@ From [MEASUREMENTS.md](MEASUREMENTS.md). If what you see is far from these, some
 | Enrollment, 550-frame reference | 126 s |
 | Session start, identity already cached | **1.5 s** to first frame |
 | Session start, cold identity | 70 – 150 s |
-| Steady-state render | 114.7 ms/frame ≈ 8.7 fps |
+| Steady-state render | 78.4 ms/frame ≈ 12.8 fps |
 | Frame size at 512 px tall | 29 – 32 KB ≈ 2 Mbps at 8 fps |
 | `avatar_first_frame`, warm turn | 2.3 – 3.0 s |
 | `frames_discarded`, per turn | 33 – 79 |

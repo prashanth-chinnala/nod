@@ -205,6 +205,7 @@ _TURN_COLUMNS: tuple[str, ...] = (
     "first_frame_ms",
     "perceived_total_ms",
     "interrupted",
+    "silent",
 )
 """
 The turn columns, in the order `Turn` declares its fields.

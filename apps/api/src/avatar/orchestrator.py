@@ -301,6 +301,15 @@ class SessionOrchestrator:
         # LISTENING, and a silence re-prompt by definition happens from IDLE. The
         # earlier sketch chained the two and the re-prompt could never fire.
         self.history.append({"role": "user", "content": REPROMPT_TRANSCRIPT})
+        # Emitted before `_begin_turn`, because the server opens a new turn record on this event
+        # and everything the re-prompt then produces -- the question, its timings -- has to land
+        # inside that record rather than the previous one. Without it the re-prompt was spoken
+        # aloud and stored nowhere.
+        #
+        # Empty text with `silent=True`, not the history marker: `REPROMPT_TRANSCRIPT` exists to
+        # tell the LLM why it is being asked to speak again, and putting it in `heard` would put
+        # a sentence the candidate never said into the transcript the scorer quotes from.
+        self._telemetry.heard("", epoch=self.epoch, transcribed=False, silent=True)
         self._begin_turn()
 
     def on_audio_played(self, duration_ms: int, epoch: int) -> None:
