@@ -214,6 +214,19 @@ async def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--turns", type=int, default=3, help="how many turns to speak")
     parser.add_argument("--url", default=URL)
+    parser.add_argument(
+        "--agent",
+        help=(
+            "agent id to interview as. Required with the real renderer: without a session the "
+            "server falls back to a bundled reference that a GPU renderer has no file for, and "
+            "the socket closes mid-handshake with the reason only in the server log."
+        ),
+    )
+    parser.add_argument(
+        "--api",
+        default="http://127.0.0.1:8000",
+        help="where to create the session, if --agent is given",
+    )
     parser.add_argument("--json", help="also write the full result here")
     parser.add_argument(
         "--settle",
@@ -226,8 +239,26 @@ async def main() -> int:
     turns: dict[int, Turn] = {}
     stop = asyncio.Event()
 
-    async with websockets.connect(args.url, max_size=None) as socket:
-        await socket.send(json.dumps({"type": "start", "reference": "reference.mp4"}))
+    # A session, so the face under measurement is the one an agent actually uses. The lag
+    # depends on the reference -- a 550-frame clip and a 100-frame one are different amounts of
+    # work per window -- so measuring against a default would measure the wrong face.
+    url, start = args.url, {"type": "start", "reference": "reference.mp4"}
+    if args.agent:
+        import urllib.request
+
+        request = urllib.request.Request(
+            f"{args.api}/sessions",
+            data=json.dumps({"agent_id": args.agent}).encode(),
+            headers={"content-type": "application/json"},
+        )
+        with urllib.request.urlopen(request, timeout=30) as response:
+            session_id = json.load(response)["id"]
+        print(f"session {session_id} as {args.agent}", flush=True)
+        url = f"{args.url}?session={session_id}"
+        start = {"type": "start"}
+
+    async with websockets.connect(url, max_size=None) as socket:
+        await socket.send(json.dumps(start))
         watcher = asyncio.create_task(observe(socket, turns, stop))
         try:
             for index in range(args.turns):
