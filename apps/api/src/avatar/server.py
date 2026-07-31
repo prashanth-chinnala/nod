@@ -27,7 +27,7 @@ import asyncio
 import contextlib
 import json
 import os
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
 from typing import Any
 
 from fastapi import FastAPI, WebSocket
@@ -49,6 +49,7 @@ from avatar.config import load_env, loaded_files
 
 _FROM_ENV_FILE = load_env()
 
+from avatar import warmup
 from avatar.agent_config import ResolvedAgent, build_llm_with_tools, resolve_for_session
 from avatar.api import (
     agents,
@@ -178,7 +179,21 @@ silently invisible to the client until it is added here, which is exactly what h
 of these.**
 """
 
-app = FastAPI(title="nod", docs_url=None, redoc_url=None)
+@contextlib.asynccontextmanager
+async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    """
+    Warm the renderer before accepting traffic.
+
+    A lifespan rather than a background task, and awaited rather than fired -- see
+    `avatar.warmup` for why. It never raises: a missing GPU becomes a loud log line and a
+    server that still serves the console, which an operator needs to find out why.
+
+    """
+    await warmup.warm()
+    yield
+
+
+app = FastAPI(title="nod", docs_url=None, redoc_url=None, lifespan=_lifespan)
 
 # The console runs on a different origin in development (Next.js on :3000, this on :8000),
 # so the browser needs permission to call across. Named origins rather than `*`: with
@@ -232,6 +247,8 @@ async def config() -> dict[str, object]:
         # said postgres and nothing anywhere disagreed. Reporting the live object would have
         # made that visible in one request instead of a psql query that came up empty.
         "store": type(store).__name__,
+        # So "why was the first session slow" has an answer that is not a guess.
+        "warmup": warmup.report.as_dict(),
         "env_files_read": loaded_files(),
         "loaded_from_env_file": sorted(_FROM_ENV_FILE),
     }
