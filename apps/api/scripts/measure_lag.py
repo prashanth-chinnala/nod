@@ -72,6 +72,23 @@ class Arrival:
 
 
 @dataclass
+class Cadence:
+    """
+    The server's frame cadence, taken from `hello`.
+
+    Read from the server rather than from this process's `AVATAR_FPS`, because the probe and the
+    server are different processes and the probe's environment says nothing about the server's. The
+    first version imported `TARGET_FPS` locally and reported "delivered 8.4 fps against 25" at
+    a server configured for 8 -- a fabricated target, and the `need` column was wrong by the
+    same factor. `hello` has carried both numbers all along.
+    """
+
+    fps: int = TARGET_FPS
+    interval_ms: float = FRAME_INTERVAL_MS
+    from_server: bool = False
+
+
+@dataclass
 class Turn:
     """Everything observed for one epoch."""
 
@@ -81,7 +98,7 @@ class Turn:
     first_frame_ms: float | None = None
     discarded: int = 0
 
-    def report(self) -> dict[str, object]:
+    def report(self, cadence: Cadence) -> dict[str, object]:
         """
         The three causes, separated.
 
@@ -111,16 +128,20 @@ class Turn:
             # Cause 2: frames per second actually delivered across the turn, against the target.
             # A ratio below 1.0 means the gap grew for the whole turn rather than staying put.
             "delivered_fps": round(len(self.video) / max(wall_ms / 1000, 1e-9), 1),
-            "fps_target": TARGET_FPS,
+            "fps_target": cadence.fps,
             "server_first_frame_ms": self.first_frame_ms,
             # Frames needed to cover the speech, against frames that arrived. A shortfall is
             # video the mixer had to repeat or the turn simply never got.
-            "frames_for_the_speech": round(spoken_ms / FRAME_INTERVAL_MS),
+            "frames_for_the_speech": round(spoken_ms / cadence.interval_ms),
         }
 
 
 async def observe(
-    socket: object, turns: dict[int, Turn], stop: asyncio.Event, deadline: float
+    socket: object,
+    turns: dict[int, Turn],
+    stop: asyncio.Event,
+    deadline: float,
+    cadence: Cadence,
 ) -> None:
     """
     Consume everything the server sends, stamping arrivals.
@@ -175,6 +196,12 @@ async def observe(
         kind = payload.get("type")
         if kind == "hello":
             sample_rate = int(payload.get("sample_rate", 16_000))
+            if "target_fps" in payload:
+                cadence.fps = int(payload["target_fps"])
+                cadence.interval_ms = float(
+                    payload.get("frame_interval_ms", 1000 / max(cadence.fps, 1))
+                )
+                cadence.from_server = True
         elif kind == "stats":
             # Session-wide rather than per-turn, so it is attributed to whichever turn is open.
             # Recorded as a delta so the last turn does not inherit every earlier discard.
@@ -246,6 +273,7 @@ async def main() -> int:
 
     turns: dict[int, Turn] = {}
     stop = asyncio.Event()
+    cadence = Cadence()
 
     # A session, so the face under measurement is the one an agent actually uses. The lag
     # depends on the reference -- a 550-frame clip and a 100-frame one are different amounts of
@@ -275,17 +303,18 @@ async def main() -> int:
         # still arriving -- which is what made the earlier version report zero usable turns.
         deadline = time.monotonic() + args.turns * args.spacing + args.settle
         try:
-            await observe(socket, turns, stop, deadline)
+            await observe(socket, turns, stop, deadline, cadence)
         finally:
             speaker.cancel()
             stop.set()
 
     # Epoch 0 is the idle loop, which belongs to no turn and would drag every average toward
     # whatever the standing-by animation does.
-    measured = [turn.report() for epoch, turn in sorted(turns.items()) if epoch]
+    measured = [turn.report(cadence) for epoch, turn in sorted(turns.items()) if epoch]
     usable = [r for r in measured if r["usable"]]
 
-    print(f"\n=== {len(usable)} turn(s) measured, target {TARGET_FPS} fps ===\n")
+    source = "from the server" if cadence.from_server else "ASSUMED -- no hello seen"
+    print(f"\n=== {len(usable)} turn(s) measured, target {cadence.fps} fps ({source}) ===\n")
     header = (
         f"{'epoch':>6} {'spoken':>8} {'frames':>7} {'need':>6} {'fps':>6} "
         f"{'start lag':>10} {'TRAILING':>10} {'discarded':>10}"
@@ -299,7 +328,11 @@ async def main() -> int:
             f"{r['frames_discarded']:>10}"
         )
 
-    result: dict[str, object] = {"turns": measured, "fps_target": TARGET_FPS}
+    result: dict[str, object] = {
+        "turns": measured,
+        "fps_target": cadence.fps,
+        "fps_target_from_server": cadence.from_server,
+    }
     if usable:
         trailing = [float(r["trailing_gap_ms"]) for r in usable]  # type: ignore[arg-type]
         fps = [float(r["delivered_fps"]) for r in usable]  # type: ignore[arg-type]
@@ -315,7 +348,7 @@ async def main() -> int:
         print(
             f"\nmedian trailing gap {summary['trailing_gap_ms_median']} ms "
             f"(worst {summary['trailing_gap_ms_worst']}), "
-            f"delivered {summary['delivered_fps_median']} fps against {TARGET_FPS}, "
+            f"delivered {summary['delivered_fps_median']} fps against {cadence.fps}, "
             f"video started {summary['video_start_lag_ms_median']} ms after audio"
         )
         # Stated as a verdict, because "1900 ms" means nothing without a threshold. Lip-sync
