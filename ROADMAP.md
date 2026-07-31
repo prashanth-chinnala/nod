@@ -72,11 +72,16 @@ The sidecar is already a separate process, so pointing `AVATAR_VOICE_SERVICE` at
 configuration. Before spending anything, try a smaller batch size and a lower `AVATAR_FPS` to see
 whether the headroom exists on one card.
 
-### 3. Frames still discarded — 33 to 79 per turn
-Frames are delivered now, but a third to a half of a turn's frames still miss their slot. The cause
-is first-frame latency, not throughput: the turn's audio finishes before the renderer catches up and
-`FrameMixer._drain()` discards the remainder. Warming (item 1) should take a bite out of this;
-measure before doing anything cleverer.
+### 3. The video lags the audio by ~3 s
+33–81 frames are discarded per turn, and the discard is correct: `offer()` never drops a late frame,
+only a stale epoch, so these are frames still queued when the turn's audio ended. Showing them would
+animate a mouth in silence.
+
+The defect is the lag. The renderer starts ~3 s late and has ~8% headroom (8.7 fps against an 8 fps
+target), so it cannot catch up inside a turn. Candidates: more headroom via a lower `AVATAR_FPS`, or
+less first-frame latency via a shorter render window. **Neither is measured** — two attempts failed
+on harness plumbing, and the confounded figures I do have (81 at 8 fps, 46 at 6 fps, both with the
+voice sidecar competing) are not worth acting on. Measure this properly first.
 
 ### 3. The 2.9× to real time
 114.7 ms/frame against 40 ms. The split says where to look, and it is not the U-Net:
@@ -90,7 +95,13 @@ measure before doing anything cleverer.
 So: a faster decode, and get blending off the critical path — it is CPU work on four cores that
 could run concurrently with the next batch. A bigger GPU alone would only shrink the smallest term.
 
-### 4. Generative enrollment, so a photo can blink
+### ~~4. Generative enrollment~~ — done
+A photograph uploaded with `animate=true` is animated by LivePortrait before enrollment: 500 frames,
+20.0 s, standing-by motion 0.40 mean / 0.69 peak against 0.00 for the same still. Enrollment is a
+background job now — `POST /prepare` answers 202 in 0.018 s, claims the row with a timestamp, and
+stale rows are reaped at startup.
+
+### 4b. The original ask, for reference
 A still reference holds one pose forever; that is what "repaint the mouth of the frames you were
 given" means with one frame. The fix is offline: generate a reference clip with real motion at
 enrollment, then lip-sync it live. Candidates and the open question — identity preservation — are in

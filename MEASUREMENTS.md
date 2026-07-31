@@ -383,6 +383,42 @@ boundary the dependency collision forced.
 Not measured: whether a smaller batch size or a lower `AVATAR_FPS` recovers enough headroom to make
 both viable on one card. Worth trying before buying anything.
 
+## 4f. Generative enrollment in the product
+
+LivePortrait is wired into enrollment now, not just spiked. A photograph uploaded with
+`animate=true` becomes a reference clip with real motion before MuseTalk ever sees it. Measured on
+the T4, `man.png` against the 20s bundled driving clip:
+
+| | |
+|---|---|
+| `POST /faces/{id}/prepare` response | **202 in 0.018 s** |
+| Animation | 213,112 ms |
+| Enrollment of the result | 153,001 ms |
+| Result | 500 frames, 20.0 s, `source_kind` flips image → video |
+| Live session, standing-by motion | mean 0.40, peak 0.69 |
+| Live session, first frame | 3.8 s, 40/40 real-face frames |
+
+The same photograph unanimated measures 0.00 standing-by motion — identical frames. So the
+comparison across all three reference kinds now reads:
+
+| Reference | standing-by mean | peak |
+|---|---|---|
+| Still, as uploaded | 0.00 | 0.00 |
+| Still + ffmpeg crop drift | 0.54 | *no peaks* |
+| **Still + LivePortrait** | **0.40** | **0.69** |
+| Real human video | 0.39 | 1.17 |
+
+LivePortrait's mean is close to the real human's and its peak is well below — it has motion of the
+right *character* (discrete events, not uniform drift) at lower amplitude. The crop-drift version has
+a higher mean and no peaks at all, which is the signature of a photograph being slid around.
+
+### The driving clip is chosen by measurement
+
+`scripts/make_driving_clip.py` scores every candidate 20s window by the variance of eye-aspect-ratio
+across its frames, because the spike established that the driving clip and not the model bounds
+quality. On the bundled source: **5 windows scanned, best score 0.0323 at 1.9 s, worst 0.0317**. It
+warns below 0.005, where animated faces would not blink at all.
+
 ## 5. Speech and audio
 
 | | Measured |
@@ -482,10 +518,19 @@ Stated rather than filled:
 - **No output-quality comparison** between the substituted landmark detector and RTMPose.
 - **No measurement on a card larger than a T4**, which is the obvious next question given that a
   T4 is 2.9× short.
-- **`frames_discarded` is still 33 – 79 per turn on the T4.** Frames are delivered now, but a
-  third to a half of a turn's frames still miss their slot. First-frame latency, not throughput,
-  is what drives this: the turn's audio finishes before the renderer has caught up, and
-  `FrameMixer._drain()` discards the remainder.
+- **`frames_discarded` is still 33 – 81 per turn on the T4, and the discard itself is correct.**
+  Reading `FrameMixer.offer()`, frames are never dropped for being individually late — it only
+  rejects a stale epoch. The counter comes from `_drain()`, which empties the queue when the source
+  returns to the idle loop, so those are frames still pending when the turn's *audio* finished.
+  Showing them afterwards would animate a mouth in silence, so discarding is right.
+
+  The defect is therefore the lag, not the drop: the renderer starts ~3 s late and has about 8%
+  headroom (8.7 fps measured against an 8 fps target), so it never catches up within a turn. Two
+  candidate fixes — more headroom via a lower `AVATAR_FPS`, or less first-frame latency via a
+  shorter window — and **neither is measured cleanly.** Two attempts at the comparison failed on
+  test-harness plumbing rather than on the system, and a number obtained that way is not worth
+  recording. Suggestive but confounded: 81 discards at 8 fps/batch 16 and 46 at 6 fps/batch 4, both
+  while the voice sidecar was competing for the GPU.
 - **No measurement with the models warmed at startup**, which is the obvious fix for the cold
   70 – 150 s and probably for a share of the discards.
 - **No output-quality comparison against MuseTalk's published samples.** The landmark detector is
