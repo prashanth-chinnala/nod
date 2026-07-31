@@ -101,9 +101,22 @@ product.
 The LLM adapter speaks the OpenAI wire format deliberately: Ollama, vLLM and LM Studio all do
 too, so moving this in-house is a base URL, not a rewrite.
 
-**Voice cloning is not implemented.** Deepgram cannot do it. If a persona should sound like a
-specific person, that is a second enrollment input and a different model — XTTS-v2, F5-TTS or
-Fish-Speech, self-hosted. Tracked as separate work precisely so it cannot block the face pipeline.
+### Voice cloning — spiked, viable, not yet wired in
+
+Deepgram cannot clone. For a persona that sounds like a specific person the model is
+**`ResembleAI/chatterbox-tts`, Turbo variant** — MIT, 350M, self-hosted.
+
+The deciding measurement is not latency but **real-time factor**. The base model runs at RTF
+1.31–1.61: slower than real time, so a turn falls further behind the longer it speaks, which is
+disqualifying regardless of how good it sounds. Turbo runs at **0.67–0.80**, so generation keeps
+ahead of playback and only the first sentence of a turn exposes its latency — roughly 2.0 s against
+Aura's 0.38 s. Figures in [MEASUREMENTS.md](MEASUREMENTS.md) §4d.
+
+Rejected: **CosyVoice 2**, despite the best claim in the class (Apache 2.0, 150 ms streaming
+first-packet). It pins `torch==2.3.1` against the renderer's 2.13, plus tensorrt, tensorboard and a
+`grpcio` with no cp312 wheel. Worth revisiting on a dedicated box, where its streaming design would
+beat generating a whole sentence at a time. **F5-TTS** was rejected for the structural reason: it
+generates an utterance rather than streaming, so it cannot exploit the sentence boundary at all.
 
 ---
 

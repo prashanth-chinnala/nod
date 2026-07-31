@@ -307,6 +307,40 @@ motion of its own. So output quality is bounded by the motion source, and the pr
 is concrete: **ship one canonical idle driving clip** — a person sitting still, blinking naturally,
 small head movements — as a bundled asset, and any uploaded photograph can be animated with it.
 
+## 4d. Voice cloning — Chatterbox, spiked on the T4
+
+Enrollment should take a voice as well as a face. The constraint the face does not have: the TTS
+boundary is sentence-streaming, and Deepgram Aura answers in **380 ms warm**. A cloner that takes
+seconds per sentence adds those seconds to every turn.
+
+`ResembleAI/chatterbox-tts` 0.1.7, MIT, cloning from a 60 s reference, on the T4:
+
+| Model | per sentence | audio produced | RTF |
+|---|---|---|---|
+| Base | 2515 – 4137 ms | 1.6 – 3.2 s | **1.31 – 1.61** |
+| **Turbo** | **1213 – 2051 ms** | 1.5 – 3.0 s | **0.67 – 0.80** |
+
+**RTF is the number that decides it, not latency.** The base model generates *slower than real
+time*, so a turn falls further behind the longer it runs — disqualifying. Turbo's 0.74 means
+generation keeps ahead of playback, so only the **first** sentence's latency is exposed; every
+later sentence is produced while the previous one is still playing. That is precisely what the
+sentence-streaming boundary was built to exploit.
+
+So the honest cost of a cloned voice is **~1.6 s added to the first sentence of each turn** (2.0 s
+against Aura's 0.38 s), not a multiplier on the whole turn.
+
+Model load is 32.9 s, which start-up warming already covers.
+
+**Two dependency findings, recorded because both cost time:**
+
+* CosyVoice 2 was the first choice — Apache 2.0 with a published 150 ms streaming first-packet.
+  Abandoned at install: it pins `torch==2.3.1` against the renderer's 2.13, plus tensorrt,
+  tensorboard and a `grpcio` with no cp312 wheel. Its streaming claim is still the most attractive
+  in this class and it is worth revisiting on a dedicated box.
+* Chatterbox needs `setuptools<81`. Its watermarker imports `pkg_resources`, removed in 81, and
+  `perth/__init__.py` catches the `ImportError` and sets the class to `None` — so the failure
+  surfaces as `TypeError: 'NoneType' object is not callable` several frames away from the cause.
+
 ## 5. Speech and audio
 
 | | Measured |
