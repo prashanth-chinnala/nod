@@ -53,7 +53,6 @@ except ModuleNotFoundError:  # pragma: no cover - operator error, not a code pat
 from smoke_session import (  # noqa: E402  (path is set above)
     MIC_SILENCE_FRAMES,
     MIC_SPEECH_FRAMES,
-    TURN_TIMEOUT_SECONDS,
     URL,
     speak_into_the_mic,
 )
@@ -120,7 +119,9 @@ class Turn:
         }
 
 
-async def observe(socket: object, turns: dict[int, Turn], stop: asyncio.Event) -> None:
+async def observe(
+    socket: object, turns: dict[int, Turn], stop: asyncio.Event, deadline: float
+) -> None:
     """
     Consume everything the server sends, stamping arrivals.
 
@@ -131,7 +132,7 @@ async def observe(socket: object, turns: dict[int, Turn], stop: asyncio.Event) -
     `avatar_first_frame`.
     """
     sample_rate = 16_000
-    while not stop.is_set():
+    while not stop.is_set() and time.monotonic() < deadline:
         try:
             message = await asyncio.wait_for(socket.recv(), timeout=0.25)  # type: ignore[attr-defined]
         except TimeoutError:
@@ -191,23 +192,21 @@ async def observe(socket: object, turns: dict[int, Turn], stop: asyncio.Event) -
             turns.setdefault(epoch, Turn(epoch=epoch)).first_frame_ms = float(payload["ms"])
 
 
-async def wait_for_quiet(turns: dict[int, Turn], *, settle: float, timeout: float) -> None:
+async def speak_turns(socket: object, count: int, spacing: float) -> None:
     """
-    Wait until nothing has arrived for `settle` seconds.
+    Speak `count` turns, `spacing` seconds apart, on a background task.
 
-    A fixed sleep is what broke the earlier attempts: sized against the placeholder stack it
-    fired before any audio existed, and sized against a slow one it padded every measurement.
-    This waits for the turn to actually go quiet, which is also the event being measured.
+    A background task and a fixed spacing, rather than waiting for each turn to go quiet. Two
+    earlier versions of this script waited for quiet and measured nothing: the idle loop never
+    goes quiet -- it delivers a frame every `FRAME_INTERVAL_MS` for the whole session -- so
+    "nothing has arrived recently" is never true and the wait either ran to its timeout or,
+    worse, looked like a settled turn when it was a stalled one. Spacing has to exceed the
+    slowest turn observed (LLM ~4.5 s, then speech), or a turn is cut off by the next one and
+    its numbers are a barge-in rather than a turn.
     """
-    deadline = time.monotonic() + timeout
-    last_seen = 0.0
-    while time.monotonic() < deadline:
-        arrivals = [a.at for turn in turns.values() for a in (*turn.video, *turn.audio)]
-        newest = max(arrivals, default=0.0)
-        if newest and newest == last_seen and time.monotonic() - newest > settle:
-            return
-        last_seen = newest
-        await asyncio.sleep(0.1)
+    for _ in range(count):
+        await speak_into_the_mic(socket, MIC_SPEECH_FRAMES, MIC_SILENCE_FRAMES)
+        await asyncio.sleep(spacing)
 
 
 async def main() -> int:
@@ -231,8 +230,17 @@ async def main() -> int:
     parser.add_argument(
         "--settle",
         type=float,
-        default=2.0,
-        help="seconds of silence that count as a turn being over",
+        default=6.0,
+        help="extra seconds to keep listening after the last turn was spoken",
+    )
+    parser.add_argument(
+        "--spacing",
+        type=float,
+        default=28.0,
+        help=(
+            "seconds between turns. Must exceed the slowest turn or a turn is cut off by the "
+            "next one and its figures describe a barge-in"
+        ),
     )
     args = parser.parse_args()
 
@@ -255,21 +263,22 @@ async def main() -> int:
             session_id = json.load(response)["id"]
         print(f"session {session_id} as {args.agent}", flush=True)
         url = f"{args.url}?session={session_id}"
-        start = {"type": "start"}
+        # No `start`: a session id means the server starts on its own, and sending one is
+        # answered with `unknown message 'start'`.
+        start = {}
 
     async with websockets.connect(url, max_size=None) as socket:
-        await socket.send(json.dumps(start))
-        watcher = asyncio.create_task(observe(socket, turns, stop))
+        if start:
+            await socket.send(json.dumps(start))
+        speaker = asyncio.ensure_future(speak_turns(socket, args.turns, args.spacing))
+        # The receive loop is the main loop, not a task, so the run cannot end while frames are
+        # still arriving -- which is what made the earlier version report zero usable turns.
+        deadline = time.monotonic() + args.turns * args.spacing + args.settle
         try:
-            for index in range(args.turns):
-                print(f"turn {index + 1} of {args.turns}: speaking...", flush=True)
-                await speak_into_the_mic(socket, MIC_SPEECH_FRAMES, MIC_SILENCE_FRAMES)
-                await wait_for_quiet(
-                    turns, settle=args.settle, timeout=TURN_TIMEOUT_SECONDS
-                )
+            await observe(socket, turns, stop, deadline)
         finally:
+            speaker.cancel()
             stop.set()
-            await watcher
 
     # Epoch 0 is the idle loop, which belongs to no turn and would drag every average toward
     # whatever the standing-by animation does.
