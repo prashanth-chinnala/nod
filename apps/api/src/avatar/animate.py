@@ -74,13 +74,26 @@ class Animated:
 
 
 def _root() -> Path:
+    """
+    Where the LivePortrait checkout is.
+
+    Two candidates are tried rather than one, because both are reasonable and an off-by-one here
+    produces a message telling the operator to clone something they have already cloned.
+    `parents[4]` is the repository root; `parents[5]` is the directory containing it, which is
+    where a third-party checkout with its own licence and 2 GB of weights belongs -- the same
+    reasoning that keeps the MuseTalk vendor tree out of git.
+    """
     configured = os.environ.get(LIVEPORTRAIT_ROOT_ENV)
     if configured:
         return Path(configured)
-    # Beside the repository, not inside it: it is a third-party checkout with its own licence
-    # and
-    # 2 GB of weights, and the same reasoning keeps the MuseTalk checkout out of git.
-    return Path(__file__).resolve().parents[4] / "LivePortrait"
+    here = Path(__file__).resolve()
+    for depth in (5, 4):
+        candidate = here.parents[depth] / "LivePortrait"
+        if (candidate / "inference.py").is_file():
+            return candidate
+    # Neither exists. Return the preferred location, so `available()` names a path an operator
+    # would actually clone into rather than the last one tried.
+    return here.parents[5] / "LivePortrait"
 
 
 def _python() -> Path:
