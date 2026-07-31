@@ -168,6 +168,58 @@ def time_stages(
     return {key: round(statistics.median(values), 1) for key, values in stages.items()}
 
 
+def measure_pipeline(
+    backend: Any, identity: dict[str, Any], features: list[Any], batch_size: int
+) -> dict[str, float]:
+    """
+    The whole `render()` path, timed sequentially and overlapped, on the same inputs.
+
+    `measure_stages` above times each stage in isolation, which answers "where does the time
+    go". It cannot answer "did overlapping help", because the sum of isolated stages is exactly
+    the thing overlapping is meant to stop being the total. So this times the real method.
+
+    The sequential figure is produced by running the same two halves back to back rather than by
+    checking out the old code, so the comparison is between two orderings of identical work and
+    not between two revisions that might differ elsewhere.
+    """
+    backend.batch_size = batch_size
+    cycle = len(identity["latents"])
+    size = len(features)
+
+    def sequential() -> int:
+        frames = 0
+        for offset in range(0, size, batch_size):
+            batch = features[offset : min(offset + batch_size, size)]
+            indices = [(offset + i) % cycle for i in range(len(batch))]
+            faces = backend._decode(identity, batch, indices)
+            frames += len(backend._blend_and_encode(identity, faces, indices))
+        return frames
+
+    def overlapped() -> int:
+        return len(backend.render(identity, b"", start_frame=0, count=size))
+
+    # `render` needs features, and building them from PCM would drag the whisper encoder and a
+    # temporary WAV into a measurement that is not about them. Substituting the already-computed
+    # list keeps both paths on byte-identical input.
+    backend._audio_features = lambda pcm: features  # type: ignore[method-assign]
+
+    results: dict[str, float] = {}
+    for label, run in (("sequential", sequential), ("overlapped", overlapped)):
+        for _ in range(WARMUP):
+            run()
+        samples = []
+        for _ in range(RUNS):
+            start = time.perf_counter()
+            produced = run()
+            samples.append((time.perf_counter() - start) / max(produced, 1) * 1000)
+        results[label] = round(statistics.median(samples), 1)
+
+    results["speedup"] = round(results["sequential"] / max(results["overlapped"], 1e-9), 2)
+    results["fps_sequential"] = round(1000 / max(results["sequential"], 1e-9), 1)
+    results["fps_overlapped"] = round(1000 / max(results["overlapped"], 1e-9), 1)
+    return results
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -290,6 +342,18 @@ def main() -> int:
             print("      -> clears 25fps. Realtime on this device.")
         else:
             print(f"      -> does NOT clear 25fps. Short by {25 / entry['best']['fps']:.1f}x.")
+
+        # The pipeline comparison, at the best batch size this precision found. Run after the
+        # sweep rather than inside it: the question it answers -- did overlapping the CPU half
+        # with the GPU half help -- only matters at the batch size anyone would deploy.
+        pipeline = measure_pipeline(backend, identity, features, best)
+        entry["pipeline"] = pipeline
+        print(
+            f"\npipeline at batch {best}: sequential {pipeline['sequential']} ms/frame "
+            f"({pipeline['fps_sequential']} fps) -> overlapped "
+            f"{pipeline['overlapped']} ms/frame ({pipeline['fps_overlapped']} fps) "
+            f"= {pipeline['speedup']}x"
+        )
 
         result["precisions"][precision] = entry
         backend.unload()
