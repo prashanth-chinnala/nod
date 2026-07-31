@@ -106,7 +106,7 @@ contents.
 ## Tests
 
 ```bash
-cd apps/api && pytest -m "not gpu"             # 715 tests: no GPU, no weights, no network
+cd apps/api && pytest -m "not gpu"             # 746 tests: no GPU, no weights, no network
 ruff check src tests && mypy src/avatar
 ```
 

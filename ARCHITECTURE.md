@@ -66,7 +66,7 @@ Four rules, each with a test:
 4. **Importing the orchestration layer pulls in no ML package** — checked by inspecting
    `sys.modules` after the import, not by reading the source.
 
-The payoff is concrete: **all 715 tests run with no GPU, no model weights and no network.** The
+The payoff is concrete: **all 746 tests run with no GPU, no model weights and no network.** The
 state machine, turn-taking policy, mixer cadence, barge-in and scoring are all exercised in a few
 seconds on a laptop. The renderer is the only thing that needs a GPU, and it is behind a protocol.
 

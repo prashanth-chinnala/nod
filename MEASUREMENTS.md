@@ -525,11 +525,81 @@ that introduced them.
 | Scorer: time to queue vs work done | 8 ms vs 6,093 ms |
 | WebRTC first frame: perceived vs paint | 4,296 ms vs 4,221 ms (74.9 ms paint tail) |
 | Egress recording | 7.0 MB, 1 m 37 s, H.264 + AAC |
-| Test suite | 715 tests, GPU-free |
+| Test suite | 746 tests, GPU-free |
 
 The 74.9 ms paint tail is the reason first-frame latency is measured with
 `requestVideoFrameCallback` rather than at the decoder: the gap between a frame arriving and a
 frame being *visible* was invisible to every earlier measurement.
+
+---
+
+## 8b. What a candidate actually sees — the live figures
+
+§2 measures how fast the card turns audio into frames. This measures what arrives at a client, over
+a real WebSocket, in a real session, and they are different questions. Produced by
+`scripts/measure_lag.py`, whose figures are timestamped in the probe process — so they include the
+socket but not a browser's decode or compositor, which makes every number here a lower bound on
+what a person perceives.
+
+Tesla T4, `AVATAR_FPS=8`, hosted TTS and STT, the renderer alone on the card, six turns per run:
+
+| | Before | After |
+|---|---|---|
+| Frames delivered, per second | **1.0 – 2.4** | **8.2 – 8.9** (target 8) |
+| Frames delivered vs needed, per turn | 9 of 75 | 38 of 45 |
+| Trailing gap, median | ~3 s (recorded) | **−66 ms and +172 ms** across two runs |
+| Trailing gap, worst single turn | not measured | 538 ms |
+| Video starts, after the audio | not measured | 1,510 ms |
+| Frames discarded, per turn | 33 – 81 | 6 – 11 |
+| First turn vs later turns | 16.7 s vs — | 1.5 s vs 1.5 s |
+
+**"Trailing gap" is the headline and it needs its definition stated**: how long video kept arriving
+*after* the last audio of the turn did. Negative means video finished first, which is the healthy
+direction. Broadcast lip-sync tolerance is about 100 ms of video lag before a viewer notices, so
+the median sits at or just past the edge of perceptible and the worst turn is clearly past it.
+
+**The two runs disagree in sign** — one median at −66 ms, one at +172 ms — and both are reported
+rather than the flattering one. Six turns per run is not enough to call a mean, and the honest
+summary is "somewhere around zero, with individual turns up to half a second late", not a single
+figure.
+
+### 8b.1 Three causes, and what each one was
+
+The complaint was recorded for a long time as "the video lags the audio by ~3 s". Measuring it
+properly showed the trailing gap was already near zero and the real defect was elsewhere. Three
+separate faults, found in this order, each one hiding the next:
+
+1. **Every session reloaded 3.8 GB of weights.** `load()` filled an instance attribute while its
+   own docstring said "called once per process", and `renderers.build` returns a fresh backend per
+   session. Audio at 6.2 s, first frame at 22.9 s — and 23 s is exactly what `load()` measures.
+   Warm-up had loaded the models correctly, into an object that was then discarded.
+
+2. **The first forward pass costs 12× a later one.** 4,747 ms for the first five frames, against
+   78 ms/frame steady state: cuDNN choosing convolution algorithms, the landmark detector's first
+   inference, lazy allocator arenas. Loading weights is not the same as being ready. Warm-up now
+   renders one throwaway frame, so a candidate does not pay it — first turn and fifth turn now
+   have the same 1.5 s start lag, where before it was 6.9 s versus 1.4 s.
+
+3. **The render ran on the event loop.** This was the big one. `_pump_frames` was synchronous on a
+   documented contract that `frames()` "returns what exists now" and could not block — true of the
+   stub, false of a GPU renderer, which runs the U-Net and VAE inline for every buffered window.
+   So the task that drains the mixer to the socket at cadence had no loop to run on: frames were
+   rendered, queued, and correctly thrown away by `set_source(IDLE_LOOP)` when the turn ended.
+   **1.4 fps delivered by a renderer benchmarked at 12.8.** It read as a renderer too slow to keep
+   up; the renderer was never the problem.
+
+All three were the same mistake in different places: an assumption that held for the stub renderer
+and not for the real one. That is the cost of a boundary this clean — the stub satisfies the
+Protocol perfectly, so nothing about it fails until a GPU is behind it.
+
+### 8b.2 What the discards were
+
+`frames_discarded` was read for a long time as evidence the renderer could not keep up. It was
+evidence of fault 3. `FrameMixer.offer()` never drops a frame for being individually late — it
+only rejects a stale epoch — and the counter comes from `_drain()`, which empties the queue when
+the source returns to the idle loop. So a discard is a frame that was still pending when the
+turn's audio ended, and showing it later would animate a mouth in silence. The discarding was
+always correct. The backlog was not.
 
 ---
 
@@ -541,20 +611,8 @@ Stated rather than filled:
 - **No output-quality comparison** between the substituted landmark detector and RTMPose.
 - **No measurement on a card larger than a T4**, which is the obvious next question given that a
   T4 is 2.9× short.
-- **`frames_discarded` is still 33 – 81 per turn on the T4, and the discard itself is correct.**
-  Reading `FrameMixer.offer()`, frames are never dropped for being individually late — it only
-  rejects a stale epoch. The counter comes from `_drain()`, which empties the queue when the source
-  returns to the idle loop, so those are frames still pending when the turn's *audio* finished.
-  Showing them afterwards would animate a mouth in silence, so discarding is right.
-
-  The defect is therefore the lag, not the drop: the renderer starts ~3 s late and has about 8%
-  headroom (8.7 fps measured against an 8 fps target), so it never catches up within a turn. Two
-  candidate fixes — more headroom via a lower `AVATAR_FPS`, or less first-frame latency via a
-  shorter window — and **neither is measured cleanly.** Two attempts at the comparison failed on
-  test-harness plumbing rather than on the system, and a number obtained that way is not worth
-  recording. Suggestive but confounded: 81 discards at 8 fps/batch 16 and 46 at 6 fps/batch 4, both
-  while the voice sidecar was competing for the GPU.
-- **No measurement with the models warmed at startup**, which is the obvious fix for the cold
-  70 – 150 s and probably for a share of the discards.
+- **No measurement on how much of the remaining 1.5 s start lag is the render window** versus the
+  lead-in the mixer waits for before it will cut from the idle loop. Both are candidates and the
+  split is unknown.
 - **No output-quality comparison against MuseTalk's published samples.** The landmark detector is
   substituted, so the crop can differ by a pixel or two; whether that is visible is unmeasured.

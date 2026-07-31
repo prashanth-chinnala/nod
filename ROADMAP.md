@@ -72,23 +72,28 @@ The sidecar is already a separate process, so pointing `AVATAR_VOICE_SERVICE` at
 configuration. Before spending anything, try a smaller batch size and a lower `AVATAR_FPS` to see
 whether the headroom exists on one card.
 
-### 3. The video lags the audio by ~3 s
-33–81 frames are discarded per turn, and the discard is correct: `offer()` never drops a late frame,
-only a stale epoch, so these are frames still queued when the turn's audio ended. Showing them would
-animate a mouth in silence.
+### ~~3. The video lags the audio by ~3 s~~ — done, and the premise was wrong
+Measured properly with `scripts/measure_lag.py`, the trailing gap was **already near zero** — video
+was finishing at roughly the same moment as the audio. What was actually broken was delivery:
+**1.4 fps reaching the client from a renderer benchmarked at 12.8**, 9 frames where 75 were needed,
+33–81 discarded per turn. Three faults, each hiding the next:
 
-The defect is the lag, and **the analysis under it has changed** — it used to read "~8% headroom
-(8.7 fps against an 8 fps target), so it cannot catch up inside a turn." At the measured 12.8 fps
-the headroom against an 8 fps target is **60%**, so a renderer that starts late now *can* catch up,
-and the question is no longer whether but how fast. Two contributors were also fixed on the way:
-`render()` was over-delivering up to `batch_size - 1` frames past what the window asked for (15
-surplus frames at batch 16), and the CPU half of a frame is no longer on the critical path.
+1. Every session reloaded 3.8 GB of weights — `load()` filled an instance attribute while its
+   docstring said "once per process". Audio at 6.2 s, first frame at 22.9 s.
+2. The first forward pass costs 12× a later one (4,747 ms for five frames vs 78 ms/frame). Warm-up
+   now renders one throwaway frame so a candidate does not pay it.
+3. **The render ran on the event loop.** `_pump_frames` was synchronous on a contract that held for
+   the stub and not for a GPU renderer, so the task that drains the mixer to the socket had nothing
+   to run on. Frames were rendered, queued, and correctly discarded when the turn ended.
 
-**Still not measured live.** The throughput figures are §2 of `MEASUREMENTS.md`; what a candidate
-perceives is a different measurement and two earlier attempts at it failed on harness plumbing. The
-old figures (81 discards at 8 fps, 46 at 6 fps) predate all three changes and are also confounded by
-the voice sidecar competing for the card, so they are not a baseline to compare against. This needs
-one clean live run, not a tuning pass.
+Now: **8.3 fps delivered against a target of 8**, trailing gap between −66 ms and +172 ms across
+two runs, 6–11 discards per turn, and the first turn no slower than the fifth. Full figures and the
+run-to-run disagreement are in [MEASUREMENTS.md](MEASUREMENTS.md) §8b.
+
+**What remains here** is the 1.5 s before video starts — one render window plus the lead-in the
+mixer waits for before cutting from the idle loop. The split between those two is unmeasured, and
+that is the next thing to measure rather than tune. All three faults above were the same mistake:
+an assumption true of the stub renderer and false of the real one.
 
 ### 4. The 2.0× to real time
 78.4 ms/frame against 40 ms, down from 124.7. **The CPU half is done** — the item that used to sit
