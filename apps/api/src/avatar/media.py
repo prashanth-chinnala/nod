@@ -79,6 +79,37 @@ imperceptible either way because every frame is identical.
 
 VIDEO_SUFFIXES = {".mp4", ".mov", ".webm", ".m4v"}
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
+AUDIO_SUFFIXES = {".wav", ".mp3", ".m4a", ".flac", ".ogg", ".webm"}
+"""
+`.webm` appears twice on purpose -- it is a container, not a codec, and a browser recording from
+`MediaRecorder` produces audio-only webm. Which one an upload is gets decided by what `ffprobe`
+finds inside it, not by the extension, so the overlap costs nothing.
+"""
+
+MIN_VOICE_SECONDS = 5.0
+RECOMMENDED_VOICE_SECONDS = 15.0
+"""
+How much reference speech a voice needs.
+
+Zero-shot cloning works from a few seconds -- the published figures are 3 to 10 -- but the
+amount decides how much of a person it captures rather than whether it works at all. Below 5s
+the model has one or two phonetic contexts to generalise from and the result is recognisably the
+same voice saying things in the wrong rhythm. 15s covers enough prosody that the clone stops
+sounding like an impression.
+
+Refused below the minimum, warned below the recommendation -- the same split as video, and for
+the same reason: an operator with 8 seconds should get a voice plus the reason it will be flat,
+not a refusal.
+"""
+
+MAX_VOICE_SECONDS = 120.0
+"""
+Longer is not better, past a point, and it is worth refusing rather than silently truncating.
+
+The reference is encoded once into a speaker embedding; minutes of audio do not improve it, and
+they do make every enrollment slower and every stored artifact larger. A cap also catches the
+common mistake of uploading a whole interview recording instead of a sample.
+"""
 
 
 class MediaRejected(ValueError):
@@ -92,12 +123,20 @@ class MediaRejected(ValueError):
 
 @dataclass(frozen=True)
 class Probe:
-    """What ffprobe found. `duration` is None for a still image."""
+    """
+    What ffprobe found.
+
+    `duration` is None for a still image. `width`/`height` are 0 for audio, and `sample_rate`
+    and `channels` are 0 for anything with no audio stream -- absent rather than defaulted, so
+    a caller cannot mistake a missing value for a real one.
+    """
 
     kind: str
     duration: float | None
     width: int
     height: int
+    sample_rate: int = 0
+    channels: int = 0
 
 
 def _ffmpeg(name: str) -> str:
@@ -139,11 +178,27 @@ def probe(path: Path) -> Probe:
         )
 
     info = json.loads(result.stdout or "{}")
-    video = next(
-        (s for s in info.get("streams", []) if s.get("codec_type") == "video"), None
-    )
+    streams = info.get("streams", [])
+    video = next((s for s in streams if s.get("codec_type") == "video"), None)
+    audio = next((s for s in streams if s.get("codec_type") == "audio"), None)
+
+    fmt_all = info.get("format") or {}
+
     if video is None:
-        raise MediaRejected("this file has no video or image stream in it")
+        # Audio only. A legitimate upload -- a voice reference -- rather than a failure, so
+        # it is classified here rather than refused. The duration comes from the container,
+        # because an audio stream frequently omits its own.
+        if audio is None:
+            raise MediaRejected("this file has no video, image or audio stream in it")
+        raw = fmt_all.get("duration") or audio.get("duration")
+        return Probe(
+            kind="audio",
+            duration=float(raw) if raw not in (None, "N/A") else None,
+            width=0,
+            height=0,
+            sample_rate=int(audio.get("sample_rate") or 0),
+            channels=int(audio.get("channels") or 0),
+        )
 
     # Image or video, from three signals because no single one covers every case. A PNG reports
     # NO `nb_frames`, NO stream duration and NO format duration -- so a frame-count check alone
@@ -170,6 +225,8 @@ def probe(path: Path) -> Probe:
         duration=None if single_frame else duration,
         width=int(video.get("width") or 0),
         height=int(video.get("height") or 0),
+        sample_rate=int(audio.get("sample_rate") or 0) if audio else 0,
+        channels=int(audio.get("channels") or 0) if audio else 0,
     )
 
 
@@ -183,6 +240,9 @@ def check(found: Probe) -> list[str]:
     -- they can have a repetitive one, and they should be the one deciding whether that is
     acceptable.
     """
+    if found.kind == "audio":
+        return _check_voice(found)
+
     if found.width < 256 or found.height < 256:
         raise MediaRejected(
             f"the face is {found.width}x{found.height}; the renderer crops and encodes a face "
@@ -221,6 +281,52 @@ def check(found: Probe) -> list[str]:
     return warnings
 
 
+def _check_voice(found: Probe) -> list[str]:
+    """
+    Refuse voice reference audio that cannot work; warn about what will clone badly.
+
+    Sample rate is deliberately *not* refused. The cloner resamples, and refusing 8kHz
+    telephone audio would reject a file that yields a usable if dull voice -- so it warns
+    instead, because the operator knows whether that is the best sample they have.
+    """
+    seconds = found.duration or 0.0
+    if seconds < MIN_VOICE_SECONDS:
+        raise MediaRejected(
+            f"the sample is {seconds:.1f}s. Cloning needs at least "
+            f"{MIN_VOICE_SECONDS:.0f}s to pick up how someone speaks, not just how they "
+            f"sound; {RECOMMENDED_VOICE_SECONDS:.0f}s of ordinary speech is better. Record "
+            "them reading a few sentences at a normal pace."
+        )
+    if seconds > MAX_VOICE_SECONDS:
+        raise MediaRejected(
+            f"the sample is {seconds / 60:.1f} minutes, over the "
+            f"{MAX_VOICE_SECONDS / 60:.0f} minute ceiling. The reference is encoded once "
+            "into a speaker embedding, so extra minutes do not improve it -- they only slow "
+            "enrollment down. If this is a whole recording, cut a representative "
+            f"{RECOMMENDED_VOICE_SECONDS:.0f}s from it."
+        )
+
+    warnings: list[str] = []
+    if seconds < RECOMMENDED_VOICE_SECONDS:
+        warnings.append(
+            f"{seconds:.0f}s is enough to clone the voice but thin on prosody, so the result "
+            f"will sound flatter than the person does. {RECOMMENDED_VOICE_SECONDS:.0f}s or "
+            "more captures their rhythm as well as their timbre."
+        )
+    if found.sample_rate and found.sample_rate < 16_000:
+        warnings.append(
+            f"{found.sample_rate} Hz is below the 16kHz the pipeline runs at, so the sample is "
+            "upsampled and the clone inherits its dullness. It will work; it will not sound "
+            "bright."
+        )
+    if found.channels > 1:
+        warnings.append(
+            f"{found.channels} channels are mixed down to mono. If two people are on separate "
+            "channels, the clone will be a blend of both -- split them first."
+        )
+    return warnings
+
+
 def store_upload(data: bytes, filename: str) -> Path:
     """
     Write an upload under `MEDIA_ROOT` with a generated name, and return the path.
@@ -230,10 +336,12 @@ def store_upload(data: bytes, filename: str) -> Path:
     the store already refuses ids containing separators for the same reason.
     """
     suffix = Path(filename or "").suffix.lower()
-    if suffix not in VIDEO_SUFFIXES | IMAGE_SUFFIXES:
+    if suffix not in VIDEO_SUFFIXES | IMAGE_SUFFIXES | AUDIO_SUFFIXES:
         raise MediaRejected(
             f"{suffix or 'that file'} is not a supported reference. Video: "
-            f"{', '.join(sorted(VIDEO_SUFFIXES))}. Image: {', '.join(sorted(IMAGE_SUFFIXES))}."
+            f"{', '.join(sorted(VIDEO_SUFFIXES))}. Image: "
+            f"{', '.join(sorted(IMAGE_SUFFIXES))}. Audio: "
+            f"{', '.join(sorted(AUDIO_SUFFIXES))}."
         )
     if len(data) > MAX_UPLOAD_BYTES:
         raise MediaRejected(
