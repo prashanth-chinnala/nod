@@ -60,6 +60,7 @@ from avatar.api import (
     rubrics,
     sessions,
     tools,
+    voices,
 )
 from avatar.audio.stt import build_stt
 from avatar.audio.tts import SAMPLE_RATE
@@ -220,6 +221,7 @@ for _resource in (
     rubrics,
     sessions,
     tools,
+    voices,
 ):
     app.include_router(_resource.router)
 
@@ -350,7 +352,15 @@ class BrowserSession:
                 ),
                 self._agent.guardrail,
             ),
-            tts=with_pronunciation(build_tts(TTS_NAME), self._agent.lexicon),
+            # The agent's own voice decides the engine, falling back to the process default.
+            # `clone` needs the reference the agent resolved; the hosted engines ignore it.
+            tts=with_pronunciation(
+                build_tts(
+                    self._agent.voice_provider or TTS_NAME,
+                    reference_path=self._agent.voice_reference or "",
+                ),
+                self._agent.lexicon,
+            ),
             telemetry=self._telemetry,
         )
 

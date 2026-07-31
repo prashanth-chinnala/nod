@@ -193,11 +193,16 @@ def _build_client() -> object:
     return httpx.AsyncClient(timeout=REQUEST_TIMEOUT_S)
 
 
-def build_tts(name: str = "tone") -> SpeechStream:
+def build_tts(name: str = "tone", *, reference_path: str = "") -> SpeechStream:
     """
     The one-line TTS swap, mirroring the renderer, VAD, and LLM registries.
 
     Defaults to `tone` so a clean clone runs with no credentials and no network.
+
+    `reference_path` is only meaningful for `clone`. It is accepted unconditionally rather
+    than through a separate call, so every caller resolves a voice the same way: a hosted
+    engine ignores it, and asking `clone` for a voice with no reference is an error worth
+    raising here, where the message names the cause, rather than inside a model load.
     """
     key = name.lower()
     if key == "tone":
@@ -206,4 +211,14 @@ def build_tts(name: str = "tone") -> SpeechStream:
         return ToneTTS()
     if key == "deepgram":
         return DeepgramTTS()
-    raise ValueError(f"unknown TTS {name!r}; available: 'tone', 'deepgram'")
+    if key == "clone":
+        from avatar.audio.tts_clone import ClonedTTS
+
+        resolved = reference_path or os.environ.get("AVATAR_VOICE_REFERENCE", "")
+        if not resolved:
+            raise ValueError(
+                "the 'clone' voice needs a reference recording. Attach a voice to the "
+                "agent, or set AVATAR_VOICE_REFERENCE."
+            )
+        return ClonedTTS(reference_path=resolved)
+    raise ValueError(f"unknown TTS {name!r}; available: 'tone', 'deepgram', 'clone'")

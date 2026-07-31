@@ -41,7 +41,7 @@ ID_PREFIX = "agent"
 router = APIRouter(prefix="/agents", tags=["agents"])
 
 LlmProvider = Literal["openai", "anthropic", "scripted"]
-VoiceProvider = Literal["deepgram", "tone"]
+VoiceProvider = Literal["deepgram", "tone", "clone"]
 
 
 def _stripped_name(value: str) -> str:
@@ -116,6 +116,16 @@ class AgentCreate(BaseModel):
     llm_model: str = ""
     voice_provider: VoiceProvider = "tone"
     voice_id: str = ""
+    voice_ref_id: str | None = None
+    """
+    A voice from the Voices screen, for `voice_provider="clone"`.
+
+    Distinct from `voice_id`, which names a hosted provider's catalogue voice. Both can be set
+    without conflict because only one is read: `clone` uses this, `deepgram` uses that, and
+    `tone`
+    uses neither.
+    """
+
     face_id: str | None = None
     knowledge_base_ids: list[str] = Field(default_factory=list)
     tool_ids: list[str] = Field(default_factory=list)
@@ -144,6 +154,7 @@ class AgentUpdate(BaseModel):
     llm_model: str | None = None
     voice_provider: VoiceProvider | None = None
     voice_id: str | None = None
+    voice_ref_id: str | None = None
     face_id: str | None = None
     knowledge_base_ids: list[str] | None = None
     tool_ids: list[str] | None = None

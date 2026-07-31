@@ -125,6 +125,7 @@ _AGENT_NAME = "(select name from agents where id = %(agent_id)s)"
 
 _TYPED: dict[str, tuple[_Column, ...]] = {
     "faces": (_plain("name"),),
+    "voices": (_plain("name"),),
     "rubrics": (_plain("name"),),
     "guardrails": (_plain("name"),),
     "pronunciations": (_plain("name"),),
@@ -133,6 +134,7 @@ _TYPED: dict[str, tuple[_Column, ...]] = {
     "agents": (
         _plain("name"),
         _plain("face_id"),
+        _plain("voice_ref_id"),
         _plain("rubric_id"),
         _plain("guardrail_id"),
         _plain("pronunciation_id"),

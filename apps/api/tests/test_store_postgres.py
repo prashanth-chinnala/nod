@@ -55,7 +55,23 @@ import pytest
 
 from avatar.store import NotFound, Store, now_iso
 
-MIGRATION = Path(__file__).resolve().parents[1] / "migrations" / "001_initial.sql"
+MIGRATIONS_DIR = Path(__file__).resolve().parents[1] / "migrations"
+
+
+def _migrations() -> list[Path]:
+    """
+    Every migration, in filename order.
+
+    Globbed rather than naming `001_initial.sql`, which is what this was. A hardcoded
+    filename means the throwaway database is built from an out-of-date schema the moment a
+    second migration exists -- and the failure is not obviously about the fixture: it shows as
+    `UndefinedColumn: column "voice_ref_id" of relation "agents" does not exist` from whichever
+    test happens to insert first, which reads like a bug in the store.
+
+    Filename order is the migration order, which is the convention the `NNN_` prefix exists to
+    encode.
+    """
+    return sorted(MIGRATIONS_DIR.glob("*.sql"))
 
 MAINTENANCE_DSN = "postgresql:///postgres"
 """
@@ -159,8 +175,8 @@ def postgres() -> Iterator[str]:
     promises not to leave.
     """
     psycopg = _psycopg()
-    if not MIGRATION.is_file():
-        pytest.skip(f"no schema to apply: {MIGRATION} is missing")
+    if not _migrations():
+        pytest.skip(f"no schema to apply: {MIGRATIONS_DIR} has no .sql files")
 
     try:
         admin = psycopg.connect(MAINTENANCE_DSN, autocommit=True)
@@ -175,7 +191,8 @@ def postgres() -> Iterator[str]:
         dsn = f"postgresql:///{database}"
         try:
             with psycopg.connect(dsn, autocommit=True) as conn:
-                conn.execute(MIGRATION.read_text(encoding="utf-8"))
+                for migration in _migrations():
+                    conn.execute(migration.read_text(encoding="utf-8"))
             yield dsn
         finally:
             admin.execute(f'drop database if exists "{database}" with (force)')

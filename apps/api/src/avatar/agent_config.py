@@ -75,6 +75,19 @@ class ResolvedAgent:
     guardrail: Policy | None = None
     tools: list[Tool] = field(default_factory=list)
     plan: InterviewPlan = field(default_factory=InterviewPlan)
+    voice_reference: str | None = None
+    """
+    Path to the recording a cloned voice is conditioned on, resolved from `voice_ref_id`.
+
+    Separate from `voice_id` -- which names a *hosted* provider's voice, like `aura-2-thalia-en`
+    --
+    because these are different kinds of thing that happen to occupy the same slot in an
+    operator's
+    head. One is a catalogue entry at Deepgram; this is a file on our disk holding a real
+    person's
+    speech. Conflating them would make "which voice" ambiguous exactly where it matters.
+    """
+
     face_reference: str | None = None
     """
     The path the renderer should build its identity from, resolved from `face_id`.
@@ -88,7 +101,19 @@ class ResolvedAgent:
     never consulted, and it is the last one of those.
     """
     llm_model: str = ""
+    voice_provider: str = ""
+    """
+    Which speech engine this agent uses, empty to inherit the process default.
+
+    Read by the session rather than only displayed in the console. Before this, `voice_provider`
+    was
+    stored faithfully, shown in the agents table, and read by nothing -- every session used
+    `AVATAR_TTS` no matter what an agent said. That is the same failure class as `face_id` being
+    loaded and ignored, and it is the last of them.
+    """
+
     voice_id: str = ""
+    voice_ref_id: str | None = None
     face_id: str | None = None
     turn_taking: dict[str, Any] = field(default_factory=dict)
 
@@ -158,8 +183,11 @@ def resolve_agent(agent_id: str | None = None, *, data: Store | None = None) -> 
         tools=_load_tools(data, record.get("tool_ids") or [], chosen),
         plan=_load_plan(data, record.get("rubric_id"), chosen),
         face_reference=_load_face(data, record.get("face_id"), chosen),
+        voice_reference=_load_voice(data, record.get("voice_ref_id"), chosen),
         llm_model=str(record.get("llm_model") or ""),
+        voice_provider=str(record.get("voice_provider") or ""),
         voice_id=str(record.get("voice_id") or ""),
+        voice_ref_id=record.get("voice_ref_id"),
         face_id=record.get("face_id"),
         turn_taking=dict(record.get("turn_taking") or {}),
     )
@@ -249,6 +277,38 @@ def _load_plan(data: Store, rubric_id: str | None, agent_id: str) -> InterviewPl
             )
         )
     return InterviewPlan(name=str(record.get("name") or ""), competencies=tuple(competencies))
+
+
+def _load_voice(data: Store, voice_ref_id: str | None, agent_id: str) -> str | None:
+    """
+    The reference recording for an attached voice, or `None` to fall back to the environment.
+
+    Fatal when the voice is missing, for the same reason a missing face is: an interview
+    conducted
+    in a different voice than the one configured is worse than one that refuses to start, and
+    the
+    operator can see why.
+
+    Unlike a face there is no `pending` state to tolerate. Cloning is zero-shot -- the reference
+    is
+    encoded at first use -- so a voice is either usable or its file is gone.
+    """
+    if not voice_ref_id:
+        return None
+    try:
+        record = data.get("voices", voice_ref_id)
+    except NotFound as exc:
+        raise AgentNotConfigured(
+            f"agent {agent_id!r} references voice {voice_ref_id!r}, which does not exist. "
+            "An interview conducted in a different voice than the one configured is worse "
+            "than one that refuses to start."
+        ) from exc
+    path = record.get("reference_path")
+    if not path:
+        raise AgentNotConfigured(
+            f"voice {voice_ref_id!r} has no reference recording, so there is nothing to clone."
+        )
+    return str(path)
 
 
 def _load_face(data: Store, face_id: str | None, agent_id: str) -> str | None:
