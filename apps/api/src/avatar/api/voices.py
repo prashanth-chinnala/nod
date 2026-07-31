@@ -20,8 +20,7 @@ That costs a model load on a cold process, which is the honest price of finding 
 
 from __future__ import annotations
 
-import io
-import wave
+import os
 from typing import Annotated, Any
 
 from fastapi import APIRouter, File, Form, HTTPException, Response, UploadFile, status
@@ -177,24 +176,31 @@ def delete_voice(voice_id: str) -> None:
 
 
 @router.post("/{voice_id}/audition")
-def audition_voice(voice_id: str) -> Response:
+async def audition_voice(voice_id: str) -> Response:
     """
-    Synthesise one sentence in this voice and return it as a WAV.
+    Synthesise one sentence in this voice and return it as a WAV the console can play.
 
-    Declared `def`, not `async def`, and that is load-bearing: generation is synchronous and
-    takes
-    seconds, so on the event loop it would stall every live session in the process. A sync
-    handler is
-    dispatched to a threadpool instead.
+    A thin proxy to the voice sidecar, which owns the model. That indirection is not incidental:
+    Chatterbox cannot be installed alongside MuseTalk -- it needs a newer `transformers` than
+    the
+    renderer pins, and trying it downgraded torch and broke CUDA -- so nothing in this process
+    imports it. See `avatar.audio.tts_clone`.
 
-    Failures come back as 422 with the engine's own message rather than a 500. Every realistic
-    cause
-    — no GPU, weights absent, a reference that has been deleted from under the record — is
-    something
-    the operator can act on, and a traceback in the log helps nobody looking at the console.
+    `async def` is correct here precisely *because* of that: the work happens in another process
+    and
+    this handler only awaits a socket. The equivalent in-process version had to be sync to stay
+    off
+    the event loop.
+
+    Failures come back as 422 with the sidecar's own message. Every realistic cause -- the
+    service
+    not running, no GPU, a reference deleted from under the record -- is something the operator
+    can
+    act on, and a traceback helps nobody looking at the console.
     """
-    from avatar.audio.tts import SAMPLE_RATE
-    from avatar.audio.tts_deepgram import build_tts
+    import httpx
+
+    from avatar.audio.tts_clone import DEFAULT_SERVICE, SERVICE_ENV
 
     try:
         record = store.get(COLLECTION, voice_id)
@@ -205,36 +211,26 @@ def audition_voice(voice_id: str) -> Response:
     if not reference:
         raise HTTPException(status_code=422, detail="this voice has no reference recording")
 
+    service = os.environ.get(SERVICE_ENV, DEFAULT_SERVICE).rstrip("/")
     try:
-        engine = build_tts("clone", reference_path=reference)
-        pcm = _synthesise(engine, AUDITION_TEXT)
-    except Exception as exc:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(
+                f"{service}/audition",
+                json={"text": AUDITION_TEXT, "reference_path": reference},
+            )
+    except httpx.HTTPError as exc:
         raise HTTPException(
-            status_code=422, detail=f"could not synthesise: {type(exc).__name__}: {exc}"
+            status_code=422,
+            detail=(
+                f"the voice service at {service} is unreachable: {exc}. Start it with "
+                "`.venv-voice/bin/python scripts/voice_service.py`."
+            ),
         ) from exc
 
-    buffer = io.BytesIO()
-    with wave.open(buffer, "wb") as out:
-        out.setnchannels(1)
-        out.setsampwidth(2)
-        out.setframerate(SAMPLE_RATE)
-        out.writeframes(pcm)
-    return Response(content=buffer.getvalue(), media_type="audio/wav")
-
-
-def _synthesise(engine: Any, text: str) -> bytes:
-    """
-    Drain an async `SpeechStream` from sync code.
-
-    A private event loop rather than `asyncio.run` on the caller's: this function runs on a
-    threadpool worker, which has no running loop, and creating one here keeps the engine's own
-    `to_thread` calls working.
-    """
-    import asyncio
-
-    async def collect() -> bytes:
-        chunks = [chunk.pcm async for chunk in engine(text, 1)]
-        await engine.aclose()
-        return b"".join(chunks)
-
-    return asyncio.run(collect())
+    if response.status_code != 200:
+        raise HTTPException(
+            status_code=422,
+            detail=f"the voice service refused this ({response.status_code}): "
+            f"{response.text[:200]}",
+        )
+    return Response(content=response.content, media_type="audio/wav")
