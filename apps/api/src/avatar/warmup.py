@@ -199,32 +199,63 @@ def _warm_one_frame(renderer: object, identity: object, result: WarmupReport) ->
     the *first* turn 6.9 s behind. The difference is everything that happens lazily on a first
     forward pass -- cuDNN selecting convolution algorithms for these tensor shapes, the landmark
     detector's first inference, the whisper feature extractor's first call, and each allocator
-    arena being created. None of it is triggered by `load()`, which only puts weights on the
-    device, and none of it by `prepare_identity`, which does not run the U-Net at all.
+    arena being created. None of that is triggered by `load()`, which only puts weights on the
+    device, and none by `prepare_identity`, which never runs the U-Net.
 
-    Silence is the right driver: this exists to make the code paths hot, and the cost of a
-    forward pass is a function of tensor shapes rather than of what the audio says.
+    **Driven through the session API, not the backend.** An earlier version called
+    `renderer.render(...)` -- which is a method of `MuseTalkBackend`, not of the renderer -- so
+    `getattr` found nothing, the function returned silently, and `/config` reported
+    `first_render_ms: null` and no failure recorded. Going through `start_session`, `push_audio`
+    and `frames` costs nothing extra and exercises the code a turn actually runs, including the
+    windowing -- the part most likely to warm something the U-Net alone would not.
+
+    Silence is the right driver: this exists to make code paths hot, and a forward pass costs
+    what its tensor shapes cost rather than what the audio says.
 
     Never raises. A warm-up that cannot render is not a reason to refuse to serve -- the same
-    session would then fail loudly for the candidate instead, which is worse -- so the failure
-    is recorded and startup continues.
+    failure would then surface in front of the candidate rather than in the operator's log -- so
+    it is recorded and startup continues.
     """
-    render = getattr(renderer, "render", None)
-    prepared = getattr(identity, "prepared", identity)
-    if not callable(render):
+    from avatar.contracts import AudioChunk
+
+    start = getattr(renderer, "start_session", None)
+    push = getattr(renderer, "push_audio", None)
+    frames = getattr(renderer, "frames", None)
+    if not (callable(start) and callable(push) and callable(frames)):
+        result.faces_failed.append(
+            "first render: the renderer has no start_session/push_audio/frames, so nothing "
+            "could be warmed. The first turn will pay for it."
+        )
         return
 
     mark = time.perf_counter()
+    produced = 0
     try:
-        # 640 ms of 16 kHz mono silence: one render window, so the batching is exercised too.
-        render(prepared, b"\x00\x00" * 10_240, start_frame=0, count=1)
+        session = start(identity)
+        # One 640 ms window of 16 kHz mono silence, at a turn epoch of 1. Epoch 0 is the idle
+        # loop, and pushing to it would warm the wrong path.
+        push(session, AudioChunk(pcm=b"\x00\x00" * 10_240, epoch=1, duration_ms=640))
+        produced = len(list(frames(session)))
+        closer = getattr(renderer, "close_session", None)
+        if callable(closer):
+            closer(session)
     except Exception as exc:
         result.faces_failed.append(f"first render: {type(exc).__name__}: {exc}")
         print(f"warmup: first render FAILED: {type(exc).__name__}: {exc}", flush=True)
         return
+
+    if not produced:
+        # A window that produced nothing means nothing was warmed, and reporting a duration for
+        # it would claim otherwise.
+        result.faces_failed.append(
+            "first render: a full window produced no frames, so nothing was warmed"
+        )
+        print("warmup: first render produced no frames", flush=True)
+        return
+
     result.first_render_ms = round((time.perf_counter() - mark) * 1000)
     print(
-        f"warmup: first frame rendered in {result.first_render_ms} ms "
+        f"warmup: {produced} frame(s) rendered in {result.first_render_ms} ms "
         "(the cost the first candidate would otherwise have paid)",
         flush=True,
     )

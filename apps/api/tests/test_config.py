@@ -207,11 +207,14 @@ def test_warmup_renders_a_frame_so_the_first_candidate_does_not(
         def prepare_identity(self, path: str) -> object:
             return {"prepared": path}
 
-        def render(
-            self, prepared: object, pcm: bytes, *, start_frame: int, count: int
-        ) -> list[bytes]:
-            calls.append({"prepared": prepared, "pcm": len(pcm), "count": count})
-            return [b"frame"]
+        def start_session(self, identity: object) -> object:
+            return {"identity": identity}
+
+        def push_audio(self, session: object, chunk: object) -> None:
+            calls.append({"pcm": len(chunk.pcm), "epoch": chunk.epoch})  # type: ignore[attr-defined]
+
+        def frames(self, session: object) -> list[object]:
+            return [object()]
 
     # Patched at its source, not on `warmup`: `_warm_blocking` imports `build` inside the
     # function, so a module attribute on `warmup` is never consulted.
@@ -225,6 +228,7 @@ def test_warmup_renders_a_frame_so_the_first_candidate_does_not(
 
     assert len(calls) == 1, "warmup did not render a frame"
     assert calls[0]["pcm"] == 20_480, "one 640 ms window of 16 kHz mono silence"
+    assert calls[0]["epoch"] == 1, "epoch 0 is the idle loop, which is the wrong path to warm"
     assert report.first_render_ms is not None
     assert report.faces_warmed == ["face_1"]
 
@@ -248,8 +252,14 @@ def test_a_warmup_render_that_fails_does_not_stop_the_server(
         def prepare_identity(self, path: str) -> object:
             return {"prepared": path}
 
-        def render(self, *args: object, **kwargs: object) -> list[bytes]:
+        def start_session(self, identity: object) -> object:
+            return {}
+
+        def push_audio(self, session: object, chunk: object) -> None:
             raise RuntimeError("no CUDA context")
+
+        def frames(self, session: object) -> list[object]:
+            return []
 
     # Patched at its source, not on `warmup`: `_warm_blocking` imports `build` inside the
     # function, so a module attribute on `warmup` is never consulted.
