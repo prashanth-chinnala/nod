@@ -38,6 +38,7 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 
+from avatar import jobs
 from avatar.contracts import RendererConfig
 from avatar.renderers import build
 from avatar.store import NotFound, store
@@ -195,6 +196,7 @@ async def create_face(body: FaceCreate) -> dict[str, Any]:
 async def upload_face(
     name: Annotated[str, Form()],
     file: Annotated[UploadFile, File()],
+    animate: Annotated[bool, Form()] = False,
 ) -> dict[str, Any]:
     """
     Create a face from an uploaded video or image.
@@ -236,6 +238,24 @@ async def upload_face(
         stored.unlink(missing_ok=True)
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
+    # An image can be animated into a clip with real head motion instead of being expanded into
+    # identical frames. Requested per upload rather than applied always: it costs minutes, needs
+    # LivePortrait installed, and an operator who wants a deliberately static persona should be
+    # able to have one.
+    animation: dict[str, Any] = {}
+    if animate and found.kind == "image":
+        from avatar import animate as animator
+
+        unavailable = animator.available()
+        if unavailable:
+            # Not fatal. The still already works, so refusing the whole upload because an
+            # optional
+            # enhancement is unavailable would be the wrong trade -- the operator gets the face
+            # they uploaded plus the reason it did not move.
+            warnings.append(f"could not animate this photograph: {unavailable}")
+        else:
+            animation = {"animate_requested": True}
+
     record = store.create(
         COLLECTION,
         ID_PREFIX,
@@ -257,6 +277,10 @@ async def upload_face(
             "enrollment_ms": None,
             "frame_count": None,
             "failure_reason": None,
+            "animated": False,
+            "animation_ms": None,
+            "job_started_at": None,
+            **animation,
         },
     )
     return {**record, "warnings": warnings}
@@ -336,22 +360,31 @@ async def delete_face(face_id: str) -> None:
         raise _not_found(face_id) from exc
 
 
-@router.post("/{face_id}/prepare")
+@router.post("/{face_id}/prepare", status_code=status.HTTP_202_ACCEPTED)
 def prepare_face(face_id: str) -> dict[str, Any]:
     """
-    Run enrollment: `queued`/`failed` → `preparing` → `ready` or `failed`.
+    Start enrollment. Returns 202 immediately; poll the record for the outcome.
 
-    **Declared `def`, not `async def`, and that is load-bearing.** `prepare_identity` is
-    synchronous and allowed to be slow. In an `async def` handler it would run on the event
-    loop, which is the same loop serving live WebSocket sessions — one enrollment would stall
-    every conversation in progress. A sync handler is dispatched to a threadpool instead, so the
-    cost lands on a worker thread.
+    **202 rather than a completed 200**, because the work takes minutes -- 126s for a 550-frame
+    reference, and another ~124s when a photograph is animated first. Holding the connection
+    open for
+    that failed in three ways at once: a proxy or browser timed out and showed an error for work
+    that
+    was running fine, nothing reported progress, and a process killed midway left a row claiming
+    `preparing` for ever, which `PREPARABLE` refuses -- so the face became permanently
+    unenrollable
+    and the only fix was deleting it. `avatar.jobs` handles all three, including reaping stale
+    rows at
+    startup.
 
-    **`preparing` is written before the renderer is touched** so that a process killed mid-
-    enrollment leaves evidence of an attempt rather than a record that still claims to be
-    queued. The cost of that choice, stated because it is real: nothing reaps a `preparing` row
-    afterwards, so a crashed enrollment leaves a face that `PREPARABLE` will not accept again
-    and has to be deleted. A reaper belongs with a real job queue, which this is not.
+    **`preparing` is claimed before the renderer is touched**, with a timestamp. The timestamp
+    is what
+    makes recovery possible: without it a stuck row is indistinguishable from a live one.
+
+    Animation, when the upload asked for it, happens *before* enrollment and in the same job.
+    Enrolling first would cache an identity built from the still and silently discard the motion
+    just
+    generated.
     """
     try:
         record = store.get(COLLECTION, face_id)
@@ -367,41 +400,50 @@ def prepare_face(face_id: str) -> dict[str, Any]:
                 f"{sorted(PREPARABLE)}. Delete and recreate the face to re-enroll."
             ),
         )
-    store.update(COLLECTION, face_id, {"status": "preparing"})
+    jobs.claim(store, COLLECTION, face_id)
 
-    # Timed from before `build` on purpose: constructing the renderer is where a real one
-    # loads its weights, and that cost is genuinely part of the first enrollment. Timing only
-    # `prepare_identity` would report a number smaller than the wait the operator sat through.
-    started = time.perf_counter()
-    try:
+    reference = str(record["reference_path"])
+    wants_animation = bool(record.get("animate_requested")) and not record.get("animated")
+
+    def enroll() -> dict[str, Any]:
+        """
+        Animate if asked, then enroll. Runs on a worker thread; raises to fail the job.
+
+        Ordered this way because enrollment must see the final frames: preparing the still and
+        then
+        animating it would cache an identity built from a photograph and quietly ignore the
+        motion
+        that was just generated.
+        """
+        patch: dict[str, Any] = {}
+        source = reference
+
+        if wants_animation:
+            from avatar import animate as animator
+
+            produced = animator.animate(Path(str(record["source_path"] or reference)))
+            source = str(produced.clip)
+            patch |= {
+                "reference_path": source,
+                "animated": True,
+                "animation_ms": produced.ms,
+                "source_kind": "video",
+                "duration_seconds": round(produced.seconds, 2),
+            }
+
+        # Timed from before `build` on purpose: constructing the renderer is where a real one
+        # loads
+        # its weights, and that cost is genuinely part of the first enrollment. Timing only
+        # `prepare_identity` would report a number smaller than the wait the operator sat
+        # through.
+        started = time.perf_counter()
         renderer = build(RendererConfig(name=PREPARE_RENDERER))
-        identity = renderer.prepare_identity(str(record["reference_path"]))
-    except Exception as exc:
-        # Broad by intention. Everything a renderer can raise on operator-supplied media is
-        # this endpoint's normal failure outcome, and the alternative — enumerating the
-        # exception types of a model this project has not run yet — would be a guess that
-        # turns into a 500 the first time it is wrong. `build` is inside the block too, so a
-        # renderer that cannot even be constructed still leaves a diagnosable record instead
-        # of a face stuck in `preparing`.
-        return store.update(
-            COLLECTION,
-            face_id,
-            {"status": "failed", "failure_reason": f"{type(exc).__name__}: {exc}"},
-        )
-    elapsed_ms = round((time.perf_counter() - started) * 1000)
-
-    # `failure_reason` is explicitly cleared, not left behind. It used to survive a later
-    # successful run because the store dropped nulls, so a face could read `ready` while still
-    # carrying the reason it failed two attempts ago -- harmless only for as long as every
-    # reader remembered to check `status` first. Now that a null can be written, the record can
-    # simply stop contradicting itself.
-    return store.update(
-        COLLECTION,
-        face_id,
-        {
+        identity = renderer.prepare_identity(source)
+        return patch | {
             "status": "ready",
-            "failure_reason": None,
-            "enrollment_ms": elapsed_ms,
+            "enrollment_ms": round((time.perf_counter() - started) * 1000),
             "frame_count": _reported_frame_count(identity),
-        },
-    )
+        }
+
+    jobs.submit(store, COLLECTION, face_id, enroll, label=f"enroll-{face_id}")
+    return store.get(COLLECTION, face_id)

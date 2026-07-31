@@ -49,7 +49,7 @@ from avatar.config import load_env, loaded_files
 
 _FROM_ENV_FILE = load_env()
 
-from avatar import warmup
+from avatar import jobs, warmup
 from avatar.agent_config import ResolvedAgent, build_llm_with_tools, resolve_for_session
 from avatar.api import (
     agents,
@@ -190,6 +190,10 @@ async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
     server that still serves the console, which an operator needs to find out why.
 
     """
+    # Before warming, because a row left `preparing` by a killed process is misleading for as
+    # long
+    # as it stands, and warming can take three minutes.
+    await jobs.reap_all()
     await warmup.warm()
     yield
 
@@ -251,6 +255,9 @@ async def config() -> dict[str, object]:
         "store": type(store).__name__,
         # So "why was the first session slow" has an answer that is not a guess.
         "warmup": warmup.report.as_dict(),
+        # What this process is working on now, so a slow Prepare is visible rather
+        # than merely suspected.
+        "jobs_running": jobs.running(),
         "env_files_read": loaded_files(),
         "loaded_from_env_file": sorted(_FROM_ENV_FILE),
     }

@@ -231,7 +231,7 @@ def test_update_renames_without_disturbing_enrollment(
     """
     use_renderer(monkeypatch, RecordingRenderer())
     face = make_face(client)
-    client.post(f"/faces/{face['id']}/prepare")
+    enroll(client, face["id"])
 
     response = client.patch(f"/faces/{face['id']}", json={"name": "Ada Lovelace"})
 
@@ -303,6 +303,26 @@ def test_delete_unknown_id_is_404(client: TestClient) -> None:
     assert client.delete("/faces/face_missing").status_code == 404
 
 
+def enroll(client: TestClient, face_id: str) -> dict[str, Any]:
+    """
+    Start enrollment, wait for the worker, and return the finished record.
+
+    `POST /prepare` answers 202 and does the work on a thread -- it takes minutes with a real
+    renderer, so holding the connection open timed out proxies and left rows stuck in
+    `preparing`
+    when a process died. These tests want the outcome, so they wait for it explicitly rather
+    than
+    making the endpoint synchronous again: the asynchrony is the behaviour under test everywhere
+    else, and a fixture that quietly removed it would test something the product does not do.
+    """
+    from avatar import jobs
+
+    accepted = client.post(f"/faces/{face_id}/prepare")
+    assert accepted.status_code == 202, accepted.text
+    assert jobs.wait_for_idle(30.0), "the enrollment job did not finish"
+    return client.get(f"/faces/{face_id}").json()
+
+
 # -- prepare ----------------------------------------------------------------------------
 
 
@@ -322,10 +342,8 @@ def test_prepare_enrolls_with_the_stub_renderer_and_records_a_measurement(
     use_renderer(monkeypatch, renderer, configs)
     face = make_face(client)
 
-    response = client.post(f"/faces/{face['id']}/prepare")
+    body = enroll(client, face["id"])
 
-    assert response.status_code == 200, response.text
-    body = response.json()
     assert body["status"] == "ready"
     assert isinstance(body["enrollment_ms"], int)
     assert body["enrollment_ms"] >= 0
@@ -343,7 +361,7 @@ def test_prepare_with_the_real_stub_renderer_reaches_ready(client: TestClient) -
     """
     face = make_face(client)
 
-    body = client.post(f"/faces/{face['id']}/prepare").json()
+    body = enroll(client, face["id"])
 
     assert body["status"] == "ready"
     assert body["enrollment_ms"] is not None
@@ -368,7 +386,7 @@ def test_prepare_writes_preparing_before_touching_the_renderer(
 
     use_renderer(monkeypatch, ObservingRenderer())
 
-    client.post(f"/faces/{face['id']}/prepare")
+    enroll(client, face["id"])
 
     assert observed == ["preparing"]
 
@@ -388,7 +406,7 @@ def test_prepare_records_a_frame_count_the_artifact_reports(
     use_renderer(monkeypatch, RecordingRenderer(CountedIdentity()))
     face = make_face(client)
 
-    assert client.post(f"/faces/{face['id']}/prepare").json()["frame_count"] == 900
+    assert enroll(client, face["id"])["frame_count"] == 900
 
 
 def test_prepare_leaves_frame_count_null_when_the_artifact_has_none(client: TestClient) -> None:
@@ -398,7 +416,7 @@ def test_prepare_leaves_frame_count_null_when_the_artifact_has_none(client: Test
     """
     face = make_face(client)
 
-    assert client.post(f"/faces/{face['id']}/prepare").json()["frame_count"] is None
+    assert enroll(client, face["id"])["frame_count"] is None
 
 
 def test_prepare_records_a_renderer_failure_instead_of_raising(
@@ -419,10 +437,8 @@ def test_prepare_records_a_renderer_failure_instead_of_raising(
     use_renderer(monkeypatch, FailingRenderer())
     face = make_face(client)
 
-    response = client.post(f"/faces/{face['id']}/prepare")
+    body = enroll(client, face["id"])
 
-    assert response.status_code == 200, response.text
-    body = response.json()
     assert body["status"] == "failed"
     assert "no face detected in reference clip" in body["failure_reason"]
     assert "RuntimeError" in body["failure_reason"]
@@ -446,7 +462,7 @@ def test_prepare_records_a_renderer_that_cannot_be_built(
     monkeypatch.setattr(faces, "build", failing_build)
     face = make_face(client)
 
-    body = client.post(f"/faces/{face['id']}/prepare").json()
+    body = enroll(client, face["id"])
 
     assert body["status"] == "failed"
     assert "weights not on disk" in body["failure_reason"]
@@ -481,8 +497,8 @@ def test_a_failed_face_can_be_prepared_again(
     use_renderer(monkeypatch, FlakyRenderer())
     face = make_face(client)
 
-    assert client.post(f"/faces/{face['id']}/prepare").json()["status"] == "failed"
-    retried = client.post(f"/faces/{face['id']}/prepare").json()
+    assert enroll(client, face["id"])["status"] == "failed"
+    retried = enroll(client, face["id"])
 
     assert retried["status"] == "ready"
     assert retried["enrollment_ms"] is not None
@@ -510,7 +526,7 @@ def test_prepare_refuses_a_ready_face(client: TestClient) -> None:
     ready, rather than whichever run happened last.
     """
     face = make_face(client)
-    first = client.post(f"/faces/{face['id']}/prepare").json()
+    first = enroll(client, face["id"])
 
     response = client.post(f"/faces/{face['id']}/prepare")
 
