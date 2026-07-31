@@ -77,9 +77,9 @@ class Cadence:
     The server's frame cadence, taken from `hello`.
 
     Read from the server rather than from this process's `AVATAR_FPS`, because the probe and the
-    server are different processes and the probe's environment says nothing about the server's. The
-    first version imported `TARGET_FPS` locally and reported "delivered 8.4 fps against 25" at
-    a server configured for 8 -- a fabricated target, and the `need` column was wrong by the
+    server are different processes and the probe's environment says nothing about the server's.
+    The first version imported `TARGET_FPS` locally and reported "delivered 8.4 fps against 25"
+    at a server configured for 8 -- a fabricated target, and the `need` column was wrong by the
     same factor. `hello` has carried both numbers all along.
     """
 
