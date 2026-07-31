@@ -53,6 +53,7 @@ const BOUNDARIES: Array<{ key: keyof Config & string; label: string; gap: string
 const RESOURCES = [
   { href: "/agents", name: "Agents", collection: "agents", blurb: "Interviewer configuration" },
   { href: "/faces", name: "Faces", collection: "faces", blurb: "Reference personas" },
+  { href: "/voices", name: "Voices", collection: "voices", blurb: "Cloned speech" },
   { href: "/knowledge", name: "Knowledge", collection: "knowledge", blurb: "Retrieval context" },
   { href: "/tools", name: "Tools", collection: "tools", blurb: "Callable functions" },
   { href: "/guardrails", name: "Guardrails", collection: "guardrails", blurb: "Input & output policy" },

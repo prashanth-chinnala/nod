@@ -61,7 +61,7 @@ const DEFAULTS = {
 const TURN_BUDGET = "2.7–5.8s";
 
 type LlmProvider = "openai" | "anthropic" | "scripted";
-type VoiceProvider = "deepgram" | "tone";
+type VoiceProvider = "deepgram" | "tone" | "clone";
 
 /**
  * Model-name suggestions, per provider.
@@ -98,6 +98,9 @@ const MODEL_SUGGESTIONS: Record<LlmProvider, readonly string[]> = {
 const VOICE_SUGGESTIONS: Record<VoiceProvider, readonly string[]> = {
   tone: [],
   deepgram: ["aura-2-thalia-en"],
+  // A cloned voice has no catalogue to suggest from: the identity comes from an uploaded
+  // recording attached below, not from a name typed here.
+  clone: [],
 };
 
 /** A face, as much of one as this form needs to offer it. */
@@ -129,6 +132,7 @@ type Agent = {
   llm_model: string;
   voice_provider: VoiceProvider;
   voice_id: string;
+  voice_ref_id: string | null;
   face_id: string | null;
   knowledge_base_ids: string[];
   tool_ids: string[];
@@ -155,6 +159,7 @@ function attachedSummary(agent: Agent): string {
   const parts: string[] = [];
   if (agent.rubric_id) parts.push("rubric");
   if (agent.face_id) parts.push("face");
+  if (agent.voice_ref_id) parts.push("voice");
   if (agent.guardrail_id) parts.push("guardrail");
   if (agent.pronunciation_id) parts.push("lexicon");
   if (agent.knowledge_base_ids.length) parts.push(`${agent.knowledge_base_ids.length} kb`);
@@ -523,6 +528,7 @@ function CreateForm({ onCreated }: { onCreated: () => void }) {
           >
             <option value="tone">tone</option>
             <option value="deepgram">deepgram</option>
+            <option value="clone">clone (a voice you uploaded)</option>
           </Select>
         </Field>
 
@@ -531,6 +537,8 @@ function CreateForm({ onCreated }: { onCreated: () => void }) {
           hint={
             voiceProvider === "tone"
               ? "tone emits a sine wave at the right length, not speech — it has no voices"
+              : voiceProvider === "clone"
+              ? "Cloned voices come from the Voices screen — attach one below, not here"
               : "Any Aura voice. Suggestions only; Deepgram owns the list. Empty means the adapter's default."
           }
         >

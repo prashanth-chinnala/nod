@@ -20,6 +20,7 @@ const GROUPS = [
     items: [
       { href: "/agents", name: "Agents", hint: "Interviewer configuration" },
       { href: "/faces", name: "Faces", hint: "Reference personas" },
+      { href: "/voices", name: "Voices", hint: "Cloned speech" },
     ],
   },
   {

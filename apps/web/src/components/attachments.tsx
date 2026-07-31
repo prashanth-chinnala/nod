@@ -45,6 +45,15 @@ const SINGLE = [
     hint: "Reference persona. The stub renderer ignores it until a real one runs",
   },
   {
+    field: "voice_ref_id",
+    collection: "voices",
+    label: "Voice (cloned)",
+    // Naming the prerequisite, because attaching a voice alone changes nothing: the engine is
+    // chosen by `voice_provider`, and a voice attached to an agent still set to `deepgram` or
+    // `tone` is stored, displayed, and never spoken.
+    hint: "Only used when the agent's voice provider is 'clone'",
+  },
+  {
     field: "guardrail_id",
     collection: "guardrails",
     label: "Guardrail",
@@ -80,6 +89,7 @@ type Agent = {
   name: string;
   rubric_id: string | null;
   face_id: string | null;
+  voice_ref_id: string | null;
   guardrail_id: string | null;
   pronunciation_id: string | null;
   knowledge_base_ids: string[];
