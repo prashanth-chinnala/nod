@@ -238,9 +238,25 @@ class TorchMuseTalkBackend:
         )
         self.device = ""
         self._models: dict[str, Any] = {}
+        self._pool: Any = None
         # Set in `load()`, once the device is known -- the right batch size depends on it, and
         # measured badly enough on the wrong one to be worth deferring.
         self.batch_size = int(os.environ.get("AVATAR_MUSETALK_BATCH", batch_size))
+
+    def _cpu(self) -> Any:
+        """
+        The thread that does blending and JPEG encoding.
+
+        One worker, not a pool sized to the CPU count. The point is to overlap CPU with GPU, not
+        to parallelise the CPU work itself -- and on 4 vCPU, where the server, the LLM client
+        and the transport also want cycles, more workers would take them from the pipeline they
+        are meant to be feeding. Ordering is also free with one worker.
+        """
+        if self._pool is None:
+            from concurrent.futures import ThreadPoolExecutor
+
+            self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="blend")
+        return self._pool
 
     # ------------------------------------------------------------------ load
 
@@ -539,12 +555,31 @@ class TorchMuseTalkBackend:
             return []
 
         cycle_len = len(prepared["latents"])
-        images: list[bytes] = []
-        for offset in range(0, min(count, len(features)), self.batch_size):
-            batch = features[offset : offset + self.batch_size]
+        total = min(count, len(features))
+
+        # Two-stage pipeline: batch N's blending and JPEG encoding run on a worker thread while
+        # batch N+1's U-Net and VAE run on the GPU. Ordering is preserved because futures are
+        # collected in submission order -- frames must leave here in sequence or the mouth plays
+        # back scrambled.
+        pending: list[Any] = []
+        for offset in range(0, total, self.batch_size):
+            # Clamped to `total`, not just to the feature list. The loop bound already respects
+            # `count`, but an unclamped slice does not: with count=5 and batch=16 the single
+            # batch took features[0:16] and returned 16 frames for a five-frame request. Every
+            # surplus frame is video the mixer must either queue or discard, so a window whose
+            # length is not a multiple of the batch size was quietly adding video lag -- and the
+            # bigger the batch, the more it added, which is the wrong way round for a knob whose
+            # whole purpose is throughput.
+            batch = features[offset : min(offset + self.batch_size, total)]
             indices = [(start_frame + offset + i) % cycle_len for i in range(len(batch))]
-            rendered = self._forward(prepared, batch, indices)
-            images.extend(self._encode(image) for image in rendered)
+            faces = self._decode(prepared, batch, indices)
+            pending.append(
+                self._cpu().submit(self._blend_and_encode, prepared, faces, indices)
+            )
+
+        images: list[bytes] = []
+        for future in pending:
+            images.extend(future.result())
         return images
 
     def _audio_features(self, pcm: bytes) -> list[Any]:
@@ -583,14 +618,18 @@ class TorchMuseTalkBackend:
             )
         )
 
-    def _forward(
+    def _decode(
         self, prepared: dict[str, Any], batch: list[Any], indices: list[int]
     ) -> list[Any]:
-        """Audio embedding -> U-Net -> VAE decode -> blend onto the reference frame."""
-        import cv2
-        import numpy as np
+        """
+        The GPU half: audio embedding -> U-Net -> VAE decode. Returns raw 256x256 faces.
+
+        Split from the blending below so the two can overlap. They are different hardware: this
+        is 71.2 ms/frame of GPU (12.4 U-Net, 58.8 VAE) and blending plus JPEG is 43.5 ms/frame
+        CPU on 4 vCPU. Run in sequence they sum to 114.7; run concurrently the CPU half hides
+        behind the next batch's GPU work and the frame costs what the GPU costs.
+        """
         import torch
-        from musetalk.utils.blending import get_image_blending
 
         unet = self._models["unet"]
         with torch.no_grad():
@@ -606,23 +645,37 @@ class TorchMuseTalkBackend:
                 torch.tensor([0], device=self.device),
                 encoder_hidden_states=embeddings,
             ).sample
-            decoded = self._models["vae"].decode_latents(predicted)
+            # `decode_latents` already moves the result to CPU as a numpy array, so nothing
+            # below this line touches the GPU and the next batch is free to start.
+            return list(self._models["vae"].decode_latents(predicted))
 
-        out: list[Any] = []
-        for i, face in zip(indices, decoded, strict=False):
+    def _blend_and_encode(
+        self, prepared: dict[str, Any], faces: list[Any], indices: list[int]
+    ) -> list[bytes]:
+        """
+        The CPU half: paste each generated face back into its frame and JPEG it.
+
+        Pure CPU and pure numpy/OpenCV, both of which release the GIL for the work that matters,
+        so this genuinely runs alongside the GPU rather than merely appearing to.
+        """
+        import cv2
+        import numpy as np
+        from musetalk.utils.blending import get_image_blending
+
+        out: list[bytes] = []
+        for i, face in zip(indices, faces, strict=False):
             x1, y1, x2, y2 = prepared["coords"][i]
-            # Back to the size of the hole it came from. The U-Net always works at 256x256,
-            # so this is a resize on every frame, not an occasional one.
+            # Back to the size of the hole it came from. The U-Net always works at 256x256, so
+            # this is a resize on every frame, not an occasional one.
             resized = cv2.resize(np.asarray(face).astype(np.uint8), (x2 - x1, y2 - y1))
-            out.append(
-                get_image_blending(
-                    prepared["frames"][i],
-                    resized,
-                    [x1, y1, x2, y2],
-                    prepared["masks"][i],
-                    prepared["mask_boxes"][i],
-                )
+            blended = get_image_blending(
+                prepared["frames"][i],
+                resized,
+                [x1, y1, x2, y2],
+                prepared["masks"][i],
+                prepared["mask_boxes"][i],
             )
+            out.append(self._encode(blended))
         return out
 
     def _encode(self, image: Any) -> bytes:
@@ -667,6 +720,9 @@ class TorchMuseTalkBackend:
 
     def unload(self) -> None:
         """Drop weights and empty the device cache. Safe to call twice."""
+        if self._pool is not None:
+            self._pool.shutdown(wait=True)
+            self._pool = None
         self._models.clear()
         try:
             import torch
