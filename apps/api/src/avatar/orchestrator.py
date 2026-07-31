@@ -437,19 +437,40 @@ class SessionOrchestrator:
         self._renderer.push_audio(self._render_session, chunk)
         await self._transport.send_audio(chunk)
         turn.audio_sent_ms += chunk.duration_ms
-        self._pump_frames(my_epoch)
+        await self._pump_frames(my_epoch)
         self._maybe_start_speaking(turn, my_epoch)
 
-    def _pump_frames(self, my_epoch: int) -> None:
+    async def _pump_frames(self, my_epoch: int) -> None:
         """
-        Drain whatever the renderer has ready.
+        Drain whatever the renderer has ready, off the event loop.
 
-        Synchronous and non-blocking by contract: `frames()` returns what exists
-        now. A renderer that blocks here would stall the audio path, which is the
-        one thing that must not be starved.
+        **The contract this used to assert was false, and it cost most of the frames.** This was
+        synchronous, on the claim that `frames()` "returns what exists now" and so could not
+        block. That is true of the stub, which has nothing to compute. It is not true of a GPU
+        renderer: `MuseTalkRenderer.frames()` runs the U-Net and the VAE inline for every
+        complete window it has buffered, which is hundreds of milliseconds of the event loop
+        held.
+
+        Measured live, at an 8 fps target with a renderer benchmarked at 12.8 fps: **1.4 fps
+        actually delivered**, 9 frames where 75 were needed, and 233 frames discarded across six
+        turns. The frames were being rendered. They could not be *sent*, because the task that
+        drains the mixer to the socket at cadence had no event loop to run on -- so they sat in
+        the queue until the turn ended and `set_source(IDLE_LOOP)` correctly threw them away.
+        The symptom read as a renderer too slow to keep up; the renderer was fine.
+
+        Awaiting a thread rather than firing a task, deliberately. It is exactly as serialised
+        as the synchronous version was, so frames stay in order and no audio goes unrendered --
+        and the audio for this chunk has already been sent on the line above, so nothing on the
+        audio path waits any longer than it did before. The only thing that changes is that the
+        loop is now free during the render, which is the entire fix.
+
+        `asyncio.to_thread` is stdlib and the renderer is behind its Protocol, so no torch
+        crosses this line -- the same reasoning as `start()`.
         """
         assert self._render_session is not None
-        for frame in self._renderer.frames(self._render_session):
+        session = self._render_session
+        rendered = await asyncio.to_thread(lambda: list(self._renderer.frames(session)))
+        for frame in rendered:
             self._mixer.offer(frame, my_epoch)
 
     def _maybe_start_speaking(self, turn: Turn, my_epoch: int) -> None:
