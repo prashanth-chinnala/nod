@@ -33,6 +33,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
@@ -47,7 +48,10 @@ from avatar.idle import placeholder_idle_loop  # noqa: E402
 from avatar.presentation import FramePresenter  # noqa: E402
 from avatar.state import FrameSource  # noqa: E402
 from avatar.telemetry import Telemetry  # noqa: E402
-from avatar.transport.livekit_avatar import LiveKitVideoGenerator  # noqa: E402
+from avatar.transport.livekit_avatar import (  # noqa: E402
+    LiveKitVideoGenerator,
+    SegmentEpochs,
+)
 
 SAMPLE_RATE = 16_000
 CHUNK_MS = 20
@@ -130,15 +134,54 @@ async def run(args: argparse.Namespace) -> int:
     # One epoch for the whole run. A real deployment reads the orchestrator's; see the binding's
     # `_epoch`, which has no default precisely so a split process cannot silently get this
     # wrong.
-    epoch = 1
+    # The epoch source, and it differs by topology on purpose.
+    #
+    # In-process the orchestrator owns the number; here the script does, and one turn is the
+    # whole run. Split, the worker derives it from segment boundaries -- see `SegmentEpochs`,
+    # which is why no turn number has to cross the wire. A single default for both would make
+    # one of them silently wrong, which is the failure this codebase keeps paying for.
+    epochs: Any = SegmentEpochs() if args.audio == "stream" else (lambda: 1)
+
+    def render_arriving_audio(chunk: AudioChunk) -> None:
+        """
+        Turn received audio into rendered frames. The production path, in one function.
+
+        Only wired in stream mode: in queue mode this script generates the audio and drives the
+        renderer itself. Without it the worker published its idle loop forever while audio
+        crossed the wire perfectly -- a failure visible only because `frames_discarded` stayed
+        at zero.
+        """
+        presenter.set_source(FrameSource.RENDERER)
+        renderer.push_audio(session, chunk)
+        for frame in renderer.frames(session):
+            presenter.offer(frame, epochs())
+
     generator = LiveKitVideoGenerator(
-        stream, sample_rate=SAMPLE_RATE, epoch=lambda: epoch
+        stream,
+        sample_rate=SAMPLE_RATE,
+        epoch=epochs,
+        on_audio=render_arriving_audio if args.audio == "stream" else None,
     )
 
     probe = idle_frame_shape(idle)
     url, _, _ = credentials()
     room = rtc.Room()
-    audio_out = QueueAudioOutput(sample_rate=SAMPLE_RATE)
+
+    # Two ways audio can arrive, which is the whole difference between step 1 and step 3.
+    #
+    # `queue` is in-process: this script generates audio and hands it straight over. It proves
+    # the interface and the pairing with nothing else in the way.
+    #
+    # `stream` is the split: audio arrives over `lk.audio_stream` from another participant, and
+    # a barge-in arrives as the `lk.clear_buffer` RPC. Nothing about the generator changes --
+    # which is the point of having built it against our own types.
+    if args.audio == "queue":
+        audio_recv: Any = QueueAudioOutput(sample_rate=SAMPLE_RATE)
+    else:
+        from livekit.agents.voice.avatar import DataStreamAudioReceiver
+
+        audio_recv = DataStreamAudioReceiver(room, sender_identity=args.sender)
+    audio_out = audio_recv
 
     avatar_options = AvatarOptions(
         video_width=probe[0],
@@ -181,10 +224,10 @@ async def run(args: argparse.Namespace) -> int:
         await asyncio.sleep(1.0)
         print("-- speaking")
         presenter.set_source(FrameSource.RENDERER)
-        for chunk in speech(args.speak_seconds, epoch):
+        for chunk in speech(args.speak_seconds, epochs()):
             renderer.push_audio(session, chunk)
             for frame in renderer.frames(session):
-                presenter.offer(frame, epoch)
+                presenter.offer(frame, epochs())
             await audio_out.capture_frame(
                 rtc.AudioFrame(
                     data=chunk.pcm,
@@ -198,7 +241,13 @@ async def run(args: argparse.Namespace) -> int:
         print("-- done speaking; back to the idle loop")
         presenter.set_source(FrameSource.IDLE_LOOP)
 
-    feeder = asyncio.create_task(feed())
+    feeder = (
+        asyncio.create_task(feed())
+        if args.audio == "queue"
+        else asyncio.create_task(asyncio.sleep(args.seconds))
+    )
+    if args.audio == "stream":
+        print(f"-- waiting for audio on lk.audio_stream from {args.sender or 'any agent'}")
     started = time.monotonic()
     try:
         while time.monotonic() - started < args.seconds:
@@ -221,6 +270,7 @@ async def run(args: argparse.Namespace) -> int:
     print(f"   video frames emitted     {stream.frames_emitted}")
     print(f"   audio chunks emitted     {stream.audio_emitted}")
     print(f"   frames repeated          {presenter.frames_repeated}")
+    print(f"   epoch at exit            {epochs()}")
     print(f"   frames discarded         {presenter.frames_discarded}")
     print(f"   video frames RECEIVED    {watcher.video} by a remote subscriber")
     print(f"   audio frames RECEIVED    {watcher.audio} by a remote subscriber")
@@ -319,6 +369,17 @@ def main() -> int:
     parser.add_argument("--seconds", type=float, default=12.0)
     parser.add_argument("--speak-seconds", type=float, default=4.0)
     parser.add_argument("--frame-interval-ms", type=int, default=40)
+    parser.add_argument(
+        "--audio",
+        default="queue",
+        choices=("queue", "stream"),
+        help="queue: in-process (step 1). stream: audio over lk.audio_stream (step 3)",
+    )
+    parser.add_argument(
+        "--sender",
+        default="",
+        help="identity publishing audio in stream mode; empty means the first agent",
+    )
     parser.add_argument("--width", type=int, default=320)
     parser.add_argument("--height", type=int, default=180)
     args = parser.parse_args()

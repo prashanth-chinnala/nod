@@ -41,6 +41,40 @@ BYTES_PER_SAMPLE = 2
 """16-bit PCM, which is what every adapter in `avatar.audio` produces."""
 
 
+class SegmentEpochs:
+    """
+    Turn numbers derived from segment boundaries, for a worker in its own process.
+
+    **This dissolves what the notes called the one genuinely unresolved piece of the split.**
+    The worry was that LiveKit's audio frames carry samples and a rate but not our turn number,
+    so the epoch would have to be put on the wire. It does not: an epoch's only job is to
+    distinguish one turn from the next so that in-flight work for an abandoned turn can be
+    recognised and dropped.
+    Nothing needs the *same integer* on both sides -- only a counter that changes when the turn
+    does.
+
+    And the wire already carries exactly that signal. `DataStreamAudioOutput.flush()` closes the
+    byte stream at the end of an utterance, so **one stream is one turn**, and the receiver
+    surfaces the boundary as `AudioSegmentEnd`. Counting those is a complete, local answer.
+
+    A barge-in bumps it too, which is the whole point: `clear_buffer` arrives, the counter
+    moves, and every frame already rendered for the abandoned turn is stale at the presenter
+    without anyone having to reach into the renderer.
+    """
+
+    def __init__(self, start: int = 1) -> None:
+        # Starts at 1 because IDLE_EPOCH is 0: an idle frame must never collide with a turn.
+        self._epoch = start
+
+    def __call__(self) -> int:
+        return self._epoch
+
+    def advance(self) -> int:
+        """Move to the next turn. Called on a segment end and on a barge-in."""
+        self._epoch += 1
+        return self._epoch
+
+
 class LiveKitVideoGenerator:
     """
     Adapts `AvStream` to LiveKit's `VideoGenerator`.
@@ -58,10 +92,24 @@ class LiveKitVideoGenerator:
         sample_rate: int,
         epoch: Callable[[], int],
         channels: int = 1,
+        on_audio: Callable[[AudioChunk], None] | None = None,
     ) -> None:
         self._stream = stream
         self._sample_rate = sample_rate
         self._channels = channels
+        self._on_audio = on_audio
+        """
+        Called with each chunk as it arrives, before it is queued for emission.
+
+        **This is where received audio becomes a rendered face**, and without it a worker in its
+        own process publishes its idle loop and nothing else -- which is what the first split
+        run did: audio crossed the wire, epochs advanced correctly, and the video was the
+        persona standing by, because nothing had told the renderer to render. Verified rather
+        than assumed only because `frames_discarded` stayed at zero when it should not have.
+
+        A hook rather than the generator owning a renderer: the renderer's lifecycle, its
+        identity and its session belong to whoever built it. This module converts types.
+        """
         self._epoch = epoch
         """
         Which turn the audio arriving now belongs to.
@@ -88,32 +136,50 @@ class LiveKitVideoGenerator:
         `AudioSegmentEnd` to isinstance against it is the dependency this module is avoiding.
         LiveKit's terminator has no payload; an `rtc.AudioFrame` does.
 
-        The epoch comes from the injected source, not from the frame — LiveKit's audio frames
-        carry samples and a rate, not our turn number. See `_epoch`: correct in-process, and
-        something the sender must put on the wire once the renderer is a separate process.
+        **A terminator advances the epoch when the epoch source is a `SegmentEpochs`.** That is
+        what makes a worker in its own process able to tell one turn from the next without the
+        sender putting a turn number on the wire — see `SegmentEpochs`. With an injected
+        in-process source the orchestrator already owns the number and nothing is advanced here.
         """
         data = getattr(frame, "data", None)
         if data is None:
             self._stream.end_segment(epoch=self._epoch())
+            advance = getattr(self._epoch, "advance", None)
+            if callable(advance):
+                advance()
             return
 
         pcm = bytes(data)
         samples = len(pcm) // (BYTES_PER_SAMPLE * self._channels)
         duration_ms = round(samples / self._sample_rate * 1000)
-        self._stream.offer_audio(
-            AudioChunk(pcm=pcm, epoch=self._epoch(), duration_ms=duration_ms)
-        )
+        chunk = AudioChunk(pcm=pcm, epoch=self._epoch(), duration_ms=duration_ms)
+        # The renderer first, then the queue. Order matters only in that a renderer which raised
+        # must not leave the audio silently unqueued -- so it is not wrapped: a renderer that
+        # cannot render is a broken session, and hiding it here would produce a silent avatar
+        # with no explanation.
+        if self._on_audio is not None:
+            self._on_audio(chunk)
+        self._stream.offer_audio(chunk)
 
     def clear_buffer(self) -> None:
         """
-        Barge-in. Drop retained audio; the presenter drops frames when the source returns to
-        idle.
+        Barge-in. Drop retained audio and move past the abandoned turn.
 
         Sync, which the Protocol permits (`None | Coroutine`), and preferable: it can be called
         straight from the RPC handler with nothing scheduled. `AvStream.clear` is sync for the
         same reason.
+
+        **Advancing the epoch is the half that makes the video stop too.** Clearing the audio
+        queue alone would leave frames already rendered for the abandoned turn queued in the
+        presenter and still current, so the mouth would keep speaking a sentence nobody can
+        hear. With the epoch moved, those frames are stale by the existing `offer` check — the
+        same mechanism that has always handled cancellation, now reachable from an RPC in
+        another process.
         """
         self._stream.clear()
+        advance = getattr(self._epoch, "advance", None)
+        if callable(advance):
+            advance()
 
     async def __aiter__(self) -> AsyncIterator[Any]:
         """
