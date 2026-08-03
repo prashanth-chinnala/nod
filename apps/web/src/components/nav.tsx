@@ -8,13 +8,25 @@ import { Wordmark } from "@/components/logo";
 /**
  * The sidebar.
  *
- * Grouped rather than a flat list, and the grouping is a claim about the product: an Agent is
- * the thing you configure, everything under "Attach" is a component it references, and
- * "Observe" is where you find out whether any of it worked. A flat list of nine items would
- * hide that an Agent is the centre and the rest hang off it.
+ * Grouped rather than a flat list, and the grouping is a claim about the product: "Interview" is
+ * the work — who you are interviewing and what happened — "Configure" is the interviewer that
+ * conducts it, "Attach" is the components that interviewer references, and "Observe" is how you
+ * ask questions across all of it. A flat list of ten items would hide that ordering.
+ *
+ * Candidates lead, and Sessions moved up beside them, because that is the pair an operator returns
+ * to daily. Everything under Configure and Attach is set up once and then left alone — putting the
+ * daily work behind the setup was an artefact of the order these screens were built in, not a
+ * claim anyone would defend.
  */
 
 const GROUPS = [
+  {
+    label: "Interview",
+    items: [
+      { href: "/candidates", name: "Candidates", hint: "People, resumes, invites" },
+      { href: "/sessions", name: "Sessions", hint: "Transcripts & latency" },
+    ],
+  },
   {
     label: "Configure",
     items: [
@@ -35,10 +47,7 @@ const GROUPS = [
   },
   {
     label: "Observe",
-    items: [
-      { href: "/sessions", name: "Sessions", hint: "Transcripts & latency" },
-      { href: "/assistant", name: "Assistant", hint: "Ask across interviews" },
-    ],
+    items: [{ href: "/assistant", name: "Assistant", hint: "Ask across interviews" }],
   },
 ] as const;
 

@@ -91,6 +91,28 @@ async def list_sessions() -> list[dict[str, Any]]:
     return store.list(COLLECTION)
 
 
+def new_session(agent_id: str | None, candidate_id: str | None = None) -> dict[str, Any]:
+    """
+    The initial shape of a session record. The only definition of it.
+
+    Exported because `/candidates/{id}/interview` mints sessions too, and an earlier version of
+    it built the record by hand with only the two ids -- so an invited interview arrived with no
+    `turns`, no `started_at` and no counters, while a directly-created one had all five. Nothing
+    errored; the console read the missing keys positionally and rendered `undefined` where a
+    number belonged, which is the same defect this file already guards against by initialising
+    every timing on a turn. Two writers of one shape will always drift, so there is one writer.
+    """
+    return {
+        "agent_id": agent_id,
+        "candidate_id": candidate_id,
+        "started_at": now_iso(),
+        "ended_at": None,
+        "turns": [],
+        "stale_dropped": 0,
+        "frames_repeated": 0,
+    }
+
+
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def create_session(body: SessionCreate) -> dict[str, Any]:
     """Called by the runtime when a candidate connects, not by an operator."""
@@ -105,24 +127,99 @@ async def create_session(body: SessionCreate) -> dict[str, Any]:
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=f"no candidate {body.candidate_id!r}",
             ) from None
-    return store.create(
-        COLLECTION,
-        ID_PREFIX,
-        {
-            "agent_id": body.agent_id,
-            "candidate_id": body.candidate_id,
-            "started_at": now_iso(),
-            "ended_at": None,
-            "turns": [],
-            "stale_dropped": 0,
-            "frames_repeated": 0,
-        },
-    )
+    return store.create(COLLECTION, ID_PREFIX, new_session(body.agent_id, body.candidate_id))
 
 
 @router.get("/{session_id}")
 async def get_session(session_id: str) -> dict[str, Any]:
     return _load(session_id)
+
+
+class Attendance(BaseModel):
+    """
+    What the person joining says about themselves, before the interview starts.
+
+    `confirmed_name` is what they typed, not what we expected. Storing the expected name would
+    make a mismatch invisible, and a mismatch is the only interesting thing this endpoint can
+    record.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    confirmed_name: Annotated[str, Field(min_length=1, max_length=160)]
+    consented_to_recording: bool = False
+    user_agent: Annotated[str, Field(max_length=400)] = ""
+    timezone: Annotated[str, Field(max_length=80)] = ""
+
+
+@router.post("/{session_id}/attendance")
+async def record_attendance(session_id: str, body: Attendance) -> dict[str, Any]:
+    """
+    Record who says they are sitting this interview. **This does not verify identity.**
+
+    **What this is, stated precisely, because the wrong reading of it is dangerous.** There is
+    no authentication anywhere in this system; the interview link is the whole credential. So
+    nothing here can prove a person is who they claim. What it does is capture an explicit,
+    timestamped attestation — a name they typed, a recording consent, the browser and timezone
+    they joined from — and put that on the record, so "who sat this interview" has a documented
+    answer rather than an assumed one.
+
+    That distinction is carried through to the report, which says "attested, not verified".
+    Labelling this as identity verification would be worse than not having it: a hiring decision
+    made partly on the belief that identity was checked, when it was not, is a specific and
+    foreseeable harm.
+
+    **Why the typed name is stored rather than compared.** A mismatch is the only signal
+    available here, and it is only visible if both names survive. If this endpoint compared and
+    stored a boolean, a candidate typing a colleague's name would be indistinguishable from a
+    typo, and a reviewer would have nothing to look at. So it records, the report shows both,
+    and a human decides whether the difference matters.
+
+    Re-joining overwrites, because the last attestation describes the session that actually
+    happened. Every attestation is kept in `history` though, since several joins under different
+    names is itself worth seeing.
+    """
+    record = _load(session_id)
+    if record.get("ended_at"):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"session {session_id!r} ended at {record['ended_at']}",
+        )
+
+    expected = ""
+    candidate_id = str(record.get("candidate_id") or "")
+    if candidate_id:
+        try:
+            expected = str(store.get("candidates", candidate_id).get("name") or "")
+        except NotFound:
+            expected = ""
+
+    typed = body.confirmed_name.strip()
+    entry = {
+        "confirmed_name": typed,
+        "expected_name": expected,
+        # Compared here so the console does not have to reimplement the comparison, but both
+        # names are kept above so a reviewer can judge for themselves. Case- and
+        # space-insensitive: a candidate typing "aparna rao" is not a discrepancy worth flagging
+        # to a human.
+        "matches_expected": bool(expected) and typed.casefold() == expected.casefold(),
+        "consented_to_recording": body.consented_to_recording,
+        "user_agent": body.user_agent[:400],
+        "timezone": body.timezone,
+        "attested_at": now_iso(),
+        # Always false, and present rather than omitted so a reader of the record does not have
+        # to infer that identity was unverified from the absence of a field. There is no
+        # mechanism in this system that could set it true.
+        "verified": False,
+    }
+    previous = record.get("attendance") or {}
+    history = list(previous.get("history") or [])
+    if previous.get("attested_at"):
+        history.append({k: v for k, v in previous.items() if k != "history"})
+
+    return store.update(
+        COLLECTION, session_id, {"attendance": {**entry, "history": history}}
+    )
 
 
 @router.post("/{session_id}/turns", status_code=status.HTTP_201_CREATED)

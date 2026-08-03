@@ -87,6 +87,39 @@ export default function InterviewPage({ params }: { params: Promise<{ id: string
   }, [unblockAudio, unblockSocketAudio]);
 
   const [joined, setJoined] = useState(false);
+  const [expectedName, setExpectedName] = useState<string | null>(null);
+  const [confirmedName, setConfirmedName] = useState("");
+  const [consented, setConsented] = useState(false);
+
+  // Who this link was issued to, so the field can be prefilled and a mismatch is a deliberate act
+  // rather than a typo. Fetched rather than embedded in the link: a name in a URL is a name in
+  // every log, proxy and browser history between here and the candidate.
+  useEffect(() => {
+    let live = true;
+    (async () => {
+      try {
+        const session = await fetch(`${API}/sessions/${id}`, { cache: "no-store" });
+        if (!session.ok) return;
+        const body = (await session.json()) as { candidate_id?: string | null };
+        if (!body.candidate_id) return;
+        const person = await fetch(`${API}/candidates/${body.candidate_id}`, {
+          cache: "no-store",
+        });
+        if (!person.ok) return;
+        const record = (await person.json()) as { name?: string };
+        if (live && record.name) {
+          setExpectedName(record.name);
+          setConfirmedName(record.name);
+        }
+      } catch {
+        // A link that cannot reach the runtime fails visibly a moment later when joining. There is
+        // nothing useful to say here that the join would not say better.
+      }
+    })();
+    return () => {
+      live = false;
+    };
+  }, [id]);
   const [micOn, setMicOn] = useState(true);
   const [showCaptions, setShowCaptions] = useState(true);
   const [draft, setDraft] = useState("");
@@ -138,6 +171,21 @@ export default function InterviewPage({ params }: { params: Promise<{ id: string
   }, [rtcVideo, suppressPaintReports]);
 
   const join = useCallback(async () => {
+    // Recorded before the socket opens, so an interview cannot exist without an attestation
+    // attached to it. Fire-and-forget: a failure to record who turned up must not stop the
+    // interview -- the candidate is here, the alternative is a blank screen, and the absence shows
+    // on the report as "not recorded" rather than as a false claim.
+    void fetch(`${API}/sessions/${id}/attendance`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        confirmed_name: confirmedName.trim() || "(not given)",
+        consented_to_recording: consented,
+        user_agent: navigator.userAgent.slice(0, 400),
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone ?? "",
+      }),
+    }).catch(() => undefined);
+
     // Release the preview first. Holding the camera open in two places makes the published track
     // fail on some machines, and that failure presents as a camera that simply does not work.
     previewStream.current?.getTracks().forEach((track) => track.stop());
@@ -153,7 +201,7 @@ export default function InterviewPage({ params }: { params: Promise<{ id: string
     } catch {
       setMicOn(false);
     }
-  }, [connect, joinRtc, startMic]);
+  }, [connect, joinRtc, startMic, id, confirmedName, consented]);
 
   const leave = useCallback(() => {
     stopMic();
@@ -217,17 +265,69 @@ export default function InterviewPage({ params }: { params: Promise<{ id: string
                   ? "no camera or mic"
                   : "checking devices"}
             </Chip>
-            <div className="ml-auto">
-              <Button variant="primary" onClick={() => void join()}>
+          </div>
+
+          {/*
+            Confirmation, not verification, and the wording says so. There is no authentication in
+            this system -- the link is the whole credential -- so nothing here can prove who is
+            sitting down. What it can do is make the claim explicit and timestamped, which turns
+            "who took this interview" from an assumption into something on the record. Overstating
+            it would be worse than omitting it: a hiring decision resting partly on a check nobody
+            performed is a specific harm.
+          */}
+          <div className="border-t border-hair px-5 py-4">
+            <label
+              htmlFor="confirm-name"
+              className="block text-[12.5px] font-medium text-ink"
+            >
+              Confirm your name
+            </label>
+            <p className="mt-1 text-[11.5px] leading-relaxed text-ink-low">
+              {expectedName
+                ? "This is who the interview was arranged for. Correct it if it is wrong."
+                : "The name that will appear on your interview record."}
+            </p>
+            <input
+              id="confirm-name"
+              value={confirmedName}
+              onChange={(e) => setConfirmedName(e.target.value)}
+              placeholder="Your full name"
+              className="mt-2 w-full rounded-lg border border-hair bg-raise px-3 py-2 text-[13px] text-ink outline-none transition-colors focus:border-accent"
+            />
+
+            <label className="mt-3.5 flex items-start gap-2.5 text-[12px] leading-relaxed text-ink-mid">
+              <input
+                type="checkbox"
+                checked={consented}
+                onChange={(e) => setConsented(e.target.checked)}
+                className="mt-0.5 size-3.5 shrink-0 accent-accent"
+              />
+              <span>
+                I understand this interview is recorded — video, audio and a transcript — and that
+                a person will review it.
+              </span>
+            </label>
+
+            <div className="mt-4 flex flex-wrap items-center gap-3">
+              <Button
+                variant="primary"
+                disabled={!confirmedName.trim() || !consented}
+                onClick={() => void join()}
+              >
                 Join interview
               </Button>
+              {!consented || !confirmedName.trim() ? (
+                <span className="text-[11.5px] text-ink-low">
+                  Confirm your name and the recording notice to begin.
+                </span>
+              ) : null}
             </div>
           </div>
         </div>
 
-        {/* Said before the camera is ever published, not after. */}
         <p className="mt-4 text-[12px] leading-relaxed text-ink-low">
-          This session is recorded — video, audio and a transcript — and reviewed by a person.
+          Your name is recorded as you entered it. It is not verified — we have no way to check it
+          — and a reviewer sees both what you typed and who the interview was arranged for.
           {devicesReady === false
             ? " No camera or microphone was found, but you can still take the interview by typing."
             : ""}

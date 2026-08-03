@@ -813,6 +813,95 @@ VOICE_SAMPLES = [
     ("Reference recording — English sample", VENDOR / "audio" / "eng.wav"),
 ]
 
+CANDIDATES = [
+    {
+        "name": "Aparna Rao",
+        "email": "aparna.rao@example.com",
+        "role": "Senior Backend Engineer",
+        "notes": "Referred by the payments team. Probe the ledger and ordering work.",
+        "agent": "Senior backend interviewer",
+        "resume": "aparna-rao.md",
+        "resume_text": """# Aparna Rao
+Senior Backend Engineer — Bengaluru
+
+## Experience
+
+**Staff Engineer, Ledger Platform (2022–present)**
+Owned the double-entry ledger behind payouts. Moved settlement from a nightly batch to streaming
+reconciliation, cutting the window from 14 hours to under 4 minutes. Introduced a per-account
+sequence number so correctness stopped depending on Kafka partition ordering, after a rebalance
+caused stale balances to overwrite fresh ones.
+
+**Senior Engineer, Payments (2019–2022)**
+Built idempotent payment capture across three providers. Designed the retry and dedupe layer and
+led the payments on-call rotation. Duplicate-charge incidents went from roughly two a month to
+zero over two quarters.
+
+## Skills
+Go, Python, PostgreSQL, Kafka, Kubernetes, Terraform, gRPC
+""",
+    },
+    {
+        "name": "Daniel Okonkwo",
+        "email": "d.okonkwo@example.com",
+        "role": "Data Engineer",
+        "notes": "Strong on batch, unproven on streaming. Push on late-arriving events.",
+        "agent": "Data engineering interviewer",
+        "resume": "daniel-okonkwo.md",
+        "resume_text": """# Daniel Okonkwo
+Data Engineer — Lagos
+
+## Experience
+
+**Data Engineer, Analytics Platform (2021–present)**
+Own 40+ dbt models feeding revenue reporting. Cut the nightly run from 6 hours to 90 minutes by
+replacing full refreshes with incremental models. Introduced freshness SLOs per dataset with the
+producing team as owner rather than the platform team.
+
+**Analyst turned Engineer (2018–2021)**
+Started in analytics, moved into engineering after automating a reporting pack that took three
+days a month. Built the first Airflow deployment and the on-call runbook for it.
+
+## Skills
+Python, SQL, dbt, Airflow, Snowflake, Spark, Kafka Connect
+""",
+    },
+    {
+        "name": "Mei Lin Chen",
+        "email": "meilin.chen@example.com",
+        "role": "Engineering Manager",
+        "notes": "Second-time manager. Ask about the reorg she described in the screen.",
+        "agent": "Engineering manager interviewer",
+        "resume": "mei-lin-chen.md",
+        "resume_text": """# Mei Lin Chen
+Engineering Manager — Singapore
+
+## Experience
+
+**Engineering Manager, Platform (2022–present)**
+Two teams, 11 engineers. Took over a group that had missed three consecutive quarterly commitments
+and reset scope with the product lead rather than adding people. Introduced written incident
+reviews and moved on-call ownership from a central team to the producing teams.
+
+**Tech Lead, Infrastructure (2019–2022)**
+Led the migration off a single shared Postgres to per-service databases. Wrote the cutover plan and
+the rollback; ran it over five months with no customer-visible incident.
+
+## Skills
+Team building, incident practice, platform strategy. Still writes Go on Fridays.
+""",
+    },
+    {
+        "name": "Tom Whitfield",
+        "email": "tom.whitfield@example.com",
+        "role": "Frontend Engineer",
+        "notes": "No resume on file yet — invited before it arrived.",
+        "agent": "Frontend interviewer",
+        "resume": None,
+        "resume_text": None,
+    },
+]
+
 TRANSCRIPT = [
     (
         "We had a queue-backed ingest that assumed events for one account arrived in order. It "
@@ -1008,10 +1097,77 @@ def seed(dry_run: bool = False) -> dict[str, Any]:
         print(f"   {spec['name']}: voice={spec['voice_id']}, "
               f"{len(body['knowledge_base_ids'])} kb, {len(body['tool_ids'])} tools")
 
+    print("-- candidates")
+    made["candidates"] = {}
+    resumes = ROOT / "data" / "seed-resumes"
+    for spec in CANDIDATES:
+        body = {
+            "name": spec["name"],
+            "email": spec["email"],
+            "role": spec["role"],
+            "notes": spec["notes"],
+            "agent_id": made["agents"][spec["agent"]],
+        }
+        candidate = call("POST", "/candidates", body)
+        made["candidates"][spec["name"]] = candidate["id"]
+        detail = "no resume"
+        if spec["resume_text"]:
+            # Written to a temporary file and uploaded, rather than posted as a text field: the
+            # upload path is the one an operator uses, and seeding around it would leave the
+            # extractor untested by this script. The file lives under `data/`, which is gitignored,
+            # so no invented personal document enters the repository.
+            resumes.mkdir(parents=True, exist_ok=True)
+            path = resumes / str(spec["resume"])
+            path.write_text(str(spec["resume_text"]))
+            uploaded = call(
+                "POST", f"/candidates/{candidate['id']}/resume", files={"file": path}
+            )
+            detail = (
+                f"{uploaded.get('resume_chars')} chars"
+                if not uploaded.get("resume_error")
+                else f"extract failed: {uploaded['resume_error']}"
+            )
+        print(f"   {spec['name']} ({spec['role']}): {detail}")
+
+    print("-- interviews for three of them")
+    for name in ("Aparna Rao", "Daniel Okonkwo", "Tom Whitfield"):
+        invite = call("POST", f"/candidates/{made['candidates'][name]}/interview", {})
+        # An attestation, so the report shows the identity block rather than "not recorded". Tom's
+        # deliberately differs from the name on file: one report should show the mismatch warning,
+        # because that is the case a reviewer most needs to have seen before it matters.
+        typed = "Thomas Whitfield" if name == "Tom Whitfield" else name
+        call(
+            "POST",
+            f"/sessions/{invite['session_id']}/attendance",
+            {
+                "confirmed_name": typed,
+                "consented_to_recording": True,
+                "user_agent": "Mozilla/5.0 (seed)",
+                "timezone": "Asia/Kolkata",
+            },
+        )
+        made.setdefault("invites", {})[name] = invite["session_id"]
+        flag = "  <- name differs, on purpose" if typed != name else ""
+        print(f"   {name}: {invite['session_id']} attested as {typed!r}{flag}")
+
     print("-- a completed, scored session")
     made["sessions"] = {}
     agent_id = made["agents"]["Senior backend interviewer"]
-    session = call("POST", "/sessions", {"agent_id": agent_id})
+    session = call(
+        "POST",
+        "/sessions",
+        {"agent_id": agent_id, "candidate_id": made["candidates"]["Aparna Rao"]},
+    )
+    call(
+        "POST",
+        f"/sessions/{session['id']}/attendance",
+        {
+            "confirmed_name": "Aparna Rao",
+            "consented_to_recording": True,
+            "user_agent": "Mozilla/5.0 (seed)",
+            "timezone": "Asia/Kolkata",
+        },
+    )
     for index, (heard, said) in enumerate(TRANSCRIPT, start=1):
         call("POST", f"/sessions/{session['id']}/turns", {
             "epoch": index,
@@ -1076,8 +1232,8 @@ def main() -> int:
         return 0
 
     print("\n-- what exists now")
-    for collection in ("agents", "faces", "voices", "knowledge", "rubrics", "guardrails",
-                       "pronunciations", "tools", "sessions"):
+    for collection in ("candidates", "agents", "faces", "voices", "knowledge", "rubrics",
+                       "guardrails", "pronunciations", "tools", "sessions"):
         records = call("GET", f"/{collection}") or []
         print(f"   {collection:16} {len(records)}")
 

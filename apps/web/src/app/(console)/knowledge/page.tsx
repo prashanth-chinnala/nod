@@ -14,7 +14,7 @@
  * would assert a threshold this system does not have.
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   Button,
@@ -30,6 +30,7 @@ import {
   Row,
   Select,
   Table,
+  Textarea,
   num,
 } from "@/components/ui";
 
@@ -255,6 +256,8 @@ export default function KnowledgePage() {
 
       {selected ? (
         <>
+          <AddDocument base={selected} onAdded={load} />
+
           <Card>
             <div className="grid grid-cols-3 divide-x divide-hair">
               <Metric label="Documents" value={selected.documents?.length ?? 0} />
@@ -335,14 +338,8 @@ export default function KnowledgePage() {
               <div className="border-t border-hair">
                 <Empty title="Nothing to retrieve from">
                   This base has no chunks yet, so every query returns empty — which looks
-                  identical to broken retrieval. Upload a document to{" "}
-                  <span className="font-mono text-[11.5px] text-ink">
-                    /knowledge/{selected.id}/documents
-                  </span>{" "}
-                  with a{" "}
-                  <span className="font-mono text-[11.5px] text-ink">filename</span> and{" "}
-                  <span className="font-mono text-[11.5px] text-ink">text</span>; blank lines
-                  become chunk boundaries.
+                  identical to broken retrieval. Add a document above; blank lines become chunk
+                  boundaries, so how the text is paragraphed decides what can be retrieved.
                 </Empty>
               </div>
             ) : hits === null ? (
@@ -384,5 +381,187 @@ export default function KnowledgePage() {
         </>
       ) : null}
     </Page>
+  );
+}
+
+
+/**
+ * Add a document to a knowledge base, by pasting text or dropping a file.
+ *
+ * **Why this exists.** The instruction here used to be a `curl` command. That is a reasonable
+ * thing to show an engineer once and an unreasonable thing to require of the person who actually
+ * maintains an interviewer's knowledge — which is the same person who writes the on-call policy,
+ * not the person who deploys the runtime. A console that can create a knowledge base and not put
+ * anything in it is a console that does not do the job.
+ *
+ * **Why paste and drop, and not only drop.** Most of what belongs in a base is a few paragraphs
+ * that exist in someone's head or in a Slack message, with no file to attach. Requiring a file
+ * would mean saving one first, which is friction with no purpose. Files are supported because the
+ * other half of the time it is a handbook page that is already a document.
+ *
+ * **Why paragraph structure is called out.** Chunking splits on blank lines, so a wall of text is
+ * one chunk and retrieves as all-or-nothing. That is invisible until retrieval is disappointing,
+ * so it is said here, before the text is written, rather than in the retrieval tester afterwards.
+ */
+function AddDocument({
+  base,
+  onAdded,
+}: {
+  base: KnowledgeBase;
+  onAdded: () => void;
+}) {
+  const picker = useRef<HTMLInputElement>(null);
+  const [filename, setFilename] = useState("");
+  const [text, setText] = useState("");
+  const [dragging, setDragging] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const [added, setAdded] = useState<string | null>(null);
+
+  async function read(file: File) {
+    // Read in the browser and post as text, rather than adding a multipart endpoint. The API
+    // already accepts {filename, text} and a resume-style binary path would mean a second
+    // extractor to keep in step with the first for no gain -- knowledge documents are text.
+    if (file.size > 2 * 1024 * 1024) {
+      setProblem(`${file.name} is ${(file.size / 1_048_576).toFixed(1)} MB. Paste an excerpt instead.`);
+      return;
+    }
+    try {
+      const body = await file.text();
+      setFilename(file.name);
+      setText(body);
+      setProblem(null);
+    } catch {
+      setProblem(`${file.name} could not be read as text. PDFs are not supported here.`);
+    }
+  }
+
+  async function submit() {
+    if (!text.trim()) return;
+    setBusy(true);
+    setProblem(null);
+    setAdded(null);
+    try {
+      const response = await fetch(`${API}/knowledge/${base.id}/documents`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          filename: filename.trim() || "pasted.md",
+          text,
+        }),
+      });
+      if (!response.ok) {
+        const detail = (await response.json().catch(() => null)) as { detail?: unknown } | null;
+        throw new Error(
+          typeof detail?.detail === "string"
+            ? detail.detail
+            : `the runtime answered ${response.status}`,
+        );
+      }
+      setAdded(filename.trim() || "pasted.md");
+      setFilename("");
+      setText("");
+      onAdded();
+    } catch (cause: unknown) {
+      setProblem(describe(cause));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const paragraphs = text.trim() ? text.trim().split(/\n\s*\n/).length : 0;
+
+  return (
+    <Card>
+      <CardHeader
+        title={`Add a document to ${base.name}`}
+        hint="Paste text or drop a file. Blank lines become chunk boundaries, so paragraph structure decides what can be retrieved independently."
+      />
+      <div className="space-y-4 p-5">
+        <div
+          onDragOver={(e) => {
+            e.preventDefault();
+            setDragging(true);
+          }}
+          onDragLeave={() => setDragging(false)}
+          onDrop={(e) => {
+            e.preventDefault();
+            setDragging(false);
+            const file = e.dataTransfer.files?.[0];
+            if (file) void read(file);
+          }}
+          className={[
+            "rounded-lg border border-dashed px-4 py-3 text-center transition-colors",
+            dragging ? "border-accent bg-accent/8" : "border-hair bg-glass",
+          ].join(" ")}
+        >
+          <p className="text-[12.5px] text-ink-mid">
+            Drop a .md or .txt file, or{" "}
+            <button
+              onClick={() => picker.current?.click()}
+              className="text-accent underline decoration-accent/40 underline-offset-2"
+            >
+              choose one
+            </button>{" "}
+            — or just paste below.
+          </p>
+          <input
+            ref={picker}
+            type="file"
+            accept=".md,.markdown,.txt,.text"
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) void read(file);
+              e.target.value = "";
+            }}
+          />
+        </div>
+
+        <Field label="Filename" hint="How this document is identified in the list and in citations.">
+          <Input
+            value={filename}
+            onChange={(e) => setFilename(e.target.value)}
+            placeholder="oncall.md"
+          />
+        </Field>
+
+        <Field
+          label="Text"
+          hint={
+            paragraphs
+              ? `${text.length.toLocaleString()} characters · ${paragraphs} paragraph${paragraphs === 1 ? "" : "s"}, so ${paragraphs} chunk${paragraphs === 1 ? "" : "s"}`
+              : "Separate distinct facts with a blank line — each becomes independently retrievable."
+          }
+        >
+          <Textarea
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            rows={8}
+            placeholder={
+              "On-call rotation. One primary and one secondary, rotating weekly.\n\n" +
+              "Escalation. Any page unacknowledged for ten minutes escalates automatically."
+            }
+          />
+        </Field>
+
+        {problem ? (
+          <div className="rounded-lg border border-bad/40 bg-bad/8 px-3 py-2">
+            <p className="text-[12px] text-bad">{problem}</p>
+          </div>
+        ) : null}
+        {added ? (
+          <div className="rounded-lg border border-ok/40 bg-ok/8 px-3 py-2">
+            <p className="text-[12px] text-ok">
+              Added {added}. Test it in the retrieval tester below before relying on it.
+            </p>
+          </div>
+        ) : null}
+
+        <Button variant="primary" onClick={submit} disabled={busy || !text.trim()}>
+          {busy ? "Adding…" : "Add document"}
+        </Button>
+      </div>
+    </Card>
   );
 }

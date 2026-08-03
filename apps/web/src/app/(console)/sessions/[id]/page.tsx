@@ -97,9 +97,35 @@ type Recording = {
   room_sid?: string;
 };
 
+type Candidate = {
+  id: string;
+  name: string;
+  email: string;
+  role: string;
+  status: string;
+  notes: string | null;
+  resume_filename: string | null;
+  resume_chars: number | null;
+  resume_error: string | null;
+};
+
+type Attendance = {
+  confirmed_name: string;
+  expected_name: string;
+  matches_expected: boolean;
+  consented_to_recording: boolean;
+  user_agent: string;
+  timezone: string;
+  attested_at: string;
+  verified: boolean;
+  history?: Attendance[];
+};
+
 type Session = {
   id: string;
   agent_id: string | null;
+  agent_name?: string | null;
+  candidate_id?: string | null;
   started_at: string;
   ended_at: string | null;
   turns: Turn[];
@@ -109,6 +135,7 @@ type Session = {
                competencies?: CoverageItem[] } | null;
   scoring?: Scoring | null;
   recording?: Recording | null;
+  attendance?: Attendance | null;
 };
 
 /**
@@ -157,6 +184,7 @@ export default function ReportPage({ params }: { params: Promise<{ id: string }>
   const [session, setSession] = useState<Session | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [rescoring, setRescoring] = useState(false);
+  const [candidate, setCandidate] = useState<Candidate | null>(null);
 
   const load = useCallback(() => {
     fetch(`${API}/sessions/${id}`, { cache: "no-store" })
@@ -168,6 +196,17 @@ export default function ReportPage({ params }: { params: Promise<{ id: string }>
       .then((loaded) => {
         setSession(loaded);
         setError(null);
+        // Fetched after the session rather than in parallel, because the id to fetch comes from
+        // it. A missing candidate is not an error here -- the record may have been deleted, and
+        // the report says so rather than failing to render.
+        if (loaded.candidate_id) {
+          fetch(`${API}/candidates/${loaded.candidate_id}`, { cache: "no-store" })
+            .then(async (r) => (r.ok ? ((await r.json()) as Candidate) : null))
+            .then(setCandidate)
+            .catch(() => setCandidate(null));
+        } else {
+          setCandidate(null);
+        }
       })
       .catch((cause: unknown) => {
         setSession(null);
@@ -234,7 +273,7 @@ export default function ReportPage({ params }: { params: Promise<{ id: string }>
   return (
     <Page
       title="Report"
-      lede={`Session ${session.id}${session.agent_id ? ` · agent ${session.agent_id}` : ""}. Started ${when(session.started_at)}.`}
+      lede={`Session ${session.id}${session.agent_name ? ` · ${session.agent_name}` : ""}. Started ${when(session.started_at)}.`}
       action={
         <div className="flex gap-2">
           <Link href="/sessions">
@@ -246,6 +285,69 @@ export default function ReportPage({ params }: { params: Promise<{ id: string }>
         </div>
       }
     >
+      {candidate ? (
+        <Card>
+          <CardHeader
+            title={candidate.name || "Candidate"}
+            hint={
+              candidate.role
+                ? `Interviewed for ${candidate.role}`
+                : "No role was recorded for this interview"
+            }
+            action={
+              <Link href="/candidates">
+                <Button>All candidates</Button>
+              </Link>
+            }
+          />
+          <div className="grid gap-x-8 gap-y-3 px-5 py-4 md:grid-cols-2">
+            {candidate.email ? (
+              <p className="text-[12.5px] text-ink-mid">
+                <span className="text-ink-low">Email</span> · {candidate.email}
+              </p>
+            ) : null}
+            <p className="text-[12.5px] text-ink-mid">
+              <span className="text-ink-low">Resume</span> ·{" "}
+              {candidate.resume_error ? (
+                <span className="text-warn">
+                  did not parse, so this interview ran unbriefed
+                </span>
+              ) : candidate.resume_filename ? (
+                <>
+                  {candidate.resume_filename} (
+                  {candidate.resume_chars?.toLocaleString() ?? "?"} chars, in the prompt)
+                </>
+              ) : (
+                <span className="text-ink-low">none attached</span>
+              )}
+            </p>
+            {candidate.notes ? (
+              <p className="md:col-span-2 text-[12.5px] leading-relaxed text-ink-mid">
+                <span className="text-ink-low">Note given to the interviewer</span> ·{" "}
+                {candidate.notes}
+              </p>
+            ) : null}
+          </div>
+          {/* Said here rather than left implied: a reader comparing two reports needs to know
+              whether the interviewer was working from a resume, because an unbriefed interview
+              asks more generic questions and that shows up in the coverage below. */}
+          <p className="border-t border-hair px-5 py-3 text-[11.5px] leading-relaxed text-ink-low">
+            {candidate.resume_filename && !candidate.resume_error
+              ? "The interviewer was briefed from this resume, framed as unverified claims to probe rather than facts to accept."
+              : "The interviewer had no resume for this interview, so its questions were drawn from the rubric alone."}
+          </p>
+        </Card>
+      ) : session.candidate_id ? (
+        <Card>
+          <CardHeader
+            title="Candidate deleted"
+            hint="This interview was conducted with a candidate whose record has since been removed. The transcript is kept deliberately — it is evidence of something that happened."
+          />
+        </Card>
+      ) : null}
+
+      <AttendanceCard attendance={session.attendance ?? null} />
+
       <Card>
         <CardHeader
           title="Assessment"
@@ -607,5 +709,93 @@ export default function ReportPage({ params }: { params: Promise<{ id: string }>
         ) : null}
       </Card>
     </Page>
+  );
+}
+
+
+/**
+ * Who says they sat this interview — and the fact that nobody checked.
+ *
+ * **The heading is "attested" and never "verified", deliberately.** There is no authentication in
+ * this system; the interview link is the whole credential. A reviewer who reads this card and comes
+ * away believing identity was confirmed would be making a hiring decision on a check nobody
+ * performed, which is a specific and foreseeable harm — so the limitation is stated on the card
+ * rather than in a footnote or a manual.
+ *
+ * **A name mismatch is shown, not resolved.** The comparison is case- and space-insensitive, so a
+ * differing name here is a deliberate act rather than a typo. What it means is a human's judgment:
+ * a married name, a preferred name, and someone else sitting the interview all look identical from
+ * here, and the card says so instead of picking one.
+ */
+function AttendanceCard({ attendance }: { attendance: Attendance | null }) {
+  if (!attendance?.attested_at) {
+    return (
+      <Card>
+        <CardHeader
+          title="Attendance not recorded"
+          hint="No one confirmed a name before this interview started — it predates that step, or was joined directly rather than through an invite."
+        />
+      </Card>
+    );
+  }
+
+  const mismatch = Boolean(attendance.expected_name) && !attendance.matches_expected;
+  const rejoins = attendance.history?.length ?? 0;
+
+  return (
+    <Card>
+      <CardHeader
+        title="Attendance — attested, not verified"
+        hint="What the person joining typed about themselves. Nothing here proves identity; there is no authentication in this system and the link is the whole credential."
+        action={
+          <Chip status={mismatch ? "warn" : "neutral"}>
+            {mismatch ? "name differs" : "name as arranged"}
+          </Chip>
+        }
+      />
+      <div className="grid gap-x-8 gap-y-3 px-5 py-4 md:grid-cols-2">
+        <p className="text-[12.5px] text-ink-mid">
+          <span className="text-ink-low">Typed</span> ·{" "}
+          <span className={mismatch ? "text-warn" : "text-ink"}>
+            {attendance.confirmed_name || "—"}
+          </span>
+        </p>
+        <p className="text-[12.5px] text-ink-mid">
+          <span className="text-ink-low">Arranged for</span> ·{" "}
+          {attendance.expected_name || <span className="text-ink-low">no candidate on record</span>}
+        </p>
+        <p className="text-[12.5px] text-ink-mid">
+          <span className="text-ink-low">Attested at</span> · {when(attendance.attested_at)}
+        </p>
+        <p className="text-[12.5px] text-ink-mid">
+          <span className="text-ink-low">Recording notice</span> ·{" "}
+          {attendance.consented_to_recording ? (
+            "accepted"
+          ) : (
+            <span className="text-warn">not accepted</span>
+          )}
+        </p>
+        {attendance.timezone ? (
+          <p className="text-[12.5px] text-ink-mid">
+            <span className="text-ink-low">Joined from</span> · {attendance.timezone}
+          </p>
+        ) : null}
+        {rejoins ? (
+          <p className="text-[12.5px] text-ink-mid">
+            <span className="text-ink-low">Earlier attestations</span> ·{" "}
+            <span className="text-warn">
+              {rejoins} — {attendance.history?.map((h) => h.confirmed_name).join(", ")}
+            </span>
+          </p>
+        ) : null}
+      </div>
+      {mismatch ? (
+        <p className="border-t border-hair px-5 py-3 text-[11.5px] leading-relaxed text-warn">
+          The name entered is not the name this interview was arranged for. A preferred name, a
+          married name, and a different person all look the same from here — this needs a human to
+          judge before the assessment below is used.
+        </p>
+      ) : null}
+    </Card>
   );
 }

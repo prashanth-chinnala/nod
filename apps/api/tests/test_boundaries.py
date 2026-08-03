@@ -20,7 +20,9 @@ from __future__ import annotations
 
 import ast
 import inspect
+import json
 import struct
+import subprocess
 import sys
 from pathlib import Path
 
@@ -121,11 +123,41 @@ def test_contracts_imports_nothing_from_the_package() -> None:
 
 
 def test_importing_the_orchestration_layer_pulls_in_no_ml_package() -> None:
-    """Belt to the AST braces: nothing arrives transitively either."""
-    loaded = set(sys.modules)
-    offenders = loaded & FORBIDDEN_ROOTS
+    """
+    Belt to the AST braces: nothing arrives transitively either.
 
-    assert not offenders, f"importing avatar loaded {sorted(offenders)}"
+    **Run in a clean subprocess, and that is the whole point.** This used to read the current
+    process's `sys.modules`, which conflates "importing avatar loaded this" with "something,
+    anywhere in this test session, loaded this". It passed for a long time because nothing else
+    in the suite touched a forbidden package, and then a test that uploads a PDF pulled in
+    `pypdf`,
+    which pulls in `PIL` -- and this failed with the message "importing avatar loaded ['PIL']",
+    which was not true. A guard whose failure message can be false is a guard that will be
+    argued with rather than fixed.
+
+    A subprocess makes the claim literally testable: import exactly the orchestration layer into
+    a fresh interpreter, and report what came with it. That is also strictly stronger, because
+    it can no longer be fooled -- or falsely tripped -- by test ordering.
+    """
+    program = (
+        "import sys, json;"
+        "import avatar.orchestrator, avatar.mixer, avatar.state, avatar.contracts;"
+        f"print(json.dumps(sorted(set(sys.modules) & {set(FORBIDDEN_ROOTS)!r})))"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", program],
+        capture_output=True,
+        text=True,
+        cwd=Path(inspect.getfile(contracts)).parents[2],
+        timeout=120,
+    )
+
+    assert result.returncode == 0, f"the import itself failed:\n{result.stderr[-2000:]}"
+    offenders = json.loads(result.stdout.strip() or "[]")
+    assert not offenders, (
+        f"importing the orchestration layer loaded {offenders}. The boundary exists so the "
+        "whole suite can run with no GPU, no weights and no network."
+    )
 
 
 # -- the contract is real --------------------------------------------------

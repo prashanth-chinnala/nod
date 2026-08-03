@@ -348,11 +348,11 @@ async def create_interview(candidate_id: str, body: InterviewRequest) -> dict[st
         )
     _check_agent(str(agent_id))
 
-    session = store.create(
-        "sessions",
-        "sess",
-        {"agent_id": str(agent_id), "candidate_id": candidate_id},
-    )
+    # Built by `sessions.new_session`, not here. Constructing the record inline is what left an
+    # invited interview without `turns` or `started_at` while a directly-created one had them.
+    from avatar.api.sessions import new_session
+
+    session = store.create("sessions", "sess", new_session(str(agent_id), candidate_id))
     store.update(
         COLLECTION,
         candidate_id,
