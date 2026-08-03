@@ -400,6 +400,69 @@ def _write_links(
         )
 
 
+def verify_schema() -> list[str]:
+    """
+    Check the database has the columns this code reads. Returns a list of problems, empty if
+    fine.
+
+    **Why this exists.** Migrations here are applied by hand with `psql -f`, deliberately -- see
+    `scripts/migrate_to_postgres.py` for the reasoning, which still holds. The cost of that
+    choice is that a migration can be committed and not applied, and nothing notices until a
+    query runs.
+    That happened with `003_silent_turns.sql`: every test passed, because the test fixture
+    applies all migrations in filename order, and the first candidate to open a session got HTTP
+    500 on the
+    WebSocket. The browser reported `cannot reach the runtime`, which sent the operator looking
+    at a server that was running perfectly.
+
+    So: fail at startup, in one place, naming the file to run. The expectations are derived from
+    `_TYPED` and `_TURN_COLUMNS` rather than written out again, so a column added to the code
+    without a migration is caught by construction -- a second hand-maintained list would drift
+    from the first and check nothing.
+
+    Returns problems rather than raising. A missing column should be loud at startup, not fatal:
+    the console and every read that does not touch it still work, and an operator who can reach
+    `/config` to see the reason is better off than one facing a process that refused to boot.
+    """
+    expected: dict[str, set[str]] = {
+        table: {"id", "doc", "created_at", "updated_at"} | {c.column for c in columns}
+        for table, columns in _TYPED.items()
+    }
+    expected["turns"] = {"session_id", "seq", *_TURN_COLUMNS}
+
+    problems: list[str] = []
+    try:
+        # Imported here, like every other psycopg use in this module: the package is part of the
+        # server extra and this module must stay importable without it.
+        import psycopg
+
+        with psycopg.connect(dsn()) as conn:
+            rows = conn.execute(
+                "select table_name, column_name from information_schema.columns "
+                "where table_schema = current_schema()"
+            ).fetchall()
+    except Exception as exc:
+        return [f"could not read the schema: {type(exc).__name__}: {exc}"]
+
+    actual: dict[str, set[str]] = {}
+    for table, column in rows:
+        actual.setdefault(str(table), set()).add(str(column))
+
+    for table, columns in sorted(expected.items()):
+        if table not in actual:
+            problems.append(f"table {table!r} is missing entirely")
+            continue
+        absent = sorted(columns - actual[table])
+        if absent:
+            problems.append(f"{table} is missing column(s): {', '.join(absent)}")
+    if problems:
+        problems.append(
+            "apply the unapplied files in apps/api/migrations/ in filename order: "
+            "psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 -f apps/api/migrations/<file>.sql"
+        )
+    return problems
+
+
 class PostgresStore(Store):
     """
     The `Store` surface over the schema in `migrations/001_initial.sql`.

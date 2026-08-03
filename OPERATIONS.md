@@ -158,6 +158,42 @@ endpoint.
 
 ---
 
+## 4b. The database, and applying migrations
+
+The store is either JSON files or Postgres, chosen by `AVATAR_STORE`. On Postgres, **migrations are
+applied by hand** — there is no framework and that is deliberate: a process that quietly created
+tables when they were missing would make "which schema is in this database" depend on which of two
+things ran last.
+
+Apply every file in `apps/api/migrations/` in filename order, once:
+
+```bash
+for f in apps/api/migrations/*.sql; do
+  psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f"
+done
+```
+
+`ON_ERROR_STOP=1` is not optional — without it `psql` reports success after a failed statement.
+Re-running an applied file is an error rather than a no-op, so a partially migrated database needs
+the remaining files named individually.
+
+**The failure this causes, because it has happened.** A migration committed and not applied passes
+every test — the test fixture builds its schema from all migrations in filename order — and then
+fails on the first query that touches the new column. When `003_silent_turns.sql` was missed, the
+WebSocket returned HTTP 500 and the browser said *"cannot reach the runtime at
+http://127.0.0.1:8000"*, which is a message about a server that was running perfectly.
+
+The server now checks at startup and says so:
+
+```
+!! schema: turns is missing column(s): silent
+!! schema: apply the unapplied files in apps/api/migrations/ in filename order: ...
+```
+
+The same list is in `/config` as `schema_problems`, so it can be read after the log has scrolled.
+It warns rather than refusing to boot: most reads still work without one column, and an operator
+who can reach `/config` is better off than one facing a process that will not start.
+
 ## 5. When something is wrong
 
 | Symptom | Likely cause |

@@ -193,9 +193,47 @@ async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
     # Before warming, because a row left `preparing` by a killed process is misleading for as
     # long
     # as it stands, and warming can take three minutes.
+    _check_schema()
     await jobs.reap_all()
     await warmup.warm()
     yield
+
+
+SCHEMA_PROBLEMS: list[str] = []
+"""
+What the database is missing, if anything. Empty when it matches the code.
+
+Kept for `/config` rather than only logged. A startup warning scrolls past; the question "is
+this database up to date" gets asked later, by someone looking at a symptom.
+"""
+
+
+def _check_schema() -> None:
+    """
+    Warn loudly if the database is behind the code. Never fatal.
+
+    Migrations here are applied by hand, on purpose. The cost is that one can be committed and
+    not applied -- which happened with `003_silent_turns.sql`: every test passed, because the
+    fixture applies all migrations in filename order, and the first candidate to open a session
+    got a 500 on the WebSocket. The browser said `cannot reach the runtime`, sending the
+    operator to look at a server that was working perfectly.
+
+    Not fatal, because most of the API still works without one column and an operator who can
+    load `/config` and read the reason is better off than one facing a process that refused to
+    boot.
+    """
+    # Imported here, not at module scope: `store_postgres` needs psycopg, and this module has to
+    # stay importable on a file-store install that never installed it.
+    try:
+        from avatar.store_postgres import PostgresStore, verify_schema
+    except ModuleNotFoundError:
+        return
+    if not isinstance(store, PostgresStore):
+        return
+    global SCHEMA_PROBLEMS
+    SCHEMA_PROBLEMS = verify_schema()
+    for problem in SCHEMA_PROBLEMS:
+        print(f"!! schema: {problem}", flush=True)
 
 
 app = FastAPI(title="nod", docs_url=None, redoc_url=None, lifespan=_lifespan)
@@ -253,6 +291,7 @@ async def config() -> dict[str, object]:
         # said postgres and nothing anywhere disagreed. Reporting the live object would have
         # made that visible in one request instead of a psql query that came up empty.
         "store": type(store).__name__,
+        "schema_problems": SCHEMA_PROBLEMS,
         # So "why was the first session slow" has an answer that is not a guess.
         "warmup": warmup.report.as_dict(),
         # What this process is working on now, so a slow Prepare is visible rather
