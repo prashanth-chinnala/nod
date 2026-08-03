@@ -265,7 +265,7 @@ def test_placeholder_loop_frames_are_decodable_images() -> None:
     """
     loop = placeholder_idle_loop(width=8, height=8)
 
-    frame = loop.next_frame(0)
+    frame = loop.next_frame()
 
     width, height, rows = png_decode(frame.data)
     assert (width, height) == (8, 8)
@@ -277,7 +277,7 @@ def test_placeholder_loop_declares_every_frame_a_clean_exit() -> None:
 
     # True in the only sense available: a solid rectangle has no mouth to be caught
     # open. Marking a subset would look more rigorous and mean nothing.
-    assert all(loop.at_clean_exit() or loop.next_frame(0) for _ in range(len(loop)))
+    assert all(loop.at_clean_exit() or loop.next_frame() for _ in range(len(loop)))
 
 
 def test_load_rejects_a_missing_directory(tmp_path: Path) -> None:
@@ -317,5 +317,5 @@ def test_load_reads_frames_in_sort_order(tmp_path: Path) -> None:
 
     assert len(loop) == 3
     assert loop.at_clean_exit() is True  # index 0
-    loop.next_frame(0)
+    loop.next_frame()
     assert loop.at_clean_exit() is False  # index 1

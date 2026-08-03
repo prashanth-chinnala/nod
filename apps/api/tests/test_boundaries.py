@@ -28,14 +28,14 @@ from pathlib import Path
 
 import pytest
 
-from avatar import contracts, mixer, orchestrator, state, telemetry
+from avatar import contracts, mixer, orchestrator, presentation, state, telemetry
 from avatar.audio.tts import SAMPLE_RATE
 from avatar.contracts import RendererConfig, TalkingHeadRenderer
 from avatar.png import decode as png_decode
 from avatar.renderers import build
 from avatar.renderers.stub import MOUTH_LEVELS, StubRenderer, draw_placeholder, mouth_level
 
-ORCHESTRATION_MODULES = (contracts, state, telemetry, mixer, orchestrator)
+ORCHESTRATION_MODULES = (contracts, state, telemetry, presentation, mixer, orchestrator)
 
 FORBIDDEN_ROOTS = frozenset(
     {
@@ -141,7 +141,8 @@ def test_importing_the_orchestration_layer_pulls_in_no_ml_package() -> None:
     """
     program = (
         "import sys, json;"
-        "import avatar.orchestrator, avatar.mixer, avatar.state, avatar.contracts;"
+        "import avatar.orchestrator, avatar.mixer, avatar.presentation, avatar.state,"
+        " avatar.contracts;"
         f"print(json.dumps(sorted(set(sys.modules) & {set(FORBIDDEN_ROOTS)!r})))"
     )
     result = subprocess.run(

@@ -1,36 +1,62 @@
 """
-Frame cadence and the idle-loop fallback.
+Frame cadence — when a frame goes out, and under which clock.
 
-The video track opens once at session start and closes at session end. It never
-stops carrying frames in between. State changes swap which *source* the mixer
-draws from; they never renegotiate or pause the track, because a stalled track is
-far more visible to a viewer than a dropped frame -- and it corrupts the
-receiver's jitter estimate, so the recovery is worse than the stall.
+**What this is now, and what moved.** This used to answer two questions: *which frame should the
+viewer see* and *when should it be sent*. The first moved to `presentation.FramePresenter`,
+because it is a product decision — the idle⇄speaking handover, the mouth-closed seam, epoch
+cancellation — and because a push-based delivery model needs exactly the same decision. What is
+left here is the pull half: emit one frame per tick, stamp a monotonic clock, and keep the track
+alive.
 
-The mixer also owns presentation timestamps. It stamps `pts_ms` on every frame it
-emits, overriding whatever the renderer supplied. Two reasons: the renderer has no
-idea how many idle frames were shown while it was warming up, and A/V sync needs
-one monotonic clock rather than one per source.
+The video track opens once at session start and closes at session end. It never stops carrying
+frames in between. State changes swap which *source* the presenter draws from; they never
+renegotiate or pause the track, because a stalled track is far more visible to a viewer than a
+dropped frame -- and it corrupts the receiver's jitter estimate, so the recovery is worse than
+the stall.
 
-Imports only `contracts`, `state`, and `telemetry`. No torch, no renderer.
+This layer owns presentation timestamps. It stamps `pts_ms` on every frame it emits, overriding
+whatever the renderer supplied, for two reasons: the renderer has no idea how many idle frames
+were shown while it was warming up, and A/V sync needs one monotonic clock rather than one per
+source. **That ownership is exactly what a synchroniser replaces.** When frames are published to
+a LiveKit room, `AVSynchronizer` holds the clock and pairs each frame with its audio; this class
+is then the WebSocket path's equivalent rather than the only path.
+
+Imports only `contracts`, `state`, `presentation` and `telemetry`. No torch, no renderer.
 """
 
 from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import AsyncIterator, Iterable
+from collections.abc import AsyncIterator
 
 from avatar.contracts import (
     FRAME_INTERVAL_MS,
-    IDLE_EPOCH,
     TARGET_FPS,
     Clock,
     Frame,
     Sleep,
 )
+from avatar.presentation import FramePresenter, IdleLoop
 from avatar.state import FrameSource
 from avatar.telemetry import Telemetry
+
+__all__ = [
+    "FRAME_INTERVAL",
+    "FRAME_INTERVAL_MS",
+    "TARGET_FPS",
+    "FrameMixer",
+    "IdleLoop",
+]
+"""
+`IdleLoop` is re-exported, and that is the one compatibility shim here.
+
+It lives in `presentation` now, where the decision logic is. It stays importable from this
+module because `renderers/musetalk.py` builds one and `idle.py` builds the placeholder, and
+neither has any business knowing whether the thing that consumes it is a cadence loop or a
+synchroniser. Naming the re-export in `__all__` rather than leaving it as an incidental import
+makes it a stated decision.
+"""
 
 FRAME_INTERVAL = 1.0 / TARGET_FPS
 """
@@ -40,67 +66,15 @@ definition is a second thing to forget to change.
 """
 
 
-class IdleLoop:
-    """
-    Pre-decoded frames of the avatar breathing and blinking.
-
-    Seam handling: choose a clip whose first and last frames are near-identical
-    (mouth closed, neutral pose, eyes open) and cross-fade across a few frames.
-    Ping-pong playback guarantees continuity but reverses gestures, which reads as
-    uncanny for anything but the smallest movements.
-
-    Exit constraint: only hand control to the renderer on a frame where the mouth
-    is closed, otherwise the cut pops -- the idle clip's open mouth is replaced by
-    a rendered closed one in a single frame. `mouth_closed_indices` carries that
-    information, produced offline by `scripts/prepare_idle_loop.py`.
-    """
-
-    def __init__(self, frames: Iterable[bytes], mouth_closed_indices: Iterable[int]) -> None:
-        self._frames = list(frames)
-        if not self._frames:
-            raise ValueError("idle loop needs at least one frame")
-        self._mouth_closed = frozenset(mouth_closed_indices)
-        if not self._mouth_closed:
-            # Not fatal, but it means the orchestrator can never find a clean exit
-            # and will hand over on an arbitrary frame. Better to know at startup.
-            raise ValueError(
-                "idle loop needs at least one mouth-closed index, "
-                "or the handover to the renderer can never be seam-free"
-            )
-        self._i = 0
-
-    def __len__(self) -> int:
-        return len(self._frames)
-
-    @property
-    def index(self) -> int:
-        return self._i
-
-    def next_frame(self, pts_ms: int) -> Frame:
-        frame = Frame(data=self._frames[self._i], epoch=IDLE_EPOCH, pts_ms=pts_ms)
-        self._i = (self._i + 1) % len(self._frames)
-        return frame
-
-    def at_clean_exit(self) -> bool:
-        """True when the next idle frame shown is one the renderer can cut from."""
-        return self._i in self._mouth_closed
-
-
 class FrameMixer:
     """
-    Emits at a constant TARGET_FPS for the whole session lifetime.
+    Emits at a constant `TARGET_FPS` for the whole session lifetime, over a pull loop.
 
-    Starvation policy, in order of preference:
-
-      1. a rendered frame from the queue
-      2. repeat the last rendered frame, and count it -- the mouth freezes for
-         40ms, which is far less noticeable than a stall
-      3. fall back to a live idle frame, if the renderer has not produced
-         anything at all yet
-
-    Case 2 is the interesting metric. `frames_repeated` climbing means the GPU is
-    behind real time, which is the signal that matters and the one a pure fps
-    average hides.
+    A thin pacing layer over `FramePresenter`. Every method that decides *what* to show
+    delegates; what remains here is the clock. The public surface is deliberately unchanged from
+    when this class did both jobs, so `orchestrator.py` and `server.py` did not move when the
+    decision half was extracted -- the point of the extraction was to add a second delivery
+    model, not to churn the callers of the first.
     """
 
     def __init__(
@@ -111,123 +85,62 @@ class FrameMixer:
         clock: Clock = time.monotonic,
         sleep: Sleep = asyncio.sleep,
     ) -> None:
-        self._idle = idle
-        self._telemetry = telemetry
+        self._presenter = FramePresenter(idle, telemetry)
         self._clock = clock
         self._sleep = sleep
-
-        self._rendered: asyncio.Queue[Frame] = asyncio.Queue()
-        self._source = FrameSource.IDLE_LOOP
-        self._last_rendered: Frame | None = None
         self._pts_ms = 0
 
         self.frames_emitted = 0
-        self.frames_repeated = 0
-        self.frames_discarded = 0
+
+    @property
+    def presenter(self) -> FramePresenter:
+        """
+        The decision half, for a delivery model that is not this one.
+
+        Exposed so a `VideoGenerator` can drive the same presenter this mixer drives, rather
+        than constructing a second one and splitting the session's state across two objects.
+        """
+        return self._presenter
+
+    # -- delegated decisions ------------------------------------------------
 
     def set_idle(self, idle: IdleLoop) -> None:
-        """
-        Replace the idle loop, once, at session start.
-
-
-        Exists so a renderer can supply an idle loop made from the persona's own reference
-        frames instead of the grey placeholder -- see `MuseTalkRenderer.idle_loop`. Called from
-        `SessionOrchestrator.start` before any frame is produced, which is why this does not
-        have to reason about swapping mid-playback.
-        """
-        self._idle = idle
-
-    # -- source selection ---------------------------------------------------
+        self._presenter.set_idle(idle)
 
     @property
     def source(self) -> FrameSource:
-        return self._source
+        return self._presenter.source
 
     def set_source(self, source: FrameSource) -> None:
-        """
-        The only way the frame source changes.
-
-        Called from exactly one place -- `SessionOrchestrator._transition` -- with
-        the value looked up from `state.FRAME_SOURCE`. Keeping this single-entry
-        is what makes "which state shows which source" a table a test can walk
-        rather than behaviour scattered across the pipeline.
-        """
-        if source == self._source:
-            return
-        self._source = source
-        if source is FrameSource.IDLE_LOOP:
-            # Whatever is queued belongs to a turn we are no longer showing.
-            self.frames_discarded += self._drain()
-            self._last_rendered = None
-
-    def _drain(self) -> int:
-        dropped = 0
-        while not self._rendered.empty():
-            self._rendered.get_nowait()
-            dropped += 1
-        if dropped:
-            self._telemetry.increment("frames_discarded", amount=dropped)
-        return dropped
-
-    # -- producer side ------------------------------------------------------
+        self._presenter.set_source(source)
 
     def offer(self, frame: Frame, current_epoch: int) -> bool:
-        """
-        Hand a rendered frame to the mixer. Returns False if it was dropped.
-
-        The epoch check is the consumer-side half of cancellation: the renderer is
-        allowed to keep producing frames for a turn that has been abandoned, and
-        they die here rather than requiring the renderer to be interruptible.
-        """
-        if frame.epoch != current_epoch:
-            self._telemetry.stale_artifact_dropped(
-                "frame", stale_epoch=frame.epoch, current=current_epoch
-            )
-            return False
-        self._rendered.put_nowait(frame)
-        return True
+        return self._presenter.offer(frame, current_epoch)
 
     def buffered(self) -> int:
-        return self._rendered.qsize()
+        return self._presenter.buffered()
 
     def at_clean_exit(self) -> bool:
-        """
-        Whether the idle loop is currently on a frame the renderer can cut from.
+        return self._presenter.at_clean_exit()
 
-        Delegated rather than exposing the `IdleLoop` itself: the orchestrator
-        needs the answer to time the handover, but giving it the loop would let
-        state logic start advancing frames.
-        """
-        return self._idle.at_clean_exit()
+    @property
+    def frames_repeated(self) -> int:
+        return self._presenter.frames_repeated
 
-    # -- consumer side ------------------------------------------------------
+    @property
+    def frames_discarded(self) -> int:
+        return self._presenter.frames_discarded
+
+    # -- cadence ------------------------------------------------------------
 
     def next_frame(self) -> Frame:
         """
-        Produce exactly one frame. Never blocks, never returns None.
+        Produce exactly one frame, stamped. Never blocks, never returns None.
 
-        Split out from `stream` so cadence and starvation behaviour can be tested
-        without driving the event loop.
+        Split out from `stream` so cadence and starvation behaviour can be tested without
+        driving the event loop.
         """
-        frame: Frame | None = None
-
-        if self._source is FrameSource.RENDERER:
-            try:
-                frame = self._rendered.get_nowait()
-            except asyncio.QueueEmpty:
-                if self._last_rendered is not None:
-                    self.frames_repeated += 1
-                    self._telemetry.frame_repeated(total=self.frames_repeated)
-                    frame = self._last_rendered
-            if frame is not None:
-                self._last_rendered = frame
-
-        if frame is None:
-            # Either the idle loop is selected, or the renderer is selected but has
-            # not yet produced a first frame. A live idle frame beats freezing on
-            # the last one we happened to be showing.
-            frame = self._idle.next_frame(self._pts_ms)
-
+        frame = self._presenter.take()
         stamped = Frame(data=frame.data, epoch=frame.epoch, pts_ms=self._pts_ms)
         self._pts_ms += FRAME_INTERVAL_MS
         self.frames_emitted += 1
