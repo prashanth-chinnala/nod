@@ -98,6 +98,22 @@ class AvStream:
         self._audio: asyncio.Queue[AudioChunk | SegmentEnd] = asyncio.Queue()
         self._pts_ms = 0
         self._audio_pts_ms = 0
+        self._audio_debt = 0.0
+        """
+        Audio emitted beyond the budget, carried into the next tick.
+
+        **Needed because a chunk can be longer than a frame interval, and in production always
+        is.**
+        Deepgram delivers roughly 78 ms of audio per chunk against a 40 ms frame; subtracting
+        after yielding means one oversized chunk always gets through and consumes the whole
+        budget, so the ratio collapses to one chunk per frame *by count* regardless of duration.
+        Measured, that ran audio at about twice video and left 143-161 frames per turn queued
+        and then discarded.
+
+        Carrying the overshoot forward restores pairing by duration for any chunk size: a 78 ms
+        chunk against a 40 ms budget leaves 38 ms of debt, the next tick emits no audio and one
+        frame, and the two stay in step.
+        """
 
         self.audio_emitted = 0
         self.frames_emitted = 0
@@ -201,21 +217,45 @@ class AvStream:
 
     async def stream(self) -> AsyncIterator[Emitted]:
         """
-        Yield audio and video interleaved, until cancelled.
+        Yield audio and video interleaved, until cancelled, paired by duration.
 
-        One frame per interval, with every audio item that has arrived emitted first. That
-        ordering is the policy stated in the module docstring: audio is what the candidate
-        hears, and a chunk held back to keep a frame cadence tidy is a gap in speech.
+        **One frame interval of audio per frame, and the first version of this got it wrong.**
+        It drained every pending chunk before each frame, on the reasoning that audio must never
+        be held back. Measured, that policy emitted audio and video at **32:1** where the
+        correct ratio is 2:1 — because a TTS with a real-time factor below 1 delivers a whole
+        utterance in a fraction of its playback duration, so "everything pending" is almost
+        everything, forever. In a live session it produced 16 frames where 221 were needed: the
+        same starvation as the event-loop bug, from a different cause.
+
+        So the budget is time, not count. Each tick emits at most `frame_interval_ms` of audio
+        and then exactly one frame, which is what keeps the two in step — and being in step is
+        the whole reason for one sequence.
+
+        **Video is never held waiting for audio.** If less than a frame's worth has arrived, the
+        frame goes anyway. A consumer starved of video stalls its track, which is worse than a
+        mouth that is briefly ahead of the words, and the audio it is waiting for may never
+        come: silence is the normal state between turns.
 
         The cadence is computed against a monotonic deadline rather than by sleeping a fixed
         interval, so a slow iteration does not accumulate drift — the same reason
-        `FrameMixer.stream` does it that way. It never yields nothing on a tick, because a
-        consumer starved of video stalls its track, which is worse than a repeated frame.
+        `FrameMixer.stream` does it that way.
         """
         next_due = self._clock()
         while True:
-            while (item := self.take_audio()) is not None:
+            budget = float(self._interval_ms) - self._audio_debt
+            while budget > 0:
+                item = self.take_audio()
+                if item is None:
+                    break
                 yield item
+                # A terminator costs no playback time, so it does not consume the budget.
+                # Charging it one would delay the audio it terminates by a frame for no reason.
+                if isinstance(item, AudioChunk):
+                    budget -= item.duration_ms
+            # Whatever was overspent is owed by the next tick. Clamped at zero: a tick that
+            # emitted nothing must not accrue credit, or a silent gap would later let audio
+            # burst ahead.
+            self._audio_debt = max(0.0, -budget)
             yield self.take_frame()
             next_due += self._interval
             await self._sleep(max(0.0, next_due - self._clock()))

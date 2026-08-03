@@ -283,3 +283,98 @@ async def test_counters_report_what_was_emitted() -> None:
 
     assert stream.audio_emitted == 1
     assert stream.frames_emitted == 2
+
+
+# -- the pairing budget, which the first policy got wrong ----------------------
+
+
+@pytest.mark.asyncio
+async def test_audio_is_bounded_to_one_frame_interval_per_frame() -> None:
+    """
+    The bug this pins, measured before it was fixed: audio and video at 32:1.
+
+    The first policy drained every pending chunk before each frame, reasoning that audio must
+    never be held back. But a TTS with a real-time factor below 1 delivers a whole utterance in
+    a fraction of its playback duration, so "everything pending" is almost everything — and live
+    it produced 16 frames where 221 were needed. The budget has to be time, not count.
+
+    40 ms of video pairs with 40 ms of audio, so with 20 ms chunks the ratio is exactly 2:1.
+    """
+    stream, _, _ = build()
+    for index in range(60):
+        stream.offer_audio(chunk(f"a{index}"))
+
+    got = await drain(stream, 60)
+
+    audio = sum(1 for item in got if isinstance(item, AudioChunk))
+    video = sum(1 for item in got if isinstance(item, Frame))
+    assert audio / video == pytest.approx(2.0), f"{audio} audio to {video} video"
+
+
+@pytest.mark.asyncio
+async def test_a_frame_is_emitted_even_when_the_audio_budget_is_unspent() -> None:
+    """
+    Video is never held waiting for audio.
+
+    A consumer starved of video stalls its track, which is worse than a mouth briefly ahead of
+    the words — and the audio may never arrive at all, since silence is the normal state between
+    turns.
+    """
+    stream, _, _ = build()
+    stream.offer_audio(chunk("only-20ms"))
+
+    got = await drain(stream, 2)
+
+    assert isinstance(got[0], AudioChunk)
+    assert isinstance(got[1], Frame), "the frame waited for a full budget of audio"
+
+
+@pytest.mark.asyncio
+async def test_a_terminator_does_not_consume_the_audio_budget() -> None:
+    """
+    It costs no playback time, so charging it one would delay the audio it terminates by a
+    frame.
+    """
+    stream, _, _ = build()
+    stream.offer_audio(chunk("a"))
+    stream.end_segment(epoch=1)
+    stream.offer_audio(chunk("b", epoch=2))
+
+    got = await drain(stream, 4)
+
+    assert [type(item).__name__ for item in got] == [
+        "AudioChunk",
+        "SegmentEnd",
+        "AudioChunk",
+        "Frame",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_chunk_longer_than_the_frame_interval_still_pairs_by_duration() -> None:
+    """
+    The second bug, and the one that only shows up in production.
+
+    Deepgram delivers roughly 78 ms of audio per chunk against a 40 ms frame. Subtracting after
+    yielding meant one oversized chunk always got through and consumed the whole budget, so the
+    ratio collapsed to one chunk per frame *by count* — running audio at about twice video and
+    leaving 143-161 frames per turn queued and then discarded. Overshoot is carried forward as
+    debt.
+
+    Asserted as a rate rather than a ratio, because the ratio is supposed to change with chunk
+    size while the rate must not.
+    """
+    stream, _, _ = build()
+    long_ms = INTERVAL_MS * 2  # a chunk twice the frame interval
+    for index in range(40):
+        stream.offer_audio(chunk(f"a{index}", duration_ms=long_ms))
+
+    got = await drain(stream, 60)
+
+    audio = [item for item in got if isinstance(item, AudioChunk)]
+    video = [item for item in got if isinstance(item, Frame)]
+    audio_ms = len(audio) * long_ms
+    video_ms = len(video) * INTERVAL_MS
+    assert audio_ms / video_ms == pytest.approx(1.0, abs=0.05), (
+        f"{audio_ms} ms of audio against {video_ms} ms of video"
+    )

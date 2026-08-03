@@ -131,6 +131,20 @@ Defaults to `tone` for the same reason as the LLM and the VAD: a clean clone has
 credentials and no network.
 """
 
+DELIVERY = os.environ.get("AVATAR_DELIVERY", "split").strip().lower()
+"""
+How audio and video reach the client: `split` (default) or `paired`.
+
+`split` is what has shipped -- the orchestrator writes audio as soon as it has it and a separate
+task drains frames at a cadence. Two publishers, and the measured trailing gap of −66 ms to +172
+ms is what that costs.
+
+`paired` routes both through one interleaved sequence. Default off because it changes the timing
+of every session and the improvement is a claim until `scripts/measure_lag.py` has run both ways
+on the same machine. A flag rather than a replacement is also what makes that comparison
+possible at all.
+"""
+
 LLM_NAME = os.environ.get("AVATAR_LLM", "scripted")
 """
 Which interviewer to run. `scripted` needs nothing; `anthropic` needs a key.
@@ -293,6 +307,7 @@ async def config() -> dict[str, object]:
         # said postgres and nothing anywhere disagreed. Reporting the live object would have
         # made that visible in one request instead of a psql query that came up empty.
         "store": type(store).__name__,
+        "delivery": DELIVERY,
         "schema_problems": SCHEMA_PROBLEMS,
         # So "why was the first session slow" has an answer that is not a guess.
         "warmup": warmup.report.as_dict(),
@@ -372,6 +387,23 @@ class BrowserSession:
             placeholder_idle_loop(width=FRAME_WIDTH, height=FRAME_HEIGHT),
             self._telemetry,
         )
+
+        # Paired delivery, off by default. When on, audio and video leave through one
+        # interleaved sequence instead of two independent publishers -- the arrangement the
+        # measured −66/+172 ms trailing gap comes from. It wraps the transport rather than
+        # changing the orchestrator, so switching it costs a restart and nothing else, and it
+        # shares the mixer's presenter so the idle handover and the clean-exit seam are the same
+        # code in both modes.
+        self._paired: Any = None
+        if DELIVERY == "paired":
+            from avatar.delivery import PairedDelivery
+
+            self._paired = PairedDelivery(
+                self._transport,
+                self._mixer.presenter,
+                frame_interval_ms=FRAME_INTERVAL_MS,
+            )
+            self._transport = self._paired
         self._orchestrator = SessionOrchestrator(
             renderer=build(RendererConfig(name=RENDERER_NAME, options=renderer_options())),
             mixer=self._mixer,
@@ -603,12 +635,22 @@ class BrowserSession:
 
     async def _pump_frames(self) -> None:
         """
-        Drain the mixer forever.
+        Drain forever -- the mixer in split mode, the paired sequence in paired mode.
 
         Deliberately not conditional on state: the track carries frames while idle, while
         listening, and while thinking. Gating this on SPEAKING is the bug that produces a track
         which stalls between turns.
+
+        In paired mode this loop sends audio too, which is the whole difference. The stop
+        condition is checked identically in both branches, because a session that closed while a
+        frame was in flight must stop either way and that is not the part being changed.
         """
+        if self._paired is not None:
+            async for _ in self._paired.pump():
+                if self._orchestrator.state is State.CLOSED:
+                    return
+            return
+
         async for frame in self._mixer.stream():
             if self._orchestrator.state is State.CLOSED:
                 return

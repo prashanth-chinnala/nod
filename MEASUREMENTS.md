@@ -603,6 +603,60 @@ always correct. The backlog was not.
 
 ---
 
+## 8c. Paired delivery, measured — and it is worse over WebSocket
+
+The arrangement that produced §8b's residual gap is two publishers on two clocks: the orchestrator
+writes audio the moment it has it, a separate task drains frames at a cadence. `AVATAR_DELIVERY=paired`
+routes both through one interleaved sequence instead. Three turns each, same machine, same agent,
+MacBook Pro with the stub renderer:
+
+| | `split` (default) | `paired` |
+|---|---|---|
+| Delivered fps | 25.2 | 25.2 |
+| Video start lag | 69 ms | 118 ms |
+| **Trailing audio→video gap** | **+27 ms** | **−5,918 ms** |
+| Frames delivered vs needed | 159 / 185 | 134 / 285 |
+
+**Paired is worse and stays off.** A trailing gap of −5.9 s means the video for a turn finishes six
+seconds before the audio it belongs to: on screen, a mouth that stops moving while the interviewer is
+still talking. That is a regression, not an improvement, and the flag exists precisely so the
+comparison could be made rather than assumed.
+
+### 8c.1 Two bugs found on the way, both by measurement
+
+**Audio starved video, 32:1.** The first interleaving policy drained every pending chunk before each
+frame, on the reasoning that audio must never be held back. But a TTS with a real-time factor below
+1 delivers a whole utterance in a fraction of its playback duration, so "everything pending" is
+almost everything. Measured at **32 audio items per video frame** where the correct ratio is 2:1, and
+live it produced **16 frames where 221 were needed** — the same starvation as the event-loop bug from
+a different cause.
+
+**A budget in time still collapsed to a budget in count.** Fixing the above with a 40 ms budget per
+frame was not enough, because Deepgram delivers roughly **78 ms per chunk**. Subtracting after
+yielding let one oversized chunk through and consume the whole budget, so the ratio became one chunk
+per frame regardless of duration — running audio at about twice video and leaving **143–161 frames
+per turn** queued and then discarded. Carrying the overshoot forward as debt restores 1.00× at every
+chunk size tested (20, 40, 78, 100 ms).
+
+### 8c.2 Why it is worse, which is the useful part
+
+**Metering audio to a video cadence is wrong over a transport where the client buffers.** Split mode
+sends each chunk as it exists and the browser schedules playback from its own buffer, so transmission
+finishes long before playback does. Paired mode meters audio at 1× real time, so a turn takes as long
+to *transmit* as to *play* — and the turn's video, which is finite, runs out first.
+
+**Where pairing is right: when the consumer itself consumes in real time.** `rtc.AVSynchronizer`
+pushes audio through `AudioSource.capture_frame`, which blocks at playback rate by design, and pairs
+video against it. A paired sequence is exactly what it wants — and `scripts/avatar_worker.py`
+measured **174 and 176 video frames plus 1,186 and 1,192 audio frames arriving at a remote
+subscriber** through one synchroniser against a real SFU.
+
+So the conclusion is not "pairing does not work". It is that pairing belongs at the LiveKit boundary
+and not at the WebSocket one, and the same `AvStream` serves both — one measured onto its correct
+consumer, one measured off its wrong one.
+
+---
+
 ## 9. Known gaps
 
 Stated rather than filled:
