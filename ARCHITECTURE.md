@@ -249,5 +249,9 @@ renderer instance in the process.
   renderer: `avatar_first_frame` goes 3 s to 28 s when both compete. Cloning and a self-hosted
   face are today an either/or, and the sidecar being a separate process is what makes a second
   GPU configuration rather than work.
+- **One publisher per medium.** Audio still leaves via the transport and video via the mixer — two
+  clocks, which is what produces the residual audio/video gap in MEASUREMENTS §8b. The decision half
+  of the mixer is now extracted into `presentation.py` and an interleaved `avstream.py` exists, so a
+  single-publisher path is buildable; it is not wired in. See `docs/LIVEKIT_AVATAR_NOTES.md`.
 - **Horizontal scale.** One process, one GPU. The identity cache, the shared model cache and the
   warm-worker argument are all written with a pool in mind, but there is no pool.
