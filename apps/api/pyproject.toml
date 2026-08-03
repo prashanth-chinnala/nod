@@ -59,6 +59,13 @@ postgres = [
 # Kept out of [dev] so CI never needs a web stack to lint the state machine. The
 # codec and the Transport implementation are tested with a list standing in for the
 # socket, so nothing in `tests/` imports these.
+# Resume text extraction for the candidates surface. Two small, boring, well-maintained parsers
+# rather than one clever one: a resume arrives as a PDF or a Word file and there is no upside to
+# hand-parsing either. Plain text and Markdown need no dependency and are handled without these.
+resume = [
+  "pypdf>=5.0",
+  "python-docx>=1.1",
+]
 server = [
   "fastapi>=0.115",
   "uvicorn[standard]>=0.30",
@@ -92,11 +99,13 @@ target-version = "py311"
 # it once, where a reader looking for the rule will find it.
 "src/avatar/server.py" = ["E402"]
 
-# `make_deck.py` is a document, not a program: nearly every line is a sentence of slide copy passed
-# to a layout helper. Hard-wrapping those at 96 columns inside nested calls splits sentences across
-# implicit string concatenations, which makes the copy harder to read and edit than the long lines
-# do — and the copy is the part that has to be right. The layout code above it stays within 96.
+# Two scripts are documents rather than programs: nearly every line is a sentence — slide copy, or
+# a seeded knowledge-base article — passed to a helper. Hard-wrapping those at 96 columns inside
+# nested calls splits sentences across implicit string concatenations, which makes the copy harder
+# to read and edit than the long lines do, and the copy is the part that has to be right. The logic
+# in both files stays within 96; only the content is exempt.
 "scripts/make_deck.py" = ["E501"]
+"scripts/seed_demo.py" = ["E501"]
 
 [tool.ruff.lint]
 # En dash, em dash and typographic quotes are intentional in prose. RUF001/RUF002 exist to

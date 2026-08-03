@@ -25,7 +25,7 @@ orchestration boundary that `tests/test_boundaries.py` enforces.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from avatar.api.guardrails import Policy
@@ -70,6 +70,15 @@ class ResolvedAgent:
     agent_id: str | None = None
     name: str = ""
     system_prompt: str = ""
+    candidate_id: str | None = None
+    """
+    Who is being interviewed, when the session named someone.
+
+    Carried on the resolved agent rather than looked up again later so that everything
+    downstream -- telemetry, the stored record, the report -- names the same person the prompt
+    was built from. Two lookups could disagree if the record changed mid-interview.
+    """
+    candidate_name: str = ""
     retriever: Retriever = field(default_factory=NullRetriever)
     lexicon: list[tuple[str, str]] = field(default_factory=list)
     guardrail: Policy | None = None
@@ -148,8 +157,62 @@ def resolve_for_session(session_id: str | None, *, data: Store | None = None) ->
             record = {}
         agent_id = record.get("agent_id")
         if agent_id:
-            return resolve_agent(str(agent_id), data=data)
+            resolved = resolve_agent(str(agent_id), data=data)
+            return _brief_on_candidate(resolved, record.get("candidate_id"), data)
     return resolve_agent(data=data)
+
+
+def _brief_on_candidate(
+    agent: ResolvedAgent, candidate_id: object, data: Store
+) -> ResolvedAgent:
+    """
+    Append what is known about this candidate to the agent's system prompt.
+
+    **Why here and not anywhere else.** This is the one place that already turns a session id
+    into configuration, and it is on the far side of the module boundary from the orchestrator
+    -- so a resume changes what gets asked without the state machine, the mixer or the renderer
+    learning that candidates exist. The same agent then probes a data engineer on late-arriving
+    events and a backend engineer on ordering guarantees, with no operator configuring anything
+    per interview.
+
+    Appended to the prompt rather than prepended: the agent's own instructions -- ask one
+    question at a time, do not accept "we" where you need "I" -- must stay dominant. A resume
+    inserted above them reads as the primary task, and the interviewer starts reciting a CV.
+
+    Failure is silent by design. An unreadable candidate record, a deleted one, a resume that
+    never extracted: none of those should stop an interview that is about to start. The
+    interview happens without the briefing, which is exactly what every interview did before
+    this existed.
+    """
+    if not candidate_id:
+        return agent
+    try:
+        candidate = data.get("candidates", str(candidate_id))
+    except NotFound:
+        return agent
+    except Exception as exc:  # pragma: no cover - a briefing must never fail a session
+        print(f"agent_config: could not brief on {candidate_id}: {exc}", flush=True)
+        return agent
+
+    # Both imported here, matching how `build_llm_with_tools` reaches for the interviewer: this
+    # module is imported by routers that must load without the LLM extra installed.
+    from avatar.llm_openai import OpenAIInterviewer
+    from avatar.resume import briefing
+
+    block = briefing(candidate)
+    if not block:
+        return agent
+    # The default instructions have to be materialised before appending. `build_llm_with_tools`
+    # substitutes them when `system_prompt` is empty, and a prompt containing only a candidate
+    # briefing is not empty -- so without this the briefing would silently replace the
+    # interviewer's own instructions rather than extend them.
+    base = agent.system_prompt or OpenAIInterviewer().system
+    return replace(
+        agent,
+        system_prompt=base + block,
+        candidate_id=str(candidate_id),
+        candidate_name=str(candidate.get("name") or ""),
+    )
 
 
 def resolve_agent(agent_id: str | None = None, *, data: Store | None = None) -> ResolvedAgent:

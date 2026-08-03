@@ -131,6 +131,12 @@ _TYPED: dict[str, tuple[_Column, ...]] = {
     "pronunciations": (_plain("name"),),
     "knowledge": (_plain("name"),),
     "tools": (_plain("name"),),
+    "candidates": (
+        _plain("name"),
+        _plain("email"),
+        _plain("role"),
+        _plain("status"),
+    ),
     "agents": (
         _plain("name"),
         _plain("face_id"),
@@ -141,6 +147,7 @@ _TYPED: dict[str, tuple[_Column, ...]] = {
     ),
     "sessions": (
         _plain("agent_id"),
+        _plain("candidate_id"),
         # `coalesce(..., agent_name)` is what keeps the name after the agent is gone. Setting
         # `agent_id` to null -- detaching, or the FK's own ON DELETE SET NULL -- makes the
         # subquery empty, and without the coalesce the session list would start showing

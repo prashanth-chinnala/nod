@@ -53,6 +53,7 @@ from avatar import jobs, warmup
 from avatar.agent_config import ResolvedAgent, build_llm_with_tools, resolve_for_session
 from avatar.api import (
     agents,
+    candidates,
     faces,
     guardrails,
     knowledge,
@@ -257,6 +258,7 @@ app.add_middleware(
 for _resource in (
     agents,
     faces,
+    candidates,
     guardrails,
     knowledge,
     pronunciations,

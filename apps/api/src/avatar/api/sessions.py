@@ -62,6 +62,15 @@ class SessionCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     agent_id: str | None = None
+    candidate_id: str | None = None
+    """
+    Who is being interviewed. Optional, and legitimately so.
+
+    A session with no candidate is a real state -- every smoke test, every scripted demo, and
+    every interview recorded before candidates existed. The usual way to set this is
+    `POST /candidates/{id}/interview`, which also moves the candidate to `invited`; this field
+    exists so a session can still be minted directly without that lifecycle step.
+    """
 
 
 def _not_found(session_id: str) -> HTTPException:
@@ -85,11 +94,23 @@ async def list_sessions() -> list[dict[str, Any]]:
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def create_session(body: SessionCreate) -> dict[str, Any]:
     """Called by the runtime when a candidate connects, not by an operator."""
+    if body.candidate_id:
+        # Rejected here rather than at session start. The file store has no foreign keys, so an
+        # unknown id would otherwise produce an interview with no briefing and no error
+        # anywhere.
+        try:
+            store.get("candidates", body.candidate_id)
+        except NotFound:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"no candidate {body.candidate_id!r}",
+            ) from None
     return store.create(
         COLLECTION,
         ID_PREFIX,
         {
             "agent_id": body.agent_id,
+            "candidate_id": body.candidate_id,
             "started_at": now_iso(),
             "ended_at": None,
             "turns": [],
@@ -184,6 +205,43 @@ async def rtc_credentials(session_id: str) -> dict[str, Any]:
     }
 
 
+# **There is deliberately no DELETE here**, and an earlier version of this file added one before
+# `test_there_is_no_way_to_edit_or_delete_a_session` explained why: immutability is the property
+# that makes these records evidence, and that test asserts against the route table rather than
+# for a 405 precisely so the absence reads as a decision instead of an oversight.
+#
+# The need that motivated the attempt was real -- "start from a clean install" was impossible
+# without psql, because demo and smoke-test sessions accumulated forever. That is a development
+# operation, not a product one, and it belongs in `scripts/seed_demo.py --reset`, which goes to
+# the store directly and says so. Adding a product endpoint to serve a maintenance need would
+# have traded the evidence property for a convenience available another way.
+
+
+def _advance_candidate(record: dict[str, Any]) -> None:
+    """
+    Move the candidate to `interviewed` when one of their interviews finishes.
+
+    Here rather than in the candidates router because this is the moment the system can
+    *observe* the transition; asking an operator to mark it by hand would make the status a
+    description of who remembered to click rather than of what happened. Never advances
+    backwards -- a candidate already `reviewed` stays reviewed if they sit a second interview,
+    since a human has looked at them and that fact is not undone by more evidence arriving.
+    """
+    candidate_id = str(record.get("candidate_id") or "")
+    if not candidate_id:
+        return
+    try:
+        candidate = store.get("candidates", candidate_id)
+        if str(candidate.get("status") or "") in ("new", "invited"):
+            store.update("candidates", candidate_id, {"status": "interviewed"})
+    except NotFound:
+        # The candidate was deleted while their interview ran. The session survives by design;
+        # there is simply no status left to advance.
+        return
+    except Exception as exc:  # pragma: no cover - bookkeeping must not fail ending a session
+        print(f"sessions: could not advance candidate {candidate_id}: {exc}", flush=True)
+
+
 @router.post("/{session_id}/end")
 async def end_session(session_id: str, background: BackgroundTasks) -> dict[str, Any]:
     """
@@ -202,6 +260,7 @@ async def end_session(session_id: str, background: BackgroundTasks) -> dict[str,
     record = _load(session_id)
     if record.get("ended_at"):
         return record
+    _advance_candidate(record)
     updated = store.update(
         COLLECTION, session_id, {"ended_at": now_iso(), "scoring": {"status": "pending"}}
     )
