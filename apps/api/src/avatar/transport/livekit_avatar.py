@@ -20,9 +20,10 @@ generator yields audio as well as video.** `AvatarRunner` pushes whatever comes 
 publish a silent track and leave the audio to a second publisher — which is exactly the
 two-clock arrangement this work exists to remove.
 
-**Status: written, not yet run.** `livekit-agents` is not a dependency of this app and there is
-no SFU in the test environment, so nothing below has executed against a real room. It is here so
-the conversion is reviewable and so the shape of the remaining work is visible; the frame
+**Status: written, not yet run against a room.** `livekit-agents` is not a dependency of this
+app and there is no SFU in the test environment, so nothing below has executed against a real
+room. It is here so the conversion is reviewable and so the shape of the remaining work is
+visible; the frame
 conversion in particular (`_to_video_frame`) needs a real `rtc.VideoFrame` to validate, and
 JPEG-encoded input is the wrong format for it — see the note there. Do not read the absence of
 tests as confidence.
@@ -34,7 +35,7 @@ from collections.abc import AsyncIterator, Callable
 from typing import Any
 
 from avatar.avstream import AvStream, SegmentEnd
-from avatar.contracts import AudioChunk, Frame
+from avatar.contracts import AudioChunk, Frame, FrameCodec
 
 BYTES_PER_SAMPLE = 2
 """16-bit PCM, which is what every adapter in `avatar.audio` produces."""
@@ -148,22 +149,31 @@ class LiveKitVideoGenerator:
 
     def _to_video_frame(self, frame: Frame) -> Any:
         """
-        Our `Frame` to an `rtc.VideoFrame`.
+        Our `Frame` to an `rtc.VideoFrame`. Requires a raw codec.
 
-        **This is the conversion that needs the renderer to change, not just this file.** Our
-        frames are JPEG bytes at q82, because the WebSocket transport needed encoded images.
-        `rtc.VideoFrame` wants a raw buffer — I420 or RGBA — and LiveKit's own encoder produces
-        H.264, using hardware where available. So the JPEG encode measured at 23.7 ms/frame
-        becomes dead work on this path, and decoding it back here to satisfy the type would be
-        worse than the encode it undoes.
+        **An encoded frame is refused rather than decoded.** Our renderers can produce JPEG for
+        the
+        WebSocket transport or RGB24 for this path, chosen by `AVATAR_FRAME_CODEC`. Decoding a
+        JPEG here would undo an encode this path should never have paid for — 23.7 ms/frame
+        measured,
+        MEASUREMENTS §2.2 — and would ship a working-looking pipeline doing round-trip work. So
+        a misconfigured deployment fails immediately with the setting to change, rather than
+        serving a slightly worse interview forever.
 
-        The right fix is for the renderer to hand raw planes to this path and JPEG only to the
-        WebSocket one, which is a change in `musetalk_torch.py`, not here. Until then this
-        raises rather than silently doing a decode/re-encode round trip that would look like it
-        worked.
+        `Frame.is_raw` is what enforces the dimensions: a raw buffer is not self-describing, and
+        libwebrtc given the wrong stride renders a sheared image.
         """
-        raise NotImplementedError(
-            "the renderer produces JPEG for the WebSocket transport; rtc.VideoFrame needs "
-            "a raw I420 or RGBA buffer. Give the renderer a raw output path first -- "
-            "decoding the JPEG here would undo an encode this path should never have paid for."
+        from livekit import rtc
+
+        if not frame.is_raw:
+            raise ValueError(
+                f"this path publishes raw pixels and got a {frame.codec!r} frame. Set "
+                f"AVATAR_FRAME_CODEC={FrameCodec.RGB24} on the renderer -- decoding it here "
+                "would undo an encode measured at 23.7 ms/frame."
+            )
+        return rtc.VideoFrame(
+            width=frame.width,
+            height=frame.height,
+            type=rtc.VideoBufferType.RGB24,
+            data=frame.data,
         )

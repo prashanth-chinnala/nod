@@ -30,9 +30,9 @@ import json
 import math
 from pathlib import Path
 
-from avatar.contracts import TARGET_FPS
+from avatar.contracts import TARGET_FPS, FrameCodec
 from avatar.mixer import IdleLoop
-from avatar.renderers.stub import draw_placeholder
+from avatar.renderers.stub import WIRE_FORMAT, draw_placeholder
 
 MOUTH_CLOSED_MANIFEST = "mouth_closed.json"
 
@@ -54,7 +54,11 @@ Large enough to read as alive on a glance, small enough not to look like a fault
 
 
 def placeholder_idle_loop(
-    *, width: int = 320, height: int = 180, swing: float = BREATH_SWING
+    *,
+    width: int = 320,
+    height: int = 180,
+    swing: float = BREATH_SWING,
+    codec: str = WIRE_FORMAT,
 ) -> IdleLoop:
     """
     The stub placeholder with its mouth closed, breathing. Not a face.
@@ -71,13 +75,14 @@ def placeholder_idle_loop(
             height,
             level=0,  # mouth closed: the avatar is not speaking
             brightness=1.0 + swing * math.sin(2 * math.pi * i / count),
+            fmt=codec,
         )
         for i in range(count)
     ]
 
     # Every frame, because the placeholder's mouth is always closed and so any frame
     # is safe to cut from. Marking a subset would look more rigorous and mean nothing.
-    return IdleLoop(frames, range(count))
+    return IdleLoop(frames, range(count), codec=codec, width=width, height=height)
 
 
 def load_idle_loop(directory: Path) -> IdleLoop:
@@ -114,4 +119,5 @@ def load_idle_loop(directory: Path) -> IdleLoop:
             f"{len(frame_paths)} frames exist -- the manifest is stale"
         )
 
-    return IdleLoop([p.read_bytes() for p in frame_paths], indices)
+    # A prepared clip on disk is BMP -- see the docstring above.
+    return IdleLoop([p.read_bytes() for p in frame_paths], indices, codec=FrameCodec.BMP)

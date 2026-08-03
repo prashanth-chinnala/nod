@@ -37,7 +37,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 
 from avatar.bmp import RGB, Canvas
-from avatar.contracts import IDLE_EPOCH, AudioChunk, Frame
+from avatar.contracts import IDLE_EPOCH, AudioChunk, Frame, FrameCodec
 
 FRAME_INTERVAL_MS = 40  # 25fps
 
@@ -156,10 +156,15 @@ def draw_placeholder(
         MOUTH,
     )
 
-    if fmt == "bmp":
+    if fmt == FrameCodec.BMP:
         return canvas.to_bmp()
-    if fmt != "png":
-        raise ValueError(f"unknown frame format {fmt!r}; expected 'png' or 'bmp'")
+    if fmt == FrameCodec.RGB24:
+        return canvas.to_rgb24()
+    if fmt != FrameCodec.PNG:
+        raise ValueError(
+            f"unknown frame format {fmt!r}; expected one of "
+            f"{FrameCodec.PNG!r}, {FrameCodec.BMP!r}, {FrameCodec.RGB24!r}"
+        )
     return canvas.to_png()
 
 
@@ -196,11 +201,20 @@ class StubRenderer:
         height: int = 64,
         first_frame_delay_ms: int = 0,
         frame_interval_ms: int = FRAME_INTERVAL_MS,
+        codec: str = WIRE_FORMAT,
     ) -> None:
         self.width = width
         self.height = height
         self.first_frame_delay_ms = first_frame_delay_ms
         self.frame_interval_ms = frame_interval_ms
+        self.codec = codec
+        """
+        What the frames are. `png` for a browser over the WebSocket, `rgb24` for a synchroniser.
+
+        Defaults to the wire format because that is the path that exists today and a clean clone
+        must keep working. A caller wanting raw pixels asks for them -- see `FrameCodec.RGB24`,
+        which explains why RGB24 rather than I420 and marks the comparison unmeasured.
+        """
         self.identities_prepared = 0
         self.sessions_opened = 0
         self.sessions_closed = 0
@@ -252,6 +266,12 @@ class StubRenderer:
                 # The mixer restamps this; the renderer's own pts is only useful for
                 # spotting a renderer that has lost count of its own output.
                 pts_ms=state.frames_emitted * self.frame_interval_ms,
+                codec=self.codec,
+                # Declared for every codec, not only the raw one. A PNG carries its own
+                # dimensions so nothing needs these -- but a consumer that has them for one
+                # codec and not another grows a branch it should not need.
+                width=self.width,
+                height=self.height,
             )
             state.frames_emitted += 1
 
@@ -275,7 +295,7 @@ class StubRenderer:
     def _render(self, level: int) -> bytes:
         cached = self._cache.get(level)
         if cached is None:
-            cached = draw_placeholder(self.width, self.height, level)
+            cached = draw_placeholder(self.width, self.height, level, fmt=self.codec)
             self._cache[level] = cached
         return cached
 

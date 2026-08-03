@@ -58,6 +58,32 @@ class Canvas:
         for row in self._rows[y0:y1]:
             row[x0 * 3 : x1 * 3] = span
 
+    def to_rgb24(self) -> bytes:
+        """
+        Packed 8-bit RGB, top row first, no padding.
+
+        **Why this exists.** LiveKit's `rtc.VideoFrame` takes a raw buffer and runs its own
+        H.264 encode. Handing it a PNG would be the wrong type, and encoding then decoding to
+        satisfy it would be work in both directions for nothing. So the stub renderer can make
+        raw pixels, which is what makes the push delivery path testable with no GPU at all.
+
+        Two conversions happen here and both are the buffer's doing rather than a choice: it is
+        BGR because BMP is, and 4-byte aligned per row because BMP is. Neither holds for
+        RGB24, so every row is unpadded and every pixel swapped. Cheap next to an encode, and
+        the reason `to_png` is not simply reused.
+        """
+        out = bytearray(self.width * self.height * 3)
+        span = self.width * 3
+        for y, row in enumerate(self._rows):
+            pixels = row[:span]
+            # BGR -> RGB via three strided assignments rather than a per-pixel loop. On a
+            # 256x144 frame that is 36,864 pixels, where the loop version is much slower in
+            # pure Python.
+            out[y * span : (y + 1) * span] = pixels
+            out[y * span : (y + 1) * span : 3] = pixels[2::3]
+            out[y * span + 2 : (y + 1) * span : 3] = pixels[0::3]
+        return bytes(out)
+
     def to_png(self) -> bytes:
         """
         The same image, deflate-compressed and roughly 40x smaller.

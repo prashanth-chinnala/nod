@@ -65,13 +65,81 @@ in any state.
 """
 
 
+class FrameCodec:
+    """
+    The frame formats this system moves.
+
+    Not an `Enum`, deliberately. `Frame.codec` is a plain string so that a renderer in a
+    separate process -- which is where this is going -- can set it without importing this
+    module, and so a frame that crossed a wire as JSON round-trips without a decoder. The names
+    are here to be referenced rather than to be enforced by a type.
+    """
+
+    JPEG = "jpeg"
+    PNG = "png"
+    BMP = "bmp"
+    RGB24 = "rgb24"
+    """
+    Packed 8-bit RGB, three bytes per pixel, no padding.
+
+    Chosen as the raw format because it is one channel swap from what the blending step already
+    produces (OpenCV BGR) and is obviously correct to reason about. **I420 may well be cheaper**
+    --
+    it is what H.264 wants natively, so libwebrtc converts to it either way -- but which of the
+    two conversions costs less on our hardware is NOT YET MEASURED, and picking the clever one
+    on a guess is how the batch-size default ended up backwards.
+    """
+
+
+RAW_CODECS = frozenset({FrameCodec.RGB24})
+"""Codecs whose `data` is unencoded pixels, and which therefore need dimensions."""
+
+ENCODED_CODECS = frozenset({FrameCodec.JPEG, FrameCodec.PNG, FrameCodec.BMP})
+"""Codecs a browser can decode from the bytes alone."""
+
+
 @dataclass(frozen=True, slots=True)
 class Frame:
-    """One encoded video frame, tagged with the turn that produced it."""
+    """
+    One video frame, tagged with the turn that produced it.
+
+    **`codec` exists because there are now two consumers with incompatible needs.** The
+    WebSocket transport forwards bytes to a browser, which decodes them by sniffing -- so it
+    needs a self-describing encoded image. LiveKit's `rtc.VideoFrame` takes a raw buffer and
+    does its own
+    H.264 encode, using hardware where available -- so an encoded frame is not merely wasteful
+    there, it is the wrong type. A renderer is told which to produce; nothing downstream
+    guesses.
+
+    `width` and `height` are zero for encoded codecs and required for raw ones, because a raw
+    buffer is not self-describing. That asymmetry is checked in `is_raw` rather than trusted.
+    """
 
     data: bytes
     epoch: int
     pts_ms: int
+    codec: str = "jpeg"
+    """One of `FrameCodec`. A plain string, so `contracts` stays importable by everything."""
+    width: int = 0
+    height: int = 0
+
+    @property
+    def is_raw(self) -> bool:
+        """
+        True when `data` is unencoded pixels, which only means anything with dimensions.
+
+        Raises rather than returning True for a raw frame with no dimensions: a consumer that
+        handed libwebrtc a buffer with the wrong stride would produce a sheared image, and
+        tracing that back to a missing integer three layers up is an afternoon nobody should
+        spend.
+        """
+        raw = self.codec in RAW_CODECS
+        if raw and not (self.width and self.height):
+            raise ValueError(
+                f"a {self.codec!r} frame carries raw pixels and must declare width and height; "
+                f"got {self.width}x{self.height}"
+            )
+        return raw
 
 
 @dataclass(frozen=True, slots=True)

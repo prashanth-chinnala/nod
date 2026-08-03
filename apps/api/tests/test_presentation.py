@@ -19,6 +19,8 @@ second consumer gets to rely on.
 
 from __future__ import annotations
 
+import pytest
+
 from avatar.contracts import IDLE_EPOCH, Frame
 from avatar.presentation import FramePresenter, IdleLoop
 from avatar.state import FrameSource
@@ -265,3 +267,49 @@ def test_replacing_the_idle_loop_replaces_the_seam() -> None:
     assert p.at_clean_exit() is False
     assert p.take().data == b"x"
     assert p.at_clean_exit() is True
+
+
+# -- codec and dimensions, which a raw consumer cannot work without -----------
+
+
+def test_the_idle_loop_declares_its_own_codec_and_size() -> None:
+    """
+    An idle frame claiming the wrong codec would reach the transport as the wrong type in
+    exactly the state a candidate spends most of an interview looking at.
+
+    The loop is built by whoever produced the frames — the placeholder generator, or a
+    renderer from its own reference — and only that caller knows the format.
+    """
+    p = FramePresenter(
+        IdleLoop([b"raw"], [0], codec="rgb24", width=4, height=1),
+        Telemetry(sink=NullSink()),
+    )
+
+    frame = p.take()
+
+    assert frame.codec == "rgb24"
+    assert (frame.width, frame.height) == (4, 1)
+    assert frame.is_raw is True
+
+
+def test_a_raw_frame_with_no_dimensions_refuses_to_describe_itself() -> None:
+    """
+    `is_raw` raises rather than answering, because the answer alone is not usable.
+
+    A consumer handed a buffer with the wrong stride renders a sheared image, and the
+    missing integer is three layers away by then.
+    """
+    p = FramePresenter(
+        IdleLoop([b"raw"], [0], codec="rgb24"), Telemetry(sink=NullSink())
+    )
+
+    frame = p.take()
+    with pytest.raises(ValueError, match="width and height"):
+        assert frame.is_raw
+
+
+def test_an_encoded_frame_needs_no_dimensions() -> None:
+    """A JPEG or PNG carries its own, which is why the requirement is codec-dependent."""
+    p = presenter()
+
+    assert p.take().is_raw is False

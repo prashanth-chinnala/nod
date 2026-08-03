@@ -62,6 +62,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from avatar.contracts import FrameCodec
+
 JPEG_QUALITY = 82
 """
 Quality/size trade-off for rendered frames.
@@ -289,6 +291,20 @@ class TorchMuseTalkBackend:
         self.jpeg_quality = jpeg_quality or int(
             os.environ.get("AVATAR_JPEG_QUALITY", JPEG_QUALITY)
         )
+        self.codec = str(os.environ.get("AVATAR_FRAME_CODEC", FrameCodec.JPEG))
+        """
+        What `render` returns. `jpeg` for the WebSocket transport, `rgb24` for a synchroniser.
+
+        **Measured stake:** JPEG encode is 23.7 ms/frame of the 51.5 ms CPU half (MEASUREMENTS
+        §2.2). On the LiveKit path that work is not merely wasted, it produces the wrong type --
+        `rtc.VideoFrame` wants a raw buffer and runs its own H.264, on hardware where available.
+        So this is a real saving and a correctness requirement at the same time.
+
+        Environment-driven rather than a constructor argument because `renderer_options()` is a
+        fixed set every renderer must accept, and adding to it means touching every renderer for
+        a setting only this one and the stub understand. A deployment that publishes to a room
+        sets it once.
+        """
         self.max_output_height = int(
             os.environ.get("AVATAR_MUSETALK_MAX_HEIGHT", MAX_OUTPUT_HEIGHT)
         )
@@ -576,12 +592,12 @@ class TorchMuseTalkBackend:
                 "A reference must show one front-facing person."
             )
 
-        # The reference frames, JPEG-encoded, to stand in as the idle loop. This is what makes
-        # the persona present between turns instead of a placeholder: the reference *is* a
-        # person
-        # sitting still, which is exactly what an idle loop should be. Encoded once here rather
-        # than per session -- it is the same bytes every time.
-        idle_jpegs = [self._encode(frame) for frame in kept]
+        # The reference frames, in whatever codec is configured, to stand in as the idle loop.
+        # This is what makes the persona present between turns instead of a placeholder: the
+        # reference *is* a person sitting still, which is exactly what an idle loop should be.
+        # Encoded once here rather than per session -- it is the same bytes every time.
+        idle_frames = [self._encode(frame) for frame in kept]
+        output_width, output_height = self._output_size(kept[0])
 
         # Which frames are usable as a handover point. `IdleLoop` needs at least one frame whose
         # mouth is closed, or the switch to rendered frames lands on an open mouth and jumps.
@@ -606,9 +622,16 @@ class TorchMuseTalkBackend:
             "mask_boxes": mask_boxes + mask_boxes[::-1],
             "usable_frames": len(kept),
             "source_frames": len(frames),
-            "idle_jpegs": idle_jpegs + idle_jpegs[::-1],
+            # The shape and format of every frame this identity produces. All frames share them:
+            # they are the reference's own frames, downscaled by the same factor if at all.
+            # Reported even for JPEG, which carries its own dimensions, because a field that
+            # exists for one codec and not another makes the consumer grow a branch.
+            "codec": self.codec,
+            "width": output_width,
+            "height": output_height,
+            "idle_frames": idle_frames + idle_frames[::-1],
             "idle_mouth_closed": mouth_closed
-            + [len(idle_jpegs) * 2 - 1 - i for i in mouth_closed],
+            + [len(idle_frames) * 2 - 1 - i for i in mouth_closed],
         }
 
     # ---------------------------------------------------------------- render
@@ -756,9 +779,31 @@ class TorchMuseTalkBackend:
             out.append(self._encode(blended))
         return out
 
+    def _output_size(self, image: Any) -> tuple[int, int]:
+        """
+        (width, height) of what `_encode` will return for this frame.
+
+        Shared with `prepare`, which reports it on the identity, so the declared size and the
+        actual buffer cannot disagree. They did not have to agree while every frame was a JPEG
+        -- a JPEG carries its own dimensions -- and a raw consumer given the wrong stride
+        renders a sheared image, which is a long way from the missing integer that caused it.
+        """
+        import numpy as np
+
+        array = np.asarray(image)
+        height, width = int(array.shape[0]), int(array.shape[1])
+        if self.max_output_height and height > self.max_output_height:
+            scale = self.max_output_height / height
+            return round(width * scale), self.max_output_height
+        return width, height
+
     def _encode(self, image: Any) -> bytes:
         """
-        BGR array -> JPEG bytes.
+        BGR array -> bytes in `self.codec`.
+
+        Downscaling happens for both codecs, which is why it is here rather than in the JPEG
+        branch: `MAX_OUTPUT_HEIGHT` exists to bound what crosses a network, and raw pixels cross
+        far more of it than a JPEG does.
 
         OpenCV rather than Pillow: MuseTalk's blending step already returns OpenCV BGR
         arrays, so `imencode` avoids a colour-space conversion and a second imaging
@@ -778,8 +823,13 @@ class TorchMuseTalkBackend:
                 # that JPEG then spends bits on.
                 interpolation=cv2.INTER_AREA,
             )
-        try:
+        if self.codec == FrameCodec.RGB24:
+            # One channel swap, no encode. MuseTalk's blending returns BGR because OpenCV does;
+            # `FrameCodec.RGB24` records why RGB24 was chosen over I420 and that the comparison
+            # between them is unmeasured on this hardware.
+            return bytes(cv2.cvtColor(array, cv2.COLOR_BGR2RGB).tobytes())
 
+        try:
             ok, buffer = cv2.imencode(
                 ".jpg", array, [int(cv2.IMWRITE_JPEG_QUALITY), self.jpeg_quality]
             )

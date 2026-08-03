@@ -30,7 +30,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Iterable
 
-from avatar.contracts import IDLE_EPOCH, Frame
+from avatar.contracts import IDLE_EPOCH, Frame, FrameCodec
 from avatar.state import FrameSource
 from avatar.telemetry import Telemetry
 
@@ -50,7 +50,26 @@ class IdleLoop:
     `MuseTalkRenderer.idle_loop` derives it from the reference's own quietest frames.
     """
 
-    def __init__(self, frames: Iterable[bytes], mouth_closed_indices: Iterable[int]) -> None:
+    def __init__(
+        self,
+        frames: Iterable[bytes],
+        mouth_closed_indices: Iterable[int],
+        *,
+        codec: str = FrameCodec.JPEG,
+        width: int = 0,
+        height: int = 0,
+    ) -> None:
+        """
+        `codec` describes these frames, and getting it wrong is a silent corruption.
+
+        The idle loop is built by whoever produced the frames -- the placeholder generator, or a
+        renderer from its own reference -- and only that caller knows the format. Defaulting to
+        JPEG rather than requiring it, because every existing caller produced encoded frames. A
+        caller making raw pixels has to say so, and `Frame.is_raw` then insists on dimensions.
+        """
+        self._codec = codec
+        self._width = width
+        self._height = height
         self._frames = list(frames)
         if not self._frames:
             raise ValueError("idle loop needs at least one frame")
@@ -80,7 +99,14 @@ class IdleLoop:
         and implied the idle loop knew about a clock it has no access to. Whoever delivers the
         frame owns the clock -- the cadence loop today, `AVSynchronizer` tomorrow.
         """
-        frame = Frame(data=self._frames[self._i], epoch=IDLE_EPOCH, pts_ms=0)
+        frame = Frame(
+            data=self._frames[self._i],
+            epoch=IDLE_EPOCH,
+            pts_ms=0,
+            codec=self._codec,
+            width=self._width,
+            height=self._height,
+        )
         self._i = (self._i + 1) % len(self._frames)
         return frame
 

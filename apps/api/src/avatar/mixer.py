@@ -29,6 +29,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import AsyncIterator
+from dataclasses import replace
 
 from avatar.contracts import (
     FRAME_INTERVAL_MS,
@@ -141,7 +142,10 @@ class FrameMixer:
         driving the event loop.
         """
         frame = self._presenter.take()
-        stamped = Frame(data=frame.data, epoch=frame.epoch, pts_ms=self._pts_ms)
+        # `replace`, not a fresh `Frame`: rebuilding from three fields silently reset
+        # `codec`, `width` and `height` to their defaults, so a raw frame would reach the
+        # transport claiming to be JPEG with no dimensions. Only the timestamp changes here.
+        stamped = replace(frame, pts_ms=self._pts_ms)
         self._pts_ms += FRAME_INTERVAL_MS
         self.frames_emitted += 1
         return stamped

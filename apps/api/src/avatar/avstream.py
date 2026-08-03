@@ -35,7 +35,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from avatar.contracts import AudioChunk, Clock, Frame, Sleep
 from avatar.presentation import FramePresenter
@@ -174,12 +174,12 @@ class AvStream:
             return None
         if isinstance(item, SegmentEnd):
             return item
-        stamped = AudioChunk(
-            pcm=item.pcm, epoch=item.epoch, duration_ms=item.duration_ms
-        )
         self._audio_pts_ms += item.duration_ms
         self.audio_emitted += 1
-        return stamped
+        # Returned unchanged. An earlier version rebuilt the chunk field by field, which is the
+        # same hazard `take_frame` documents -- there is nothing to restamp on audio, so there
+        # is no reason to reconstruct it.
+        return item
 
     def take_frame(self) -> Frame:
         """
@@ -191,7 +191,10 @@ class AvStream:
         matters for the WebSocket path and for tests.
         """
         frame = self._presenter.take()
-        stamped = Frame(data=frame.data, epoch=frame.epoch, pts_ms=self._pts_ms)
+        # `replace`, not a fresh `Frame`: reconstructing from three fields silently reset
+        # `codec`, `width` and `height` to their defaults, so a raw frame would reach the
+        # transport claiming to be JPEG with no dimensions. Only the timestamp changes here.
+        stamped = replace(frame, pts_ms=self._pts_ms)
         self._pts_ms += self._interval_ms
         self.frames_emitted += 1
         return stamped

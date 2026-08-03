@@ -111,16 +111,33 @@ def test_clear_buffer_is_synchronous_and_drops_pending_audio() -> None:
     assert stream.audio_dropped == 1
 
 
-def test_video_conversion_refuses_rather_than_round_tripping_a_jpeg() -> None:
+def test_video_conversion_refuses_an_encoded_frame_and_names_the_setting() -> None:
     """
-    Pinned deliberately, because the alternative looks like success.
+    Refused, not decoded, because the alternative looks like success.
 
-    Our frames are JPEG for the WebSocket transport; `rtc.VideoFrame` wants raw I420 or RGBA.
-    Decoding here would undo an encode this path should never pay for — 23.7 ms/frame measured —
-    and would ship a working-looking pipeline doing pointless work. The renderer needs a raw
-    output path first; this test changes when that lands.
+    Decoding a JPEG here would undo an encode this path should never have paid for -- 23.7
+    ms/frame measured -- and would ship a working-looking pipeline doing round-trip work. A
+    misconfigured deployment should fail at once naming the variable to change, rather than
+    serving a slightly worse interview forever.
     """
     generator, _ = build()
 
-    with pytest.raises(NotImplementedError, match="raw I420 or RGBA"):
-        generator._to_video_frame(Frame(data=b"\xff\xd8jpeg", epoch=1, pts_ms=0))
+    with pytest.raises(ValueError, match="AVATAR_FRAME_CODEC"):
+        generator._to_video_frame(
+            Frame(data=b"\xff\xd8jpeg", epoch=1, pts_ms=0, codec="jpeg")
+        )
+
+
+def test_a_raw_frame_without_dimensions_is_refused_by_the_contract() -> None:
+    """
+    `Frame.is_raw` raises rather than letting an undescribed buffer through.
+
+    libwebrtc given the wrong stride renders a sheared image, and tracing that back to a
+    missing integer three layers up is an afternoon nobody should spend.
+    """
+    generator, _ = build()
+
+    with pytest.raises(ValueError, match="width and height"):
+        generator._to_video_frame(
+            Frame(data=b"\x00" * 12, epoch=1, pts_ms=0, codec="rgb24")
+        )

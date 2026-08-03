@@ -45,6 +45,7 @@ from avatar.contracts import (
     IDLE_EPOCH,
     AudioChunk,
     Frame,
+    FrameCodec,
 )
 from avatar.contracts import (
     TARGET_FPS as CONTRACT_TARGET_FPS,
@@ -406,11 +407,20 @@ class MuseTalkRenderer:
         prepared = identity.prepared
         if not isinstance(prepared, dict):
             return None
-        frames = prepared.get("idle_jpegs")
+        frames = prepared.get("idle_frames")
         closed = prepared.get("idle_mouth_closed")
         if not frames or not closed:
             return None
-        return IdleLoop(frames, closed)
+        return IdleLoop(
+            frames,
+            closed,
+            # From the identity, not assumed. An idle frame claiming the wrong codec would reach
+            # the transport as the wrong type in exactly the state -- standing by -- that a
+            # candidate spends most of an interview looking at.
+            codec=str(prepared.get("codec") or FrameCodec.JPEG),
+            width=int(prepared.get("width") or 0),
+            height=int(prepared.get("height") or 0),
+        )
 
     def start_session(self, identity: object) -> object:
         """
@@ -448,6 +458,14 @@ class MuseTalkRenderer:
         """
         state = _as_session(session)
         window_bytes = self.window_frames * BYTES_PER_FRAME
+        # Read once per call from the prepared identity, not per frame: every frame from one
+        # identity shares them. A backend that does not report them leaves the encoded defaults,
+        # which is correct for JPEG -- hence fallbacks rather than a hard requirement.
+        prepared = state.identity.prepared
+        meta = prepared if isinstance(prepared, dict) else {}
+        codec = str(meta.get("codec") or FrameCodec.JPEG)
+        width = int(meta.get("width") or 0)
+        height = int(meta.get("height") or 0)
 
         while len(state.pcm) >= window_bytes:
             window = bytes(state.pcm[:window_bytes])
@@ -471,6 +489,9 @@ class MuseTalkRenderer:
                     # The mixer restamps this. A renderer's own pts is only useful for
                     # spotting one that has lost count of its own output.
                     pts_ms=state.frames_emitted * self.frame_interval_ms,
+                    codec=codec,
+                    width=width,
+                    height=height,
                 )
                 state.frames_emitted += 1
 
