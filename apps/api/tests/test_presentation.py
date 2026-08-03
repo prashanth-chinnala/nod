@@ -22,7 +22,7 @@ from __future__ import annotations
 import pytest
 
 from avatar.contracts import IDLE_EPOCH, Frame
-from avatar.presentation import FramePresenter, IdleLoop
+from avatar.presentation import FramePresenter, IdleLoop, SeamGate
 from avatar.state import FrameSource
 from avatar.telemetry import NullSink, Telemetry
 
@@ -313,3 +313,129 @@ def test_an_encoded_frame_needs_no_dimensions() -> None:
     p = presenter()
 
     assert p.take().is_raw is False
+
+
+# -- the seam, asserted against the orchestrator's own numbers ------------------
+
+
+def gate(
+    p: FramePresenter, now: list[float], *, lead_in: int = 4, wait_ms: int = 120
+) -> SeamGate:
+    return SeamGate(
+        p,
+        Telemetry(sink=NullSink()),
+        lead_in_frames=lead_in,
+        seam_wait_max_ms=wait_ms,
+        clock=lambda: now[0],
+    )
+
+
+def test_no_cut_before_the_lead_in_is_buffered() -> None:
+    """
+    Rule 1. Trades first-frame latency for stutter resistance.
+
+    A renderer that emits in bursts needs the cushion; cutting on the first frame means the
+    mouth
+    starts and immediately stalls, which reads worse than starting a beat later.
+    """
+    p = presenter(count=3)
+    g = gate(p, [0.0])
+    for _ in range(3):
+        p.offer(rendered("f"), 1)
+
+    assert g.maybe_cut() is False
+    assert p.source is FrameSource.IDLE_LOOP
+
+
+def test_it_cuts_once_the_lead_in_and_a_clean_seam_coincide() -> None:
+    """Rules 1 and 2 together, which is the normal case."""
+    p = presenter(count=3)
+    g = gate(p, [0.0])
+    for _ in range(4):
+        p.offer(rendered("f"), 1)
+
+    assert p.at_clean_exit() is True
+    assert g.maybe_cut() is True
+    assert p.source is FrameSource.RENDERER
+
+
+def test_it_waits_for_the_seam_rather_than_popping() -> None:
+    """
+    Rule 2. Cutting on an open mouth replaces it with a rendered closed one in a single frame.
+
+    Checked every tick rather than once, because the seam opens and closes as the idle loop
+    advances — a single check at the moment audio arrives would usually miss it.
+    """
+    p = presenter(count=3)
+    g = gate(p, [0.0])
+    for _ in range(4):
+        p.offer(rendered("f"), 1)
+    p.take()  # advance off frame 0, the only mouth-closed frame
+
+    assert p.at_clean_exit() is False
+    assert g.maybe_cut() is False
+    p.take()
+    p.take()  # back around to frame 0
+    assert g.maybe_cut() is True
+
+
+def test_the_wait_is_bounded_and_the_compromise_is_counted() -> None:
+    """
+    Rule 3. Unbounded waiting trades a visible artifact for an audible one, which is worse.
+
+    `seam_forced` exists so the trade is measurable rather than silent — a clip whose
+    annotation is
+    too sparse shows up as a counter, not as a vague complaint about the avatar.
+    """
+    now = [0.0]
+    p = presenter(count=3)
+    g = gate(p, now)
+    for _ in range(4):
+        p.offer(rendered("f"), 1)
+    p.take()  # off the clean frame
+
+    assert g.maybe_cut() is False
+    now[0] += 0.121  # past the 120 ms ceiling
+
+    assert g.maybe_cut() is True
+    assert g.seams_forced == 1
+
+
+def test_a_turn_ending_returns_to_idle_and_discards_the_backlog() -> None:
+    p = presenter(count=3)
+    g = gate(p, [0.0])
+    for _ in range(6):
+        p.offer(rendered("f"), 1)
+    g.maybe_cut()
+    p.take()
+
+    g.turn_ended()
+
+    assert p.source is FrameSource.IDLE_LOOP
+    assert p.frames_discarded == 5
+    assert p.take().epoch == IDLE_EPOCH
+
+
+def test_the_second_turn_checks_the_seam_again() -> None:
+    """
+    The bug this prevents only shows on the second question of an interview.
+
+    Without resetting the lead-in clock, turn two inherits turn one's already-satisfied timer
+    and
+    cuts on the first frame it sees with the seam unchecked.
+    """
+    now = [0.0]
+    p = presenter(count=3)
+    g = gate(p, now)
+    for _ in range(4):
+        p.offer(rendered("a"), 1)
+    now[0] += 1.0
+    g.maybe_cut()
+    g.turn_ended()
+
+    p.take()  # leave the idle loop on an unclean frame
+    for _ in range(4):
+        p.offer(rendered("b"), 2)
+
+    assert p.at_clean_exit() is False
+    assert g.maybe_cut() is False, "turn two cut without checking the seam"

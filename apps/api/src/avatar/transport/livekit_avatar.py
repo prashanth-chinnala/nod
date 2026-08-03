@@ -93,6 +93,7 @@ class LiveKitVideoGenerator:
         epoch: Callable[[], int],
         channels: int = 1,
         on_audio: Callable[[AudioChunk], None] | None = None,
+        on_segment_end: Callable[[], None] | None = None,
     ) -> None:
         self._stream = stream
         self._sample_rate = sample_rate
@@ -109,6 +110,15 @@ class LiveKitVideoGenerator:
 
         A hook rather than the generator owning a renderer: the renderer's lifecycle, its
         identity and its session belong to whoever built it. This module converts types.
+        """
+        self._on_segment_end = on_segment_end
+        """
+        Called when an utterance ends, after the epoch advances.
+
+        Where the persona goes back to standing by. Without it the worker holds the last
+        rendered frame between turns, so the face freezes mid-expression instead of breathing --
+        and the frames still queued for the finished turn are never discarded, which is why
+        `frames_discarded` reading zero was the clue that this was missing.
         """
         self._epoch = epoch
         """
@@ -147,6 +157,10 @@ class LiveKitVideoGenerator:
             advance = getattr(self._epoch, "advance", None)
             if callable(advance):
                 advance()
+            # After the epoch moves, so anything the callback drains is already stale rather
+            # than being discarded while still nominally current.
+            if self._on_segment_end is not None:
+                self._on_segment_end()
             return
 
         pcm = bytes(data)

@@ -28,7 +28,7 @@ Imports only `contracts`, `state` and `telemetry`. No torch, no renderer, no tra
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 
 from avatar.contracts import IDLE_EPOCH, Frame, FrameCodec
 from avatar.state import FrameSource
@@ -257,3 +257,89 @@ class FramePresenter:
             frame = self._idle.next_frame()
 
         return frame
+
+
+class SeamGate:
+    """
+    When to cut from the idle loop to rendered frames, and when to cut back.
+
+    **Why this exists as a class.** `SessionOrchestrator._maybe_start_speaking` has held this
+    policy inline since the WebSocket path was the only path. A worker in its own process needs
+    the identical decision -- and it is the highest-regression surface in the repo, because
+    getting it wrong is a visible pop in a candidate's face rather than an error anyone sees.
+    Implementing it twice was the one duplication worth going out of the way to avoid.
+
+    The policy, three rules, all three load-bearing:
+
+      1. **Do not cut until `lead_in_frames` are buffered.** Trades first-frame latency for
+      stutter
+         resistance. Renderers that emit in bursts need it; a steady one does not.
+      2. **Cut only on a mouth-closed idle frame.** Otherwise the idle clip's open mouth is
+      replaced
+         by a rendered closed one in a single frame and the cut pops.
+      3. **Give up waiting after `seam_wait_max_ms`.** Unbounded waiting lets a sparsely
+      annotated
+         idle clip delay speech indefinitely, trading a visible artifact for an audible one --
+         the worse deal. On expiry it cuts anyway and counts `seam_forced`, so the compromise is
+         measurable rather than silent.
+
+    **`orchestrator.py` still has its own copy and this does not remove it.** Migrating the
+    orchestrator is a change to the session layer under a live WebSocket path, which is not
+    worth bundling into the work that made this class necessary. The duplication is stated here
+    so it is a known debt rather than a discovery, and `test_presentation.py` asserts this
+    implementation against the same numbers the orchestrator uses.
+    """
+
+    def __init__(
+        self,
+        presenter: FramePresenter,
+        telemetry: Telemetry,
+        *,
+        lead_in_frames: int,
+        seam_wait_max_ms: int,
+        clock: Callable[[], float],
+    ) -> None:
+        self._presenter = presenter
+        self._telemetry = telemetry
+        self._lead_in = lead_in_frames
+        self._seam_wait_max_ms = seam_wait_max_ms
+        self._clock = clock
+        self._lead_in_satisfied_at: float | None = None
+        self.seams_forced = 0
+
+    def maybe_cut(self) -> bool:
+        """
+        Cut to rendered frames if the lead-in is met and the seam is clean. True when it cut.
+
+        Safe to call every tick, and expected to be: the seam opens and closes as the idle loop
+        advances, so a single check at the moment audio arrives would usually miss it.
+        """
+        if self._presenter.source is FrameSource.RENDERER:
+            return False
+        if self._presenter.buffered() < self._lead_in:
+            return False
+
+        now = self._clock()
+        if self._lead_in_satisfied_at is None:
+            self._lead_in_satisfied_at = now
+
+        waited_ms = (now - self._lead_in_satisfied_at) * 1000
+        if not self._presenter.at_clean_exit():
+            if waited_ms < self._seam_wait_max_ms:
+                return False
+            self.seams_forced += 1
+            self._telemetry.increment("seam_forced")
+
+        self._presenter.set_source(FrameSource.RENDERER)
+        return True
+
+    def turn_ended(self) -> None:
+        """
+        Back to the idle loop, discarding whatever the abandoned turn had queued.
+
+        Resets the lead-in clock too. Without that, a second turn inherits the first turn's
+        already-satisfied timer and cuts on the first frame it sees -- seam unchecked -- which
+        is the kind of bug that only shows on the second question of an interview.
+        """
+        self._presenter.set_source(FrameSource.IDLE_LOOP)
+        self._lead_in_satisfied_at = None

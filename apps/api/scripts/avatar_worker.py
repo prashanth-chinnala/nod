@@ -45,7 +45,11 @@ load_env()
 from avatar.avstream import AvStream  # noqa: E402
 from avatar.contracts import AudioChunk, FrameCodec, RendererConfig  # noqa: E402
 from avatar.idle import placeholder_idle_loop  # noqa: E402
-from avatar.presentation import FramePresenter  # noqa: E402
+from avatar.orchestrator import (  # noqa: E402
+    RENDER_LEAD_IN_FRAMES,
+    SEAM_WAIT_MAX_MS,
+)
+from avatar.presentation import FramePresenter, SeamGate  # noqa: E402
 from avatar.state import FrameSource  # noqa: E402
 from avatar.telemetry import Telemetry  # noqa: E402
 from avatar.transport.livekit_avatar import (  # noqa: E402
@@ -142,25 +146,37 @@ async def run(args: argparse.Namespace) -> int:
     # one of them silently wrong, which is the failure this codebase keeps paying for.
     epochs: Any = SegmentEpochs() if args.audio == "stream" else (lambda: 1)
 
+    seam = SeamGate(
+        presenter,
+        telemetry,
+        lead_in_frames=RENDER_LEAD_IN_FRAMES,
+        seam_wait_max_ms=SEAM_WAIT_MAX_MS,
+        clock=time.monotonic,
+    )
+
     def render_arriving_audio(chunk: AudioChunk) -> None:
         """
-        Turn received audio into rendered frames. The production path, in one function.
+        Turn received audio into rendered frames, cutting to them only on a clean seam.
 
-        Only wired in stream mode: in queue mode this script generates the audio and drives the
-        renderer itself. Without it the worker published its idle loop forever while audio
-        crossed the wire perfectly -- a failure visible only because `frames_discarded` stayed
-        at zero.
+        Only wired in stream mode: in queue mode this script generates the audio and drives
+        the renderer itself. Without it the worker published its idle loop forever while audio
+        crossed the wire perfectly -- visible only because `frames_discarded` stayed at zero.
+
+        **`seam.maybe_cut()` rather than `set_source(RENDERER)`.** The earlier version cut the
+        moment the first chunk arrived, skipping both the lead-in cushion and the mouth-closed
+        check -- so the handover popped, and popped invisibly, because nothing in a count
+        reveals it. The gate is the orchestrator's own policy, shared rather than rewritten.
         """
-        presenter.set_source(FrameSource.RENDERER)
         renderer.push_audio(session, chunk)
         for frame in renderer.frames(session):
             presenter.offer(frame, epochs())
-
+        seam.maybe_cut()
     generator = LiveKitVideoGenerator(
         stream,
         sample_rate=SAMPLE_RATE,
         epoch=epochs,
         on_audio=render_arriving_audio if args.audio == "stream" else None,
+        on_segment_end=seam.turn_ended if args.audio == "stream" else None,
     )
 
     probe = idle_frame_shape(idle)
@@ -271,6 +287,7 @@ async def run(args: argparse.Namespace) -> int:
     print(f"   audio chunks emitted     {stream.audio_emitted}")
     print(f"   frames repeated          {presenter.frames_repeated}")
     print(f"   epoch at exit            {epochs()}")
+    print(f"   seams forced             {seam.seams_forced}")
     print(f"   frames discarded         {presenter.frames_discarded}")
     print(f"   video frames RECEIVED    {watcher.video} by a remote subscriber")
     print(f"   audio frames RECEIVED    {watcher.audio} by a remote subscriber")
