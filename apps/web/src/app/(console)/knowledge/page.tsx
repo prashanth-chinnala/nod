@@ -77,6 +77,7 @@ export default function KnowledgePage() {
   const [loadError, setLoadError] = useState<string | null>(null);
 
   const [selectedId, setSelectedId] = useState("");
+  const [busyId, setBusyId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [topK, setTopK] = useState<number>(TOP_K_CHOICES[0]);
   const [hits, setHits] = useState<Hit[] | null>(null);
@@ -126,6 +127,49 @@ export default function KnowledgePage() {
     void run();
     return () => controller.abort();
   }, [load]);
+
+  const mutate = useCallback(
+    async (id: string, path: string, init: RequestInit, failure: string) => {
+      setBusyId(id);
+      try {
+        const response = await fetch(`${API}/knowledge/${id}${path}`, init);
+        if (!response.ok && response.status !== 404) {
+          const payload = (await response.json().catch(() => null)) as { detail?: unknown } | null;
+          setLoadError(
+            typeof payload?.detail === "string"
+              ? payload.detail
+              : `the runtime answered ${response.status}`,
+          );
+          return;
+        }
+        await load();
+      } catch {
+        setLoadError(failure);
+      } finally {
+        setBusyId(null);
+      }
+    },
+    [load],
+  );
+
+  /**
+   * Rebuild the index for a base.
+   *
+   * **The gap this closes.** `POST /knowledge/{id}/embed` existed and nothing in the console called
+   * it, so documents could be added and the index never rebuilt. That does not fail — it retrieves
+   * from the old index, which looks exactly like retrieval ignoring the document just uploaded, and
+   * the retrieval tester below would agree with it.
+   */
+  const reindex = useCallback(
+    (id: string) => mutate(id, "/embed", { method: "POST", body: "{}" ,
+      headers: { "content-type": "application/json" } }, "could not reindex that base"),
+    [mutate],
+  );
+
+  const remove = useCallback(
+    (id: string) => mutate(id, "", { method: "DELETE" }, "could not delete that base"),
+    [mutate],
+  );
 
   const reload = useCallback(() => {
     setLoading(true);
@@ -222,7 +266,7 @@ export default function KnowledgePage() {
             .
           </Empty>
         ) : (
-          <Table head={["Name", num("Documents"), num("Chunks"), num("Characters"), "Updated"]}>
+          <Table head={["Name", num("Documents"), num("Chunks"), num("Characters"), "Updated", ""]}>
             {bases.map((base) => (
               <Row key={base.id}>
                 <Cell>
@@ -247,6 +291,26 @@ export default function KnowledgePage() {
                 </Cell>
                 <Cell mono dim>
                   {base.updated_at ?? "—"}
+                </Cell>
+                <Cell>
+                  {/* Reindex and delete. Reindex had no console control at all -- documents could
+                      be added and the index never rebuilt, which presents as retrieval that
+                      silently ignores the document you just uploaded. */}
+                  <span className="flex gap-1.5">
+                    <Button
+                      disabled={busyId === base.id}
+                      onClick={() => void reindex(base.id)}
+                    >
+                      {busyId === base.id ? "…" : "Reindex"}
+                    </Button>
+                    <Button
+                      variant="danger"
+                      disabled={busyId === base.id}
+                      onClick={() => void remove(base.id)}
+                    >
+                      Delete
+                    </Button>
+                  </span>
                 </Cell>
               </Row>
             ))}

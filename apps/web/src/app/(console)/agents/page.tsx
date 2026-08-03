@@ -144,7 +144,7 @@ type Agent = {
   updated_at: string;
 };
 
-const HEAD = ["name", "model", "voice", "attached", "end of turn", "updated"] as const;
+const HEAD = ["name", "model", "voice", "attached", "end of turn", "updated", ""] as const;
 
 /** An unset optional reference reads as a dash, not as an empty cell that looks broken. */
 const UNSET = "—";
@@ -204,6 +204,8 @@ export default function AgentsPage() {
   const [agents, setAgents] = useState<Agent[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
+  const [editing, setEditing] = useState<Agent | null>(null);
+  const [removing, setRemoving] = useState<string | null>(null);
 
   /*
     A promise chain rather than async/await, and not as a style preference. React 19's
@@ -238,6 +240,27 @@ export default function AgentsPage() {
     load();
   }, [load]);
 
+  async function remove(id: string) {
+    setRemoving(id);
+    try {
+      const response = await fetch(`${API}/${id}`, { method: "DELETE" });
+      // 409 is the store refusing because something still references this agent. Surfaced as-is:
+      // the runtime's message names what, which is more useful than "could not delete".
+      if (!response.ok && response.status !== 404) {
+        const payload: unknown = await response.json().catch(() => null);
+        setError(problemFrom(payload, response.status));
+        return;
+      }
+      if (editing?.id === id) setEditing(null);
+      load();
+    } catch {
+      setError("Could not reach the runtime to delete that agent.");
+    } finally {
+      setRemoving(null);
+    }
+  }
+
+
   return (
     <Page
       title="Agents"
@@ -248,7 +271,16 @@ export default function AgentsPage() {
         </Button>
       }
     >
-      {showForm ? (
+      {editing ? (
+        <CreateForm
+          agent={editing}
+          onCancel={() => setEditing(null)}
+          onCreated={() => {
+            setEditing(null);
+            load();
+          }}
+        />
+      ) : showForm ? (
         <CreateForm
           onCreated={() => {
             setShowForm(false);
@@ -318,6 +350,31 @@ export default function AgentsPage() {
                 <Cell dim mono>
                   {agent.updated_at}
                 </Cell>
+                <Cell>
+                  {/* Edit and delete, which this screen went without -- and a comment in this very
+                      table used to point at "the editor below", describing something that did not
+                      exist. An agent is the object here most worth tuning: the prompt is written
+                      by iteration, and the end-of-turn window is a number nobody guesses right
+                      the first time. Create-only meant delete-and-retype, which loses the id every
+                      recorded session references. */}
+                  <span className="flex gap-1.5">
+                    <Button
+                      onClick={() => {
+                        setShowForm(false);
+                        setEditing(agent);
+                      }}
+                    >
+                      Edit
+                    </Button>
+                    <Button
+                      variant="danger"
+                      disabled={removing === agent.id}
+                      onClick={() => void remove(agent.id)}
+                    >
+                      {removing === agent.id ? "…" : "Delete"}
+                    </Button>
+                  </span>
+                </Cell>
               </Row>
             ))}
           </Table>
@@ -338,23 +395,59 @@ export default function AgentsPage() {
  * A modal would put the turn-taking numbers on top of the table they have to be judged
  * against, and it would have nowhere to grow when the attachment pickers arrive.
  */
-function CreateForm({ onCreated }: { onCreated: () => void }) {
-  const [name, setName] = useState("");
-  const [systemPrompt, setSystemPrompt] = useState("");
-  const [llmProvider, setLlmProvider] = useState<LlmProvider>("scripted");
-  const [llmModel, setLlmModel] = useState("");
-  const [voiceProvider, setVoiceProvider] = useState<VoiceProvider>("tone");
-  const [voiceId, setVoiceId] = useState("");
-  const [faceId, setFaceId] = useState("");
+/**
+ * The agent form, for a new agent or an existing one.
+ *
+ * **One component for both, because the alternative was what shipped: nothing.** This screen let
+ * you create an agent and never change it — and a comment in the table above pointed at "the
+ * editor below, where they can be changed", describing something that did not exist. An agent is
+ * the object in this product most worth tuning: the prompt is written by iteration, and the
+ * end-of-turn window is a number nobody guesses correctly the first time. Create-only meant
+ * delete-and-retype, which loses the id every attached session references.
+ *
+ * A second component would have duplicated the provider suggestions, the hysteresis check and the
+ * turn-taking fields, and the two would have drifted. So the same form PATCHes when it is given an
+ * agent and POSTs when it is not.
+ */
+function CreateForm({
+  agent,
+  onCreated,
+  onCancel,
+}: {
+  agent?: Agent | null;
+  onCreated: () => void;
+  onCancel?: () => void;
+}) {
+  const editing = Boolean(agent);
+  const [name, setName] = useState(agent?.name ?? "");
+  const [systemPrompt, setSystemPrompt] = useState(agent?.system_prompt ?? "");
+  const [llmProvider, setLlmProvider] = useState<LlmProvider>(
+    (agent?.llm_provider as LlmProvider) ?? "scripted",
+  );
+  const [llmModel, setLlmModel] = useState(agent?.llm_model ?? "");
+  const [voiceProvider, setVoiceProvider] = useState<VoiceProvider>(
+    (agent?.voice_provider as VoiceProvider) ?? "tone",
+  );
+  const [voiceId, setVoiceId] = useState(agent?.voice_id ?? "");
+  const [faceId, setFaceId] = useState(agent?.face_id ?? "");
   const [faces, setFaces] = useState<FaceOption[] | null>(null);
   const [runtime, setRuntime] = useState<RuntimeConfig | null>(null);
-  const [onsetProbability, setOnsetProbability] = useState(String(DEFAULTS.onset_probability));
-  const [releaseProbability, setReleaseProbability] = useState(
-    String(DEFAULTS.release_probability),
+  const turn = agent?.turn_taking;
+  const [onsetProbability, setOnsetProbability] = useState(
+    String(turn?.onset_probability ?? DEFAULTS.onset_probability),
   );
-  const [onsetFrames, setOnsetFrames] = useState(String(DEFAULTS.onset_frames));
-  const [minSpeechMs, setMinSpeechMs] = useState(String(DEFAULTS.min_speech_ms));
-  const [endOfTurnMs, setEndOfTurnMs] = useState(String(DEFAULTS.end_of_turn_silence_ms));
+  const [releaseProbability, setReleaseProbability] = useState(
+    String(turn?.release_probability ?? DEFAULTS.release_probability),
+  );
+  const [onsetFrames, setOnsetFrames] = useState(
+    String(turn?.onset_frames ?? DEFAULTS.onset_frames),
+  );
+  const [minSpeechMs, setMinSpeechMs] = useState(
+    String(turn?.min_speech_ms ?? DEFAULTS.min_speech_ms),
+  );
+  const [endOfTurnMs, setEndOfTurnMs] = useState(
+    String(turn?.end_of_turn_silence_ms ?? DEFAULTS.end_of_turn_silence_ms),
+  );
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
 
@@ -401,8 +494,8 @@ function CreateForm({ onCreated }: { onCreated: () => void }) {
     setBusy(true);
     setProblem(null);
     try {
-      const response = await fetch(API, {
-        method: "POST",
+      const response = await fetch(editing ? `${API}/${agent!.id}` : API, {
+        method: editing ? "PATCH" : "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           name,
@@ -430,7 +523,11 @@ function CreateForm({ onCreated }: { onCreated: () => void }) {
       }
       onCreated();
     } catch (cause) {
-      setProblem(cause instanceof Error ? cause.message : "Could not create the agent.");
+      setProblem(
+        cause instanceof Error
+          ? cause.message
+          : `Could not ${editing ? "save" : "create"} the agent.`,
+      );
     } finally {
       setBusy(false);
     }
@@ -439,8 +536,13 @@ function CreateForm({ onCreated }: { onCreated: () => void }) {
   return (
     <Card>
       <CardHeader
-        title="New agent"
-        hint="Provider defaults are the credential-free pair, so a new agent runs on a clean clone with no keys. Knowledge, tools, guardrails and pronunciations attach after the agent exists — they are references, and typing an id that does not exist yet fails at session start rather than here."
+        title={editing ? `Editing ${agent!.name}` : "New agent"}
+        hint={
+          editing
+            ? "Changes apply to interviews created from now on. Sessions already recorded keep the configuration they ran under, which is why a report stays readable after an agent is retuned."
+            : "Provider defaults are the credential-free pair, so a new agent runs on a clean clone with no keys. Knowledge, tools, guardrails and pronunciations attach after the agent exists — they are references, and typing an id that does not exist yet fails at session start rather than here."
+        }
+        action={onCancel ? <Button onClick={onCancel}>Cancel</Button> : undefined}
       />
 
       <div className="grid gap-4 px-5 py-5 sm:grid-cols-2">
@@ -670,7 +772,7 @@ function CreateForm({ onCreated }: { onCreated: () => void }) {
             disabled={busy || !name.trim() || hysteresisInverted}
             onClick={() => void submit()}
           >
-            {busy ? "Creating…" : "Create agent"}
+            {busy ? (editing ? "Saving…" : "Creating…") : editing ? "Save changes" : "Create agent"}
           </Button>
         </div>
       </div>

@@ -689,6 +689,29 @@ TOOLS = [
 ]
 
 
+def providers() -> dict[str, str]:
+    """
+    Which speech and language adapters this runtime actually resolved, from `/config`.
+
+    **Read rather than assumed, because assuming them shipped a broken demo.** An agent's
+    `voice_provider` and `llm_provider` override the process defaults -- deliberately, so that
+    attaching a voice in the console is not silently ignored the way `face_id` once was. The first
+    version of this script set `voice_id` and left both providers unset, so every seeded agent
+    inherited the credential-free defaults: `tone` for speech and `scripted` for the interviewer.
+    The result was five personas with five different Aura voice ids configured, all of them
+    emitting a sine wave and reading canned questions, and nothing anywhere reported a problem.
+
+    Taking them from `/config` means the seeded agents use whatever this install is configured for.
+    On a clean clone with no keys that is still `tone` and `scripted` -- correctly, because there is
+    nothing else to use -- and the printout says so rather than implying speech.
+    """
+    config = call("GET", "/config")
+    return {
+        "tts": str(config.get("tts") or "tone"),
+        "llm": str(config.get("llm") or "scripted"),
+    }
+
+
 def agent_specs(voices: list[str]) -> list[dict[str, Any]]:
     """
     The interviewer personas.
@@ -1076,11 +1099,22 @@ def seed(dry_run: bool = False) -> dict[str, Any]:
     print("-- agents")
     made["agents"] = {}
     faces = list(made["faces"].values())
+    resolved = providers()
+    if resolved["tts"] == "tone" or resolved["llm"] == "scripted":
+        print(
+            f"   !! this runtime resolved tts={resolved['tts']} llm={resolved['llm']}. The agents "
+            "below will beep and read canned questions -- set AVATAR_TTS and AVATAR_LLM, or add "
+            "the keys, and re-run."
+        )
     for index, spec in enumerate(agent_specs(voices)):
         body: dict[str, Any] = {
             "name": spec["name"],
             "system_prompt": spec["system_prompt"],
+            # Set explicitly. An unset provider inherits the credential-free default, which is a
+            # sine wave -- see `providers()`.
+            "voice_provider": resolved["tts"],
             "voice_id": spec["voice_id"],
+            "llm_provider": resolved["llm"],
             "turn_taking": spec["turn_taking"],
             "rubric_id": made["rubrics"][spec["rubric"]],
             "guardrail_id": made["guardrails"][spec["guardrail"]],
@@ -1094,8 +1128,10 @@ def seed(dry_run: bool = False) -> dict[str, Any]:
             body["face_id"] = faces[index % len(faces)]
         agent = call("POST", "/agents", body)
         made["agents"][spec["name"]] = agent["id"]
-        print(f"   {spec['name']}: voice={spec['voice_id']}, "
-              f"{len(body['knowledge_base_ids'])} kb, {len(body['tool_ids'])} tools")
+        print(
+            f"   {spec['name']}: {resolved['tts']}/{spec['voice_id']}, llm={resolved['llm']}, "
+            f"{len(body['knowledge_base_ids'])} kb, {len(body['tool_ids'])} tools"
+        )
 
     print("-- candidates")
     made["candidates"] = {}

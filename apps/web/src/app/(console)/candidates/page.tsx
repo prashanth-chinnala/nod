@@ -335,7 +335,7 @@ export default function CandidatesPage() {
       <Card>
         <CardHeader
           title={`Candidates${candidates ? ` · ${candidates.length}` : ""}`}
-          hint="Select a row to attach a resume and mint an interview."
+          hint="Click a name, or “add resume”, to open that candidate below — that is where the resume drop zone, the interviewer and the invite link live."
         />
         {error ? (
           <Empty
@@ -371,24 +371,44 @@ export default function CandidatesPage() {
                     >
                       {candidate.name || "—"}
                     </button>
+                    {/* Stated rather than left to a hover. The resume panel used to be reachable
+                        only by noticing that a name was clickable, which is an affordance nobody
+                        looks for in a table -- the first question asked of this screen was "where
+                        is the resume upload". */}
+                    <span className="block text-[10.5px] text-ink-low">
+                      {open === candidate.id ? "open below" : "open to add a resume"}
+                    </span>
                     {candidate.email ? (
                       <span className="block text-[11px] text-ink-low">{candidate.email}</span>
                     ) : null}
                   </Cell>
                   <Cell dim>{candidate.role || "—"}</Cell>
                   <Cell>
-                    {candidate.resume_error ? (
-                      <span className="text-warn">did not parse</span>
-                    ) : candidate.resume_filename ? (
-                      <span className="text-ink-mid">
-                        {candidate.resume_chars?.toLocaleString() ?? "—"} chars
-                        {candidate.resume_truncated ? (
-                          <span className="text-warn"> (truncated)</span>
-                        ) : null}
-                      </span>
-                    ) : (
-                      <span className="text-ink-low">none</span>
-                    )}
+                    {/* The cell is the control. A column that reports "none" and cannot be acted
+                        on sends the operator hunting for the place that can. */}
+                    <button
+                      onClick={() => {
+                        setOpen(candidate.id);
+                        setInvite(null);
+                        loadSessions(candidate.id);
+                      }}
+                      className="text-left transition-colors hover:text-accent"
+                    >
+                      {candidate.resume_error ? (
+                        <span className="text-warn">did not parse — replace</span>
+                      ) : candidate.resume_filename ? (
+                        <span className="text-ink-mid">
+                          {candidate.resume_chars?.toLocaleString() ?? "—"} chars
+                          {candidate.resume_truncated ? (
+                            <span className="text-warn"> (truncated)</span>
+                          ) : null}
+                        </span>
+                      ) : (
+                        <span className="text-accent underline decoration-accent/40 underline-offset-2">
+                          + add resume
+                        </span>
+                      )}
+                    </button>
                   </Cell>
                   <Cell dim>{agent?.name ?? (candidate.agent_id ? "(deleted)" : "—")}</Cell>
                   <Cell>

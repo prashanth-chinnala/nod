@@ -55,7 +55,7 @@ type Tool = {
   updated_at: string;
 };
 
-const HEAD = ["name", "kind", "timeout", "enabled", "updated"] as const;
+const HEAD = ["name", "kind", "timeout", "enabled", "updated", ""] as const;
 
 /**
  * Timeout tone is a judgement, not decoration.
@@ -94,11 +94,62 @@ export default function ToolsPage() {
     }
   }, []);
 
+  const [busyId, setBusyId] = useState<string | null>(null);
+
   useEffect(() => {
     void (async () => {
       await load();
     })();
   }, [load]);
+
+  const mutate = useCallback(
+    async (id: string, init: RequestInit, failure: string) => {
+      setBusyId(id);
+      try {
+        const response = await fetch(`${API}/${id}`, init);
+        if (!response.ok && response.status !== 404) {
+          const payload = (await response.json().catch(() => null)) as { detail?: unknown } | null;
+          setError(
+            typeof payload?.detail === "string"
+              ? payload.detail
+              : `the runtime answered ${response.status}`,
+          );
+          return;
+        }
+        await load();
+      } catch {
+        setError(failure);
+      } finally {
+        setBusyId(null);
+      }
+    },
+    [load],
+  );
+
+  const remove = useCallback(
+    (id: string) => mutate(id, { method: "DELETE" }, "could not delete that tool"),
+    [mutate],
+  );
+
+  /**
+   * Flip `enabled` without opening an editor.
+   *
+   * The one field on a tool worth changing in a hurry: an agent calling a tool that misbehaves
+   * mid-interview needs it off now, and the alternative was deleting it and losing the definition.
+   */
+  const setEnabled = useCallback(
+    (id: string, enabled: boolean) =>
+      mutate(
+        id,
+        {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ enabled }),
+        },
+        "could not change that tool",
+      ),
+    [mutate],
+  );
 
   return (
     <Page
@@ -160,6 +211,26 @@ export default function ToolsPage() {
                 </Cell>
                 <Cell dim mono>
                   {tool.updated_at}
+                </Cell>
+                <Cell>
+                  {/* Enable/disable and delete. A tool that turned out to be the wrong shape could
+                      previously only be worked around by leaving it in the list, and an agent
+                      referencing a tool it should not use is a real interview defect. */}
+                  <span className="flex gap-1.5">
+                    <Button
+                      disabled={busyId === tool.id}
+                      onClick={() => void setEnabled(tool.id, !tool.enabled)}
+                    >
+                      {tool.enabled ? "Disable" : "Enable"}
+                    </Button>
+                    <Button
+                      variant="danger"
+                      disabled={busyId === tool.id}
+                      onClick={() => void remove(tool.id)}
+                    >
+                      Delete
+                    </Button>
+                  </span>
                 </Cell>
               </Row>
             ))}

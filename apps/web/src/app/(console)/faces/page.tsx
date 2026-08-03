@@ -136,6 +136,37 @@ export default function FacesPage() {
     return () => controller.abort();
   }, [load]);
 
+  /**
+   * Delete the face, its media and any prepared identity.
+   *
+   * A 409 means an agent still references it, and the runtime's own message names which — more
+   * useful than "could not delete", and the reason this surfaces the detail rather than a generic
+   * failure.
+   */
+  const remove = useCallback(
+    async (id: string) => {
+      setBusyId(id);
+      try {
+        const response = await fetch(`${API}/faces/${id}`, { method: "DELETE" });
+        if (!response.ok && response.status !== 404) {
+          const payload = (await response.json().catch(() => null)) as { detail?: unknown } | null;
+          setError(
+            typeof payload?.detail === "string"
+              ? payload.detail
+              : `the runtime answered ${response.status}`,
+          );
+          return;
+        }
+        load();
+      } catch {
+        setError("could not reach the runtime to delete that face");
+      } finally {
+        setBusyId(null);
+      }
+    },
+    [load],
+  );
+
   async function create() {
     setSaving(true);
     setFormError(null);
@@ -286,15 +317,28 @@ export default function FacesPage() {
                   {stamp(face.updated_at)}
                 </Cell>
                 <Cell right>
-                  {preparable(face.status) ? (
+                  {/* Delete sits beside Prepare rather than behind a menu. A face is the largest
+                      thing this product stores -- a clip, a thumbnail, and about a gigabyte of
+                      prepared latents once enrolled -- and an operator who uploaded the wrong
+                      person had no way to remove them from here at all. */}
+                  <span className="flex justify-end gap-1.5">
+                    {preparable(face.status) ? (
+                      <Button
+                        variant="primary"
+                        disabled={busyId === face.id}
+                        onClick={() => void prepare(face.id)}
+                      >
+                        {busyId === face.id ? "Preparing…" : "Prepare"}
+                      </Button>
+                    ) : null}
                     <Button
-                      variant="primary"
+                      variant="danger"
                       disabled={busyId === face.id}
-                      onClick={() => void prepare(face.id)}
+                      onClick={() => void remove(face.id)}
                     >
-                      {busyId === face.id ? "Preparing…" : "Prepare"}
+                      Delete
                     </Button>
-                  ) : null}
+                  </span>
                 </Cell>
               </Row>
             ))}
