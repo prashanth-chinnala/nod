@@ -116,3 +116,6 @@ recordings/
 # Uploaded reference media: a real person's face and voice, provided for a persona. Same class of
 # content as `recordings/` and ignored for the same reason.
 media/
+
+# Generated decks. scripts/make_deck.py rebuilds them; the numbers live in that script.
+*.pptx

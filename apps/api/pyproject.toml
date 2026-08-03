@@ -92,11 +92,21 @@ target-version = "py311"
 # it once, where a reader looking for the rule will find it.
 "src/avatar/server.py" = ["E402"]
 
+# `make_deck.py` is a document, not a program: nearly every line is a sentence of slide copy passed
+# to a layout helper. Hard-wrapping those at 96 columns inside nested calls splits sentences across
+# implicit string concatenations, which makes the copy harder to read and edit than the long lines
+# do — and the copy is the part that has to be right. The layout code above it stays within 96.
+"scripts/make_deck.py" = ["E501"]
+
 [tool.ruff.lint]
 # En dash, em dash and typographic quotes are intentional in prose. RUF001/RUF002 exist to
 # catch homoglyphs pasted from elsewhere; mangling real punctuation to satisfy them would
 # make the writing worse, which is the opposite of the point.
-allowed-confusables = ["–", "—", "‘", "’", "“", "”"]
+#
+# The multiplication and minus signs are here for the same reason and one more: they appear in
+# measurements ("1.59×", "−66 ms") that are read off a slide, where "1.59x" and "-66" look like
+# a variable name and a flag. Same rule, applied to numbers instead of sentences.
+allowed-confusables = ["–", "—", "‘", "’", "“", "”", "×", "−", "›"]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 
 [tool.mypy]

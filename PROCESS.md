@@ -23,8 +23,10 @@ Real-time conversational avatar — architecture research, prototype, and model-
 | Author | Prashanth Chinnala |
 | Repository | <https://github.com/prashanth-chinnala/nod> |
 | Time spent | ~1.5 days. The brief suggests 10–14; this was written against a one-day-old deadline, and §3.1 records what that traded away |
-| Hardware used | **Apple M1 Pro, 16GB, no CUDA** — everything measured here ran on this. A free-tier **Colab T4 16GB** was used to attempt the model spike; it failed in setup before reaching the GPU (§2.2.1) |
-| Prototype status | A real spoken conversation works end to end — real transcription, a real LLM, a real synthesised voice, session lifecycle, and interruption. **No talking-head model is integrated**; see §3.1 and §3.4 |
+| Hardware used *(when this was written)* | **Apple M1 Pro, 16GB, no CUDA** — everything measured **in this document** ran on this. A free-tier **Colab T4 16GB** was used to attempt the model spike; it failed in setup before reaching the GPU (§2.2.1) |
+| Prototype status *(when this was written)* | A real spoken conversation worked end to end — real transcription, a real LLM, a real synthesised voice, session lifecycle, and interruption. **No talking-head model was integrated**; see §3.1 and §3.4 |
+| **Prototype status today** | **A real face renders on a Tesla T4**, from an uploaded video or from a photograph animated at enrollment. Measured: **78.4 ms/frame render, 8.3 fps delivered** against an 8 fps target, trailing audio/video gap **−66 ms to +172 ms**, first turn no slower than the fifth. Not real time — 2.0× short of 25 fps, and VAE decode is 74% of a frame. Voice cloning works but not on the same card as the face. Figures and method: [MEASUREMENTS.md](MEASUREMENTS.md) §2 and §8b |
+| **Where §3.3 and §3.4 were superseded** | Every `NOT YET MEASURED` row below has an answer now, and two figures here were later shown wrong because they were measured on the wrong device (batch size, fp16 ratio). The corrections live in [MEASUREMENTS.md](MEASUREMENTS.md), not edited into the text below — see the banner |
 
 ## Contents
 

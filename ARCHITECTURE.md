@@ -239,8 +239,15 @@ renderer instance in the process.
 - **Authentication.** None, anywhere. The candidate link is not a credential and the assistant will
   read any transcript in the store. A stated development posture — see [SECURITY.md](SECURITY.md),
   which also explains why real faces change the calculus.
-- **A job queue.** Enrollment is synchronous HTTP and takes minutes. Nothing reaps a row left in
-  `preparing` by a crash. Acceptable now; the first blocker for generative enrollment.
-- **Voice cloning.** A persona cannot sound like a specific person.
-- **Horizontal scale.** One process, one GPU. The identity cache and the warm-worker argument are
-  written with a pool in mind, but there is no pool.
+- **A distributed job queue.** Enrollment now returns 202 and runs on a worker thread, claims its
+  row with a timestamp, and startup fails anything a dead process left in `preparing` — see
+  `avatar/jobs.py`. What is *not* here is a broker. Redis is already running for egress and a queue
+  on it would be the conventional answer; at one API process and one GPU it would buy a second
+  failure mode and nothing else. The `status` field is the contract a real queue would preserve.
+- **Voice cloning at the same time as the face.** A persona *can* sound like a specific person —
+  `voices.py`, `tts_clone.py` and the Chatterbox sidecar — but not on one T4 alongside the
+  renderer: `avatar_first_frame` goes 3 s to 28 s when both compete. Cloning and a self-hosted
+  face are today an either/or, and the sidecar being a separate process is what makes a second
+  GPU configuration rather than work.
+- **Horizontal scale.** One process, one GPU. The identity cache, the shared model cache and the
+  warm-worker argument are all written with a pool in mind, but there is no pool.
