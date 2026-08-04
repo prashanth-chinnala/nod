@@ -38,6 +38,8 @@ import asyncio
 import contextlib
 import json
 import os
+import time
+from collections.abc import Callable
 
 from avatar.audio.vad import SAMPLE_RATE
 from avatar.contracts import Transcriber
@@ -107,6 +109,10 @@ class DeepgramSTT:
         model: str = DEFAULT_MODEL,
         api_key: str | None = None,
         connect: object | None = None,
+        clock: Callable[[], float] | None = None,
+        keep_alive_interval: float = 4.0,
+        max_reconnect_attempts: int = 6,
+        reconnect_base_delay: float = 0.25,
     ) -> None:
         self.model = model
         self._api_key = api_key or os.environ.get("DEEPGRAM_API_KEY", "")
@@ -143,6 +149,19 @@ class DeepgramSTT:
         self.interim_count = 0
         self.bytes_sent = 0
         self.reconnects = 0
+        self.keep_alives = 0
+        self._reconnector: asyncio.Task[None] | None = None
+        self._keeper: asyncio.Task[None] | None = None
+        self._clock = clock or time.monotonic
+        self._last_audio_at = self._clock()
+        self._keep_alive_interval = keep_alive_interval
+        """
+        Comfortably inside Deepgram's ~10 s idle timeout, and measured against the wrong thing
+        if it is tuned by feel: the interval that matters is how long the *candidate* is silent
+        while the avatar speaks, which is a whole answer long.
+        """
+        self._max_reconnect_attempts = max_reconnect_attempts
+        self._reconnect_base_delay = reconnect_base_delay
 
     @property
     def url(self) -> str:
@@ -166,8 +185,19 @@ class DeepgramSTT:
             self._socket = await self._open()
         except Exception:
             self._socket = None
+            # Scheduled even though this is session start, because "unreachable right now" and
+            # "unreachable for the whole interview" are different, and the old code treated them
+            # as the same by never trying again.
+            self._schedule_reconnect()
             return
         self._reader = asyncio.create_task(self._read_loop(), name="stt-reader")
+        self._last_audio_at = self._clock()
+        # Owned here rather than by the server, so every caller of `connect()` gets it and
+        # nothing has to remember. The keepalive is what stops the socket dying of idleness
+        # while the avatar talks; the reconnector is what recovers when something else kills it.
+        # Both are needed, and neither is sufficient.
+        if self._keeper is None or self._keeper.done():
+            self._keeper = asyncio.create_task(self.keep_alive(), name="stt-keepalive")
 
     async def _open(self) -> object:
         if self._connect is not None:
@@ -180,21 +210,99 @@ class DeepgramSTT:
 
     async def push_audio(self, pcm: bytes) -> None:
         """
-        Forward one frame. Never raises, never blocks on reconnect.
+        Forward one frame. Never raises, never blocks on a handshake.
 
-        A dropped connection is not repaired here: doing so would put a TLS handshake on
-        the audio path and stall the VAD behind it. `connect()` is retried at the next
-        session, and the turn meanwhile carries a placeholder.
+        **Repair is scheduled here, not performed here**, and the distinction is the whole
+        point. An earlier version of this method dropped the socket and left it dropped: the
+        class docstring said "for lazy reconnect" and nothing anywhere reconnected. `connect()`
+        runs once at session start, so one dropped socket made the interviewer deaf for the rest
+        of the interview.
+
+        That is not a theoretical failure. In a real session two turns transcribed and the
+        remaining thirty-eight did not, including one of **10,080 ms of speech** -- the VAD
+        detected it correctly, the transcriber was gone, and the interviewer went on asking
+        plausible questions of someone it could not hear. Nothing errored, which is why it
+        survived this long.
+
+        The original reason for not reconnecting was sound and is preserved: a TLS handshake on
+        the audio path would stall the VAD behind it. So the handshake happens in a background
+        task, and this method never waits for it. Frames during the gap are lost, which costs a
+        word or two at the start of one turn instead of every word for the rest of the session.
         """
         socket = self._socket
         if socket is None:
+            self._schedule_reconnect()
             return
         try:
             await socket.send(pcm)  # type: ignore[attr-defined]
             self.bytes_sent += len(pcm)
+            self._last_audio_at = self._clock()
         except Exception:
             self._socket = None
+            self._schedule_reconnect()
+
+    def _schedule_reconnect(self) -> None:
+        """
+        Start a background reconnect unless one is already running. Synchronous and cheap.
+
+        Guarded by the task's own liveness rather than a flag, because a flag and a task are two
+        representations of one fact and they drift: the failure mode is a flag left set by a
+        task that died, after which nothing ever reconnects again -- the exact bug this method
+        exists to fix, reintroduced one level up.
+        """
+        if self._reconnector is not None and not self._reconnector.done():
+            return
+        self._reconnector = asyncio.create_task(self._reconnect(), name="stt-reconnect")
+
+    async def _reconnect(self) -> None:
+        """
+        Reopen the socket, backing off. Gives up after a bounded number of attempts.
+
+        Bounded rather than infinite: an unreachable or unauthorised Deepgram will never come
+        back within one interview, and a task retrying it forever would keep a dead session
+        warm. `reconnects` counts the successes so `/config` and the session stats can show that
+        this happened at all -- a transcript gap that nobody can attribute is how the original
+        bug stayed hidden.
+        """
+        for attempt in range(self._max_reconnect_attempts):
+            await asyncio.sleep(min(self._reconnect_base_delay * (2**attempt), 5.0))
+            if self._socket is not None:  # a later connect() won the race
+                return
+            try:
+                self._socket = await self._open()
+            except Exception:
+                continue
+            self._reader = asyncio.create_task(self._read_loop(), name="stt-reader")
             self.reconnects += 1
+            self._last_audio_at = self._clock()
+            return
+
+    async def keep_alive(self) -> None:
+        """
+        Send Deepgram's `KeepAlive` while no audio is flowing. Prevents the drop entirely.
+
+        **Why this is needed even with reconnection.** Deepgram closes a streaming connection
+        that has been idle for about ten seconds, and this transcriber goes idle every time the
+        avatar is the one talking -- which on a long answer is easily longer than that. So the
+        socket was not dying of network trouble; it was dying of politeness, every single turn,
+        and reconnecting after the fact still loses the first words of the candidate's reply.
+
+        Run as a background task for the life of the session. Never raises: a failed keepalive
+        is indistinguishable from the socket already being gone, which the reconnector handles.
+        """
+        while True:
+            await asyncio.sleep(self._keep_alive_interval)
+            socket = self._socket
+            if socket is None:
+                continue
+            if self._clock() - self._last_audio_at < self._keep_alive_interval:
+                continue
+            try:
+                await socket.send(json.dumps({"type": "KeepAlive"}))  # type: ignore[attr-defined]
+                self.keep_alives += 1
+            except Exception:
+                self._socket = None
+                self._schedule_reconnect()
 
     def take_transcript(self) -> str:
         """
@@ -247,6 +355,15 @@ class DeepgramSTT:
 
     async def aclose(self) -> None:
         socket, self._socket = self._socket, None
+        # Cancelled before the socket is closed, so neither task can reopen what is being torn
+        # down. A reconnector that outlived aclose() would leave a live Deepgram stream behind
+        # every finished interview -- billed, and attached to nothing.
+        for task in (self._keeper, self._reconnector):
+            if task is not None:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await task
+        self._keeper = self._reconnector = None
         if self._reader is not None:
             self._reader.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):

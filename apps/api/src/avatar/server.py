@@ -707,8 +707,35 @@ class BrowserSession:
                     "speech_probability": round(self._speech_probability, 3),
                     "in_speech": self._detector.in_speech,
                     "speech_ms": self._detector.speech_ms,
+                    # Whether the interviewer can currently hear. Reported because the failure
+                    # this exposes was invisible for a whole interview: the transcriber's socket
+                    # dropped, every turn afterwards recorded `[Nms of speech, no transcript]`,
+                    # and the only place that showed up was a session report read afterwards.
+                    # `stt_reconnects` climbing during a session is the signal that something is
+                    # repeatedly killing the connection, which is a different problem from it
+                    # never having opened.
+                    **self._stt_health(),
                 }
             )
+
+    def _stt_health(self) -> dict[str, object]:
+        """
+        What the transcriber reports about itself, or nothing if it has nothing to report.
+
+        Read defensively rather than by type, because `NullTranscriber` is the default on a
+        clean clone and has none of these attributes -- and the health of a transcriber that was
+        never meant to transcribe is not worth a branch at every call site.
+        """
+        health: dict[str, object] = {}
+        for key, attribute in (
+            ("stt_connected", "connected"),
+            ("stt_reconnects", "reconnects"),
+            ("stt_keep_alives", "keep_alives"),
+        ):
+            value = getattr(self._stt, attribute, None)
+            if value is not None:
+                health[key] = value
+        return health
 
     async def _tick_silence(self) -> None:
         while True:
