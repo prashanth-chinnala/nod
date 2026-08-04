@@ -57,6 +57,7 @@ class RecordingTransport:
         self.closed = False
         self.sent: list[AudioChunk] = []
         self.flushes = 0
+        self.turn_ends = 0
 
     async def open_track(self) -> None:
         self.opened = True
@@ -70,6 +71,13 @@ class RecordingTransport:
 
     async def close_track(self) -> None:
         self.closed = True
+
+    def end_of_turn(self) -> None:
+        # Counted rather than ignored, so a test can assert the runtime tells its transport when a
+        # turn ended. On the worker path that call is the only turn boundary that crosses the
+        # process, and a regression in it is invisible in-process: everything still works, and the
+        # split renderer silently treats the whole interview as one utterance.
+        self.turn_ends += 1
 
 
 class ScriptedLLM:

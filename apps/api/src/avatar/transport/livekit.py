@@ -291,6 +291,15 @@ class LiveKitTransport:
         self._video_source = None
         self._connected = False
 
+    def end_of_turn(self) -> None:
+        """
+        Nothing to do. This transport publishes its own tracks, so no receiver is inferring turn
+        boundaries from them -- the tracks simply stop carrying speech and resume carrying idle.
+
+        `WorkerAudioTransport` is where this signal matters, because there the audio is being
+        handed to a process that has to decide when to close a stream.
+        """
+
 
 def _decode_to_rgba(data: bytes, width: int, height: int) -> tuple[bytes, int, int]:
     """

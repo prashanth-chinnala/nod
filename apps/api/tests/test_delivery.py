@@ -28,12 +28,16 @@ class FakeTransport:
         self.flushes = 0
         self.opened = 0
         self.closed = 0
+        self.turn_ends = 0
 
     async def open_track(self) -> None:
         self.opened += 1
 
     async def close_track(self) -> None:
         self.closed += 1
+
+    def end_of_turn(self) -> None:
+        self.turn_ends += 1
 
     async def send_audio(self, chunk: AudioChunk) -> None:
         self.sent.append(("audio", chunk))

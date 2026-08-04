@@ -499,6 +499,11 @@ class SessionOrchestrator:
 
     async def _finish_turn(self, turn: Turn) -> None:
         self.history.append({"role": "assistant", "content": turn.text_generated})
+        # Told here and not in `_cancel_turn`, because those are different facts. This is the
+        # avatar reaching the end of what it had to say; cancellation is `flush_audio`, which
+        # discards rather than completes. A transport that renders in another process needs the
+        # distinction: one ends a segment normally, the other abandons it mid-word.
+        self._transport.end_of_turn()
         self._transition(State.IDLE)
         self._last_activity = self._clock()
 
