@@ -1,19 +1,26 @@
 #!/usr/bin/env python3
 """
-Build the product/architecture deck as a real .pptx.
+Build the demo deck as a real .pptx — a run sheet for presenting the product live.
 
-**Why a script and not a hand-made file.** Every figure in this deck has to trace to a run. A
-generator lets the numbers live in one dict, `MEASURED`, next to the source that produced them, so a
-slide cannot quietly drift from MEASUREMENTS.md the way a hand-edited deck would. Re-run it after a
-measurement changes and the deck changes with it.
+**Why it is shaped as a run sheet and not an architecture review.** A deck that only describes the
+system leaves the presenter narrating an idle screen; a deck that only lists clicks leaves the
+audience watching a tour with no idea why any of it was hard. So every demo slide carries three
+things: **SHOW** what to do on screen, **SAY** the one sentence that lands, and **WHY IT WORKS** —
+the mechanism, with the measurement that supports it. The deck can be read as a script and still
+says something.
 
-**The two rules this file enforces, from CLAUDE.md.** No invented measurements: anything without a
-run says `NOT YET MEASURED` and says why. And the judgment sections -- the build-vs-buy
-recommendation, the confirmed-vs-inferred tags, the what-would-change-my-mind thresholds -- belong
-to the human. Where this deck presents them it quotes PROCESS.md, which Prashanth authored, and
-marks anything needing a refresh `[HUMAN]` rather than writing a new opinion.
+**Why a generator and not a hand-made file.** Every figure has to trace to a run. The numbers live
+in one `MEASURED` dict beside the run that produced them, so a slide cannot quietly drift from
+MEASUREMENTS.md the way a hand-edited deck would. Re-run it after a measurement changes and the deck
+follows.
 
-    .venv/bin/python apps/api/scripts/make_deck.py --out nod-engineering-review.pptx
+**The two rules from CLAUDE.md are enforced here rather than hoped for.** No invented measurements:
+anything without a run says `NOT YET MEASURED` and says why, which is why there is no dollar figure
+anywhere — cost per interview divides by a concurrency number nobody has measured. And the judgment
+sections stay the author's: the build-vs-buy slide quotes PROCESS.md §4 as written and marks the
+refresh it now needs `[HUMAN]`, because §4.2 opens "I did not run a GPU" and that input has changed.
+
+    .venv/bin/python apps/api/scripts/make_deck.py --out nod-demo.pptx
 """
 
 from __future__ import annotations
@@ -81,6 +88,16 @@ MEASURED = {
     "tests": "746",
     "session_start": "1.5 – 3.8 s",
     "voice_contention": "3 s → 28 s",
+    # The LiveKit worker, measured at a remote subscriber against a local SFU.
+    "drift_median": "−241 ms",
+    "drift_spread": "9 ms across 22 s",
+    "ws_drift_range": "−66 ms to +172 ms, worst 538 ms",
+    "sub_video": "327",
+    "sub_audio": "2,200",
+    "bargein_dropped": "8 of 38 chunks",
+    "seams_forced": "0",
+    "resume_chars": "778",
+    "tests_now": "823",
 }
 
 
@@ -277,6 +294,36 @@ def flow(slide, x, y, w, steps, note_size=9.5):
                  align=PP_ALIGN.CENTER)
 
 
+def beat(slide, x, y, w, show, say, why=""):
+    """
+    One demo beat: what to do on screen, what to say, and the mechanism behind it.
+
+    The three-part shape exists because a demo deck fails in two different ways. Slides that only
+    describe architecture leave the presenter narrating an idle screen; slides that only list clicks
+    leave the audience watching a tour with no idea why any of it is hard. Pairing them on every
+    beat means the deck can be read as a script and still says something.
+    """
+    cursor = float(y)
+    for label, body, tone in (
+        ("show", show, ACCENT),
+        ("say", say, INK),
+        ("why it works", why, GOOD),
+    ):
+        if not body:
+            continue
+        rect(slide, Emu(int(x)), Emu(int(cursor + Inches(0.02))), Pt(2.5), Inches(0.42), fill=tone)
+        text(slide, Emu(int(x + Inches(0.16))), Emu(int(cursor)), Inches(1.15), Inches(0.3),
+             label.upper(), size=9, color=tone, bold=True)
+        text(slide, Emu(int(x + Inches(1.38))), Emu(int(cursor)),
+             Emu(int(w - Inches(1.38))), Inches(0.4),
+             body, size=12.5 if label == "say" else 11.5,
+             color=INK if label == "say" else INK_MID,
+             bold=label == "say", spacing=1.28)
+        lines = max(1, -(-len(body) // 86))
+        cursor += Inches(0.2 + 0.2 * lines)
+    return cursor
+
+
 def build(out: Path) -> None:
     prs = Presentation()
     prs.slide_width, prs.slide_height = W, H
@@ -320,384 +367,322 @@ def build(out: Path) -> None:
          "authentication anywhere — a stated development posture, not an oversight."),
     ])
 
-    # ---------------------------------------------------------------- 3. alignment
-    section(prs, "01", "Does this answer the brief?",
-            "The assessment asks for five deliverables. Four exist and are current; one needs a "
-            "refresh because the facts under it changed.")
+    # ---------------------------------------------------------------- 3. the demo
+    section(prs, "01", "What you are about to see",
+            "Five minutes of running software, then how each part of it works. Every number in "
+            "this deck came from a run you can repeat.")
 
-    s = content(prs, "Assessment deliverables, mapped", "Alignment",
-                notes="Be direct about the one amber row. PROCESS.md was written in ~1.5 days "
-                      "before any GPU ran. Its architecture research and model memo still stand. "
-                      "Its measured sections were superseded, and the build-vs-buy cost model "
-                      "explicitly says 'I did not run a GPU' — that input now exists, so the memo "
-                      "deserves a refresh. That is a judgment call for the author, not something "
-                      "to patch silently.")
+    s = content(prs, "The demo, in order", "Run sheet",
+                notes="Keep this slide up while you set up. The order is deliberate: configuration "
+                      "first so the interview has something to be configured by, then the "
+                      "interview, then the assessment that falls out of it. Do not start with the "
+                      "avatar — it is the least interesting part and it invites questions you would "
+                      "rather answer at the end.")
     table(s, Inches(0.72), Inches(1.9), Inches(11.9),
-          ["Deliverable", "Where it lives", "State"],
-          [["1 · Architecture document", "PROCESS.md §1 — [C]/[I]/[U] tags, latency budget, "
-            "observability plan", "Current"],
-           ["2 · Model-selection memo", "PROCESS.md §2 — criteria, weights, candidates, the "
-            "argument against the pick", "Current"],
-           ["3 · Working prototype + process doc", "This repo; ARCHITECTURE / MODELS / "
-            "MEASUREMENTS / OPERATIONS / SECURITY", "Current"],
-           ["4 · Build-vs-buy memo", "PROCESS.md §4 — recommendation, cost model, "
-            "what-would-change-my-mind", "Needs refresh"],
-           ["5 · Migration plan", "PROCESS.md §5 — shadow mode, flagged rollout, rollback, "
-            "decommission", "Current"],
-           ["CI workflow", ".github/workflows/ci.yml — lint, types, "
-            f"{MEASURED['tests']} GPU-free tests", "Current"],
-           ["Incremental commit history", "88 commits on the product branch beyond the "
-            "submission tag", "Current"]],
-          widths=[0.29, 0.53, 0.18],
-          colors={(0, 2): GOOD, (1, 2): GOOD, (2, 2): GOOD, (3, 2): WARN, (4, 2): GOOD,
-                  (5, 2): GOOD, (6, 2): GOOD})
-    callout(s, Inches(0.72), Inches(5.5), Inches(11.9), Inches(1.3),
-            "§4.2 of the build-vs-buy memo opens: “Every figure below is an assumption, not a "
-            "quote. I have no vendor contract and did not run a GPU.” The second half is no "
-            "longer true — a T4 ran, and render throughput is now measured. The recommendation "
-            "may well survive the new input, but re-deriving it is the author's call.",
-            tone=ACCENT, label="[HUMAN] the one gap worth naming first")
+          ["#", "On screen", "The point being made", "Time"],
+          [["1", "Console → Candidates. Drop a resume on a row.",
+            "The resume is the only field here that changes the interview", "45 s"],
+           ["2", "Console → Agents. Open one.",
+            "An interviewer is composed, not coded: rubric, voice, knowledge, guardrail", "45 s"],
+           ["3", "Console → Knowledge. Paste a paragraph, hit Reindex, run a query.",
+            "Retrieval is inspectable before anyone is interviewed against it", "45 s"],
+           ["4", "Copy the invite link. Open the interview room.",
+            "Confirm your name, accept the recording notice — attested, never verified", "30 s"],
+           ["5", "Have the conversation. **Interrupt it mid-sentence.**",
+            "Barge-in is the moment the architecture shows", "90 s"],
+           ["6", "Console → Sessions → the report.",
+            "Quotes, not scores, are the artefact — and every quote is checked", "60 s"],
+           ["7", "Terminal: the LiveKit worker, two processes.",
+            "Where this is going: the renderer as its own scalable participant", "60 s"]],
+          widths=[0.04, 0.33, 0.51, 0.12], size=11, row_h=0.44)
+    callout(s, Inches(0.72), Inches(5.6), Inches(11.9), Inches(1.2),
+            "One thing to set up before the room is silent: the renderer here is the placeholder, "
+            "not a face. The real face runs on a Tesla T4 at 12.8 fps of capacity and 8.3 fps "
+            "delivered — measured — and this laptop has no GPU. Say that at the start rather than "
+            "when someone notices, and the rest of the demo is about mechanism instead of apology.",
+            tone=ACCENT, label="Say this in the first thirty seconds")
 
-    s = content(prs, "Graded standards, and where we stand", "Alignment",
-                notes="Standard 6 is the one to dwell on: documentation discipline means the "
-                      "process doc and the prototype describe the same reality. PROCESS.md now "
-                      "carries a banner saying it is historical and pointing at the current docs, "
-                      "plus a 'status today' row with the measured figures. That is the fix — "
-                      "not rewriting history, but making the divergence impossible to miss.")
-    table(s, Inches(0.72), Inches(1.9), Inches(11.9),
-          ["#", "Standard", "Evidence in this system"],
-          [["1", "Built to last", "58 runtime modules, typed and linted; docs written to inform a "
-            "decision, not to demo"],
-           ["2", "Deterministic governance of ML", "Seven-state machine, epoch cancellation, "
-            "idle loop — all deterministic code around a swappable model"],
-           ["3", "Honest risk communication", "[C]/[I]/[U] tags; two of our own published figures "
-            "retracted as wrong after re-measurement"],
-           ["4", "Contracts first-class", "contracts.py imports nothing; boundary enforced by a "
-            "test that inspects sys.modules"],
-           ["5", "Mandatory observability", "Telemetry is the only turn recorder; latency stages "
-            "named and emitted per turn"],
-           ["6", "Documentation discipline", "PROCESS.md flagged historical with pointers + a "
-            "measured status row; corrections logged, not edited away"],
-           ["7", "Boring technology", "MuseTalk + LivePortrait + Deepgram + FastAPI. No novel "
-            "model, no from-scratch training"]],
-          widths=[0.04, 0.24, 0.72], size=11)
+    # ---------------------------------------------------------------- 4. walkthrough
+    section(prs, "02", "Walk the console",
+            "Four screens. Each one is a module, and each has a mechanism worth a sentence.")
 
-    # ---------------------------------------------------------------- 4. product flow
-    section(prs, "02", "How the product works",
-            "Three flows: enrolling a persona, running a live interview, and everything that "
-            "happens after the candidate leaves.")
+    s = content(prs, "Candidates — the resume changes the interview", "Beat 1 · module: candidates",
+                notes="This is the strongest opening because it is the least expected: dropping a "
+                      "PDF changes what the interviewer asks. Show the extracted text — that is the "
+                      "detail that convinces people it is real rather than decorative. If the "
+                      "resume failed to parse, show that too; the failure state is deliberately as "
+                      "loud as the success.")
+    beat(s, Inches(0.72), Inches(1.95), Inches(11.9),
+         "Open Candidates. Click a name, or “+ add resume” on the row. Drop a PDF or "
+         "Markdown file. Then click “Show what the interviewer reads”.",
+         "This resume is the only thing on this screen that changes the interview.",
+         "The runtime appends it to the interviewer's system prompt at session start — "
+         f"measured at {MEASURED['resume_chars']} characters for one real resume — framed "
+         "explicitly as the candidate's own unverified claims, with an instruction to probe "
+         "rather than recite. Without that framing a model states a CV back as fact, which is "
+         "the failure an interview exists to prevent.")
+    table(s, Inches(0.72), Inches(4.15), Inches(11.9),
+          ["Also worth showing", "Because"],
+          [["A resume that failed to parse", "A scanned PDF stores fine and extracts to nothing. "
+            "The row says so, in warning colour, with the reason and the fix"],
+           ["The status column moving to “invited”", "Advanced by the API when an interview is "
+            "minted, not typed by an operator — a status nobody sets by hand cannot drift"],
+           ["Delete a candidate", "Removes the resume file and the ~1 GB prepared identity too, "
+            "and keeps their interviews: a transcript is evidence"]],
+          widths=[0.3, 0.7], size=11, row_h=0.46)
 
-    s = content(prs, "Flow 1 — Enrolling a persona", "App flow",
-                notes="Two entry points, one output. A video gives the best result because "
-                      "MuseTalk repaints the mouth of frames it is given — with one still frame "
-                      "the head never moves. That is why the photo path animates first. Both "
-                      "paths converge on the same prepared identity, so nothing downstream knows "
-                      "which was used. Enrollment is asynchronous, not offline: the operator does "
-                      "it in our console and it returns immediately.")
+    s = content(prs, "Agents — an interviewer is composed, not coded",
+                "Beat 2 · module: agents, rubrics, guardrails, lexicons",
+                notes="The point of this screen is that nothing here is a code change. If someone "
+                      "asks how you would run a different kind of interview, the answer is on this "
+                      "screen and takes a minute. Open the Edit form and change the end-of-turn "
+                      "window live if you have time — it is the number that most changes how the "
+                      "conversation feels.")
+    beat(s, Inches(0.72), Inches(1.95), Inches(11.9),
+         "Open Agents. Show the attached column, then Edit one. Point at the end-of-turn "
+         "silence field.",
+         "Five interviewers, five voices, five rubrics — and no code involved in any of it.",
+         "Each attachment is a decorator around the sentence stream: "
+         "with_plan(with_guardrail(with_knowledge(llm))). The orchestrator does not know they "
+         "exist, which is why adding one is configuration rather than a release.")
+    table(s, Inches(0.72), Inches(4.1), Inches(11.9),
+          ["Attached", "What it does to the conversation"],
+          [["Rubric", "Competencies with probes and signals. Drives what gets asked and when to "
+            "move on — not just how it is scored afterwards"],
+           ["Guardrail", "Banned topics, PII redaction, a refusal line. Checks the candidate's "
+            "input and the model's output separately"],
+           ["Pronunciation lexicon", "Rewrites text before synthesis, so “kubectl” is spoken and "
+            "not spelled"],
+           ["Knowledge base", "Retrieved per turn and appended, so the interviewer can cite the "
+            "on-call policy as fact"],
+           ["Voice", "A Deepgram Aura voice, or a cloned one from an uploaded recording"],
+           ["Turn-taking", "End-of-turn silence in ms. The largest single term in the latency "
+            "budget, and a conversational judgement rather than a technical one"]],
+          widths=[0.22, 0.78], size=11, row_h=0.42)
+
+    s = content(prs, "Knowledge — retrieval you can look at before you trust it",
+                "Beat 3 · module: knowledge",
+                notes="The retrieval tester is the slide-worthy part: it shows scores per chunk, so "
+                      "bad retrieval is distinguishable from a bad answer. That distinction is the "
+                      "difference between debugging this in an afternoon and guessing at it for a "
+                      "week. Mention that this used to be a curl command.")
+    beat(s, Inches(0.72), Inches(1.95), Inches(11.9),
+         "Open Knowledge. Paste two paragraphs separated by a blank line — watch the chunk "
+         "count update live. Add it, hit Reindex, then run a query in the tester.",
+         "You can see exactly what the interviewer would retrieve, before anyone is interviewed.",
+         "Chunking splits on blank lines, so paragraph structure decides what can be retrieved "
+         "independently — which is invisible until retrieval disappoints, so the form says it "
+         "while you type. Reindex exists because adding a document without rebuilding retrieves "
+         "from the stale index, and that looks exactly like retrieval ignoring your upload.")
+    callout(s, Inches(0.72), Inches(4.3), Inches(5.8), Inches(2.5),
+            "Keyword scoring, not embeddings, and it is a deliberate choice rather than a stage we "
+            "have not reached. A retrieval hop inside a conversational turn has no latency budget "
+            "to spare — the whole turn is already 2.7 to 5.8 seconds against a sub-second target — "
+            "and over a handful of short documents keyword matching is competitive. The interface "
+            "is a Protocol, so a vector store is a swap when the corpus justifies one.",
+            tone=GOOD, label="Why no embedding model")
+    callout(s, Inches(6.82), Inches(4.3), Inches(5.8), Inches(2.5),
+            "A query that returns nothing is shown as a real miss, not an error. Keyword retrieval "
+            "needs a word in common, so a paraphrase with no shared vocabulary finds nothing — and "
+            "saying “no chunk shared a term with that query” tells an operator what to do, where "
+            "“0 results” starts a support conversation.",
+            tone=ACCENT, label="The empty-result case")
+
+    # ---------------------------------------------------------------- 5. the interview
+    section(prs, "03", "The interview itself",
+            "One turn, beat by beat — and the interruption, which is where the architecture "
+            "becomes visible.")
+
+    s = content(prs, "Joining — attested, never verified", "Beat 4 · module: attendance",
+                notes="Do not skip this screen even though it is a form. It is the one place the "
+                      "product makes a claim about a person, and the wording is the whole point. "
+                      "Anyone from a regulated industry will care more about this slide than about "
+                      "the avatar.")
+    beat(s, Inches(0.72), Inches(1.95), Inches(11.9),
+         "Open the invite link. The name is prefilled from the invite. Accept the recording "
+         "notice. Neither field is skippable.",
+         "This records who says they turned up. It does not verify anyone, and every heading "
+         "says so.",
+         "There is no authentication in this system — the link is the whole credential — so "
+         "nothing here could prove identity. What it captures is an explicit, timestamped "
+         "attestation: the typed name, the expected name, the consent, the browser and timezone. "
+         "Both names are stored so a mismatch is visible; `verified` is a field that is always "
+         "false, present rather than omitted so nobody infers the absence of a check.")
+    callout(s, Inches(0.72), Inches(4.5), Inches(11.9), Inches(2.3),
+            "A reviewer who came away believing identity had been confirmed would be making a "
+            "hiring decision on a check nobody performed. That is a specific, foreseeable harm, so "
+            "the limitation is on the card in the report and in the heading of this screen rather "
+            "than in a manual.\n\nOne of the seeded candidates joins under a deliberately "
+            "different name — “Thomas” against “Tom” on file — so the mismatch warning "
+            "on the report is something you can show rather than describe.",
+            tone=ACCENT, label="Why the wording matters more than the feature")
+
+    s = content(prs, "One turn, and where the time goes", "Beat 5 · module: orchestrator",
+                notes="Walk the five boxes, then land on the latency table. The conclusion to "
+                      "state out loud: none of the three dominant terms is the renderer. That is "
+                      "the finding the whole build-vs-buy case rests on, and it is measured.")
     flow(s, Inches(0.72), Inches(1.95), Inches(11.9), [
-        ("Upload", "Video, or a photo. Probed for codec, duration, face presence; rejected with a "
-         "reason if unusable."),
-        ("Animate (photo only)", "LivePortrait transfers motion from a driving clip so a still "
-         "can blink and turn."),
-        ("Detect + crop", "face_alignment finds 68 landmarks per frame; the mouth region is cut "
-         "on upstream's exact arithmetic."),
-        ("Encode to latents", "The VAE turns each 256×256 crop into 32×32×4. Masks and blend "
-         "boxes are precomputed."),
-        ("Prepared identity", "Cycled frames, latents, masks, plus an idle loop picked from the "
-         "quietest quarter of frames."),
-    ])
-    table(s, Inches(0.72), Inches(3.5), Inches(11.9),
-          ["Step", "Measured on a T4", "Note"],
-          [["POST /faces/{id}/prepare returns", f"{MEASURED['enroll_202_ms']} s (HTTP 202)",
-            "A worker thread does the work; the row is claimed with a timestamp"],
-           ["Photo → 20 s moving reference", f"{MEASURED['animate_ms']} ms",
-            "LivePortrait, 500 frames, CPU ONNX providers"],
-           ["Reference → prepared identity", f"{MEASURED['prepare_ms']} ms",
-            "500 frames. Cached process-wide, so a session pays nothing"],
-           ["Voice clone from a recording", f"{MEASURED['tts_cloned_ms']} ms to first audio",
-            "Chatterbox in its own process; see the GPU contention slide"]],
-          widths=[0.29, 0.22, 0.49], size=11)
-    callout(s, Inches(0.72), Inches(5.75), Inches(11.9), Inches(1.05),
-            "Identity preservation is LivePortrait's design, not a hope: it transfers motion via "
-            "implicit keypoints and does not swap faces. Measured at 3.6% face-proportion "
-            "deviation from the source photograph. A model that invented motion would be free to "
-            "invent a different person — worse than a frozen head.", tone=GOOD, label="Why this model")
-
-    s = content(prs, "Flow 2 — A live interview turn", "App flow",
-                notes="This is the slide to walk slowly. The key insight is that audio and video "
-                      "are produced by different clocks and reconciled at the mixer. Note that "
-                      "the LLM streams sentences, not tokens — TTS needs a whole sentence for "
-                      "prosody, so sentence assembly is where the pipeline naturally chunks.")
-    flow(s, Inches(0.72), Inches(1.95), Inches(11.9), [
-        ("Mic in", "16 kHz PCM over the socket. Energy VAD plus a 700 ms silence window decides "
-         "the turn is over."),
+        ("Mic in", "16 kHz PCM. Energy VAD plus a 700 ms silence window decides the turn is over."),
         ("Transcribe", "Deepgram nova-3 on a persistent socket, so the transcript is final by the "
          "time the window elapses."),
-        ("Plan + think", "The competency plan picks what to probe; the LLM streams back "
-         "sentences, not tokens."),
-        ("Speak", "Deepgram Aura 2 per sentence. Real-time factor below 1.0 keeps generation "
-         "ahead of playback."),
-        ("Render + mix", "The same audio drives the face. The mixer emits at cadence and "
-         "restamps every frame."),
+        ("Plan + think", "The competency plan picks what to probe; the LLM streams back sentences, "
+         "not tokens."),
+        ("Speak", "Aura 2 per sentence. Real-time factor below 1.0 keeps generation ahead of "
+         "playback."),
+        ("Render + mix", "The same audio drives the face. The mixer emits at cadence and restamps "
+         "every frame."),
     ])
-    table(s, Inches(0.72), Inches(3.5), Inches(11.9),
-          ["Mechanism", "What it does", "Why it is built that way"],
-          [["Epoch cancellation", "Barge-in increments an integer; in-flight frames die at the "
-            "consumer", "Reaction is one write. Wasted work is bounded by one render window"],
-           ["Idle loop", "The persona's own frames play when nobody is speaking",
-            "Built from the reference, so standing-by is the same person, not a grey placeholder"],
-           ["Acknowledged-audio truncation", "History is cut to what the browser reports it "
-            "played", "Otherwise an interrupted turn enters history as if fully heard"],
-           ["Clean-seam exit", "The idle loop only cuts to speech on a mouth-closed frame",
-            "A cut from mid-vowel to mid-vowel is visible; there is a bounded wait for a seam"]],
-          widths=[0.2, 0.35, 0.45], size=11)
+    table(s, Inches(0.72), Inches(3.45), Inches(11.9),
+          ["Stage", "Measured", "What moves it"],
+          [["End-of-turn detection", f"{MEASURED['turn_detect']} ms (configured)",
+            "Nothing in hardware. Speculative execution trades wasted compute for latency"],
+           ["LLM time-to-first-token", f"{MEASURED['llm_ttft']} ms",
+            "Commercial, not architectural: a paid low-latency endpoint"],
+           ["TTS time-to-first-audio", f"{MEASURED['tts_rest']} ms",
+            f"Aura's WebSocket measured {MEASURED['tts_ws']} ms — the largest cheap win"],
+           ["Perceived total", MEASURED["turn_total"], "3–6× target, and the renderer is not why"]],
+          widths=[0.26, 0.22, 0.52], size=11, colors={(3, 1): BAD})
+    callout(s, Inches(0.72), Inches(5.6), Inches(11.9), Inches(1.2),
+            "Set the renderer to zero and roughly 2.6–5.7 s of a 2.7–5.8 s turn remains. The part a "
+            "vendor sells is the part that was never the problem; the part that is the problem — "
+            "turn-taking, cancellation, history truncation — is code no vendor API writes for you. "
+            "That single measurement is the backbone of the build-vs-buy case.",
+            tone=GOOD, label="The line to deliver slowly")
 
-    s = content(prs, "Flow 3 — After the candidate leaves", "App flow",
-                notes="Scoring is async because it takes ~6 seconds of model work and nobody "
-                      "should hold a socket for it. The 8 ms figure is the API's own latency to "
-                      "accept the job. The report reads only what telemetry recorded, which is "
-                      "why the silence-re-prompt bug mattered: an unrecorded turn is invisible to "
-                      "every downstream consumer.")
-    flow(s, Inches(0.72), Inches(1.95), Inches(11.9), [
-        ("Turns persisted", "Built from the telemetry stream, not from separate write calls — one "
-         "authority, no disagreement."),
-        ("Score", "Queued in 8 ms; ~6 s of model work off the request path. Quotes are checked "
-         "against the transcript."),
-        ("Report", "Per-competency scores, coverage, the transcript, and every latency stage the "
-         "turn recorded."),
-        ("Recording", "LiveKit egress writes a real H.264/AAC MP4 — a recorder the SFU binary "
-         "does not include."),
-    ])
-    table(s, Inches(0.72), Inches(3.5), Inches(11.9),
-          ["Measured", "Value", "Source"],
-          [["Scorer: accept vs. work", MEASURED["scorer"], "Live run"],
-           ["Egress recording", MEASURED["recording"], "Live run, file on disk"],
-           ["WebRTC first frame", MEASURED["webrtc_first"], "requestVideoFrameCallback, not the "
-            "decoder — the 74.9 ms paint tail was invisible before"],
-           ["Session start, warm", MEASURED["session_start"], "T4, models and face already warm"]],
-          widths=[0.24, 0.24, 0.52], size=11)
+    s = content(prs, "Interrupt it — this is the demo", "Beat 5b · module: cancellation",
+                notes="Do this twice. The first time people miss it. Talk over the avatar "
+                      "mid-sentence and it stops immediately — audio and video together. Then "
+                      "explain that the renderer was not interrupted at all, which is the "
+                      "counter-intuitive part and the reason it is fast.")
+    beat(s, Inches(0.72), Inches(1.95), Inches(11.9),
+         "While the avatar is speaking, talk over it. Do it twice — the first time is always "
+         "missed. Then show the report: the turn is marked interrupted.",
+         "It stops mid-sentence, and the renderer was never told to stop.",
+         "Interrupting increments an integer. In-flight GPU work still finishes and its frames "
+         "die at the consumer because their epoch is stale — so reaction is one write and wasted "
+         "work is bounded by one render window. No interruptible renderer is required, which is "
+         "what makes this survive the renderer moving to another process.")
+    table(s, Inches(0.72), Inches(4.15), Inches(11.9),
+          ["What also happens", "Why it is not optional"],
+          [["The client's audio buffer is flushed", "A server-only flush leaves the browser "
+            "playing a sentence the avatar has abandoned — a laggy interruption even though the "
+            "state machine reacted instantly"],
+           ["History truncates to what was *heard*", "The browser reports played milliseconds from "
+            "Web Audio's own clock. Without it, an interrupted turn enters history as fully "
+            "delivered and the next question refers to a sentence nobody heard"],
+           ["The idle loop takes over on a mouth-closed frame",
+            f"Cutting mid-vowel pops. Measured across two turns: {MEASURED['seams_forced']} seams "
+            "forced, so every cut found a clean frame"]],
+          widths=[0.32, 0.68], size=11, row_h=0.5)
 
-    # ---------------------------------------------------------------- 5. internals
-    section(prs, "03", "Internal mechanism",
-            "Four decisions carry most of the system's behaviour. Each was made for a reason we "
-            "can state, and each has a test that would fail if it were dropped.")
+    s = content(prs, "The report — quotes are the artefact, not the score",
+                "Beat 6 · module: scoring",
+                notes="The thing to point at is the unverified-quote warning. Every quote the model "
+                      "produced is re-checked against the transcript, and the ones that do not "
+                      "match are shown loudly. That is the difference between a scorecard you can "
+                      "argue with and one you have to trust.")
+    beat(s, Inches(0.72), Inches(1.95), Inches(11.9),
+         "Open Sessions, then the report. Scroll to the verdicts. Point at a quote, then at an "
+         "unverified one if the run produced any.",
+         "The model produces no hiring decision, and it never will. It produces evidence.",
+         "Ratings summarise the quotes beneath them, so the quotes are the part worth checking — "
+         "and every one is re-matched against the transcript, with mismatches shown as loudly as "
+         "matches. `decision` is deliberately null: a model that recommended hiring would be "
+         "trusted for a judgement nobody asked it to make.")
+    table(s, Inches(0.72), Inches(4.15), Inches(11.9),
+          ["On the report", "Reading it"],
+          [["Per-competency rating and weight",
+            "no_evidence is a real and common verdict — it means the interview never got there, "
+            "not that the candidate failed"],
+           ["Coverage, beside the scoring", "Two different questions: what was asked, and what was "
+            "demonstrated. A competency with no coverage and no evidence is an interview problem"],
+           ["Every latency stage, per turn", "The same numbers as the engineering table, on the "
+            "record for the interview that actually happened"],
+           ["The attendance card", "Attested, not verified — with the mismatch warning if the "
+            "typed name differs from the invite"]],
+          widths=[0.3, 0.7], size=11, row_h=0.48)
 
-    s = content(prs, "The four ideas that matter", "Internals",
-                notes="If you remember one thing: contracts.py imports nothing from the package, "
-                      "and that is enforced by a test that inspects sys.modules after import "
-                      "rather than trusting the source. That single property is what lets 746 "
-                      "tests run with no GPU, no weights and no network.")
+    # ---------------------------------------------------------------- 6. under the hood
+    section(prs, "04", "How the modules fit",
+            "Four ideas carry most of the behaviour. Each has a test that fails if it is dropped.")
+
+    s = content(prs, "The four ideas", "Internals",
+                notes="If they remember one thing: contracts.py imports nothing from the package, "
+                      "and a test enforces it by inspecting sys.modules in a clean subprocess. That "
+                      "single property is why 823 tests run with no GPU, no weights and no network.")
     bullets(s, Inches(0.72), Inches(1.95), Inches(11.9), [
         ("Everything is a Protocol in contracts.py, which imports nothing.",
-         "Renderer, transport, LLM, TTS, transcriber. It is the only module every layer may depend "
-         "on, so no layer depends on another. Enforced by a test that inspects sys.modules after "
-         "import — that is why the whole suite runs GPU-free, weight-free and offline."),
+         "Renderer, transport, LLM, TTS, transcriber. Enforced by a test that imports the "
+         f"orchestration layer in a clean subprocess and checks what came with it — which is why "
+         f"all {MEASURED['tests_now']} tests run with no GPU, no weights and no network."),
         ("Cancellation is an integer.",
-         "Interrupting increments an epoch. In-flight GPU work still finishes and its frames die "
-         "at the consumer because their epoch is stale. No interruptible renderer required."),
+         "Interrupting increments an epoch; stale frames die at the consumer. It survived the "
+         "renderer moving to another process unchanged — across the boundary it is still one "
+         "comparison, where interrupting the producer would be a round trip."),
         ("History truncates to what was heard, not what was sent.",
-         "The browser reports played milliseconds from Web Audio's own clock. Without it, an "
-         "interrupted turn enters history as though fully delivered and the next question refers "
-         "to a sentence nobody heard."),
+         "Acknowledged-playback milliseconds from the browser's own clock. Otherwise the "
+         "interviewer follows up on a sentence the candidate never heard."),
         ("Composition, not configuration.",
-         "Knowledge, pronunciation, guardrails and the competency plan each wrap a sentence "
-         "stream: with_plan(with_guardrail(with_knowledge(llm))). The orchestrator does not know "
-         "they exist."),
+         "Knowledge, pronunciation, guardrails and the plan each wrap a sentence stream. Paired "
+         "delivery wraps the transport the same way. The orchestrator never learns any of it."),
     ], size=13.5)
-    callout(s, Inches(0.72), Inches(5.75), Inches(11.9), Inches(1.05),
-            "The boundary is a graded requirement, not a style preference — so it is checked "
-            "mechanically. tests/test_boundaries.py asserts no torch, CUDA or renderer "
-            "implementation reaches the orchestrator, mixer or state machine; "
-            "tests/test_renderer_contract.py builds every renderer from every option combination "
-            "the server can pass.", tone=GOOD, label="How the boundary is kept honest")
 
-    s = content(prs, "The session state machine", "Internals",
-                notes="Seven states. The table in state.py maps each to a frame source, which is "
-                      "why 'which state shows which picture' is a table a test can walk rather "
-                      "than behaviour scattered through the pipeline. CANCELLING exists so a "
-                      "barge-in has somewhere to land that is not LISTENING — the flush has to "
-                      "happen before new audio is accepted.")
-    table(s, Inches(0.72), Inches(1.9), Inches(11.9),
-          ["State", "Frame source", "Leaves when"],
-          [["INITIALIZING", "none", "The identity is prepared and the idle loop is installed"],
-           ["IDLE", "idle loop", "Speech starts, or the silence watchdog fires at 12 s"],
-           ["LISTENING", "idle loop", "700 ms of silence ends the turn"],
-           ["THINKING", "idle loop", "Enough rendered frames are buffered and the seam is clean"],
-           ["SPEAKING", "rendered frames", "The turn's audio is exhausted, or a barge-in arrives"],
-           ["CANCELLING", "idle loop", "The client's audio buffer is flushed and the epoch bumped"],
-           ["CLOSED", "none", "Terminal"]],
-          widths=[0.17, 0.18, 0.65], size=11.5)
-    callout(s, Inches(0.72), Inches(5.0), Inches(5.8), Inches(1.8),
-            "The silence watchdog re-prompts after 12 s. Until recently that turn was generated, "
-            "spoken, heard by the candidate — and stored nowhere, because the server builds turns "
-            "from the telemetry stream and the watchdog emitted no 'heard' event. The transcript "
-            "jumped between answers with no sign anything had happened.",
-            tone=ACCENT, label="A bug this design made findable")
-    callout(s, Inches(6.82), Inches(5.0), Inches(5.8), Inches(1.8),
-            "Fixed with an explicit 'silent' column rather than an inferred empty transcript — "
-            "because an empty transcript already means something urgent and different: speech was "
-            "detected and the transcriber returned nothing. Collapsing the two would make a quiet "
-            "candidate and a broken STT key identical in the record.",
-            tone=GOOD, label="Why it is a column, not an inference")
-
-    s = content(prs, "What the renderer actually does", "Internals",
-                notes="This is the slide that shows we understand the model rather than having "
-                      "cloned a README. MuseTalk is not a diffusion model in operation: "
-                      "timestep=0, no scheduler, no sampling loop, one forward pass. in_channels "
-                      "8 vs out_channels 4 means it eats two concatenated latents. "
-                      "cross_attention_dim 384 is exactly whisper-tiny's d_model, so audio enters "
-                      "where a text prompt would. The honest name is audio-conditioned latent "
-                      "inpainting — it never synthesises a person, it repaints a mouth.")
+    s = content(prs, "What the renderer actually does", "Internals · the model",
+                notes="This is the slide that shows understanding rather than integration. "
+                      "MuseTalk is not a diffusion model in operation: timestep=0, no scheduler, no "
+                      "sampling loop. in_channels 8 against out_channels 4 means two concatenated "
+                      "latents in and one out. cross_attention_dim 384 is exactly whisper-tiny's "
+                      "d_model, so audio enters where a text prompt would.")
     bullets(s, Inches(0.72), Inches(1.95), Inches(11.9), [
         ("It is not a diffusion model in operation.",
-         "timestep=0, no scheduler, no sampling loop — one forward pass per frame. That is the "
-         "whole reason it approaches real time, and it is why fps scales with batch rather than "
-         "with step count."),
+         "timestep=0, no scheduler, no sampling loop — one forward pass per frame. That is why it "
+         "approaches real time at all, and why fps scales with batch rather than step count."),
         ("in_channels 8, out_channels 4 — it inpaints, it does not generate.",
-         "Two concatenated latents go in: the masked lower face, and an intact reference. One "
-         "comes out. It never synthesises a person; it repaints the mouth of frames you supplied."),
+         "Two concatenated latents in: the masked lower face and an intact reference. One out. It "
+         "never synthesises a person; it repaints the mouth of frames you supplied."),
         ("cross_attention_dim 384 is exactly whisper-tiny's d_model.",
          "Audio enters where a text prompt would in an image model. That is the conditioning "
-         "mechanism, and it is why the audio encoder cannot be swapped casually."),
-        ("The honest description: audio-conditioned latent inpainting.",
-         "Stating it this way sets the right expectation with a customer. Identity comes from the "
-         "reference, not from the model — which is also why enrollment quality dominates output "
-         "quality."),
+         "mechanism, and why the audio encoder cannot be swapped casually."),
+        ("The honest name: audio-conditioned latent inpainting.",
+         "Identity comes from the reference, not the model — which is also why enrollment quality "
+         "dominates output quality, and why a photograph is animated before it is enrolled."),
     ], size=13.5)
 
-    # ---------------------------------------------------------------- 6. metrics
-    section(prs, "04", "Measured performance",
-            "Hardware: NVIDIA Tesla T4, 15 GB, 4 vCPU. Every figure below came from a run. "
-            "Nothing here is a target presented as a result.")
+    s = content(prs, "Where this is going — the renderer as its own participant",
+                "Beat 7 · module: LiveKit worker",
+                notes="Run the two-process demo in a terminal if you have time; the numbers below "
+                      "are from it. The important idea is that the renderer becomes a unit you can "
+                      "run N of, which is what turns a single-session prototype into something "
+                      "that scales — and it makes the GPU split a deployment choice.")
+    beat(s, Inches(0.72), Inches(1.95), Inches(11.9),
+         "Two terminals: scripts/avatar_worker.py --audio stream, then "
+         "scripts/avatar_sender.py --interrupt-after 3. Read the worker's report.",
+         "The renderer joins the room as its own participant and publishes both media itself.",
+         "Audio arrives over lk.audio_stream, a barge-in arrives as the lk.clear_buffer RPC, and "
+         "one AVSynchronizer pairs the frames before they are published — instead of two "
+         "publishers on two clocks, which is what the current gap comes from.")
+    table(s, Inches(0.72), Inches(4.15), Inches(11.9),
+          ["Measured at a remote subscriber", "Value"],
+          [["Video / audio frames decoded",
+            f"{MEASURED['sub_video']} / {MEASURED['sub_audio']}"],
+           ["A/V drift — the claim being tested",
+            f"median {MEASURED['drift_median']}, and stable to within "
+            f"{MEASURED['drift_spread']}"],
+           ["The same quantity over WebSocket", MEASURED["ws_drift_range"]],
+           ["Barge-in over RPC", f"dropped {MEASURED['bargein_dropped']}, epoch advanced"],
+           ["Seams forced across two turns", MEASURED["seams_forced"]]],
+          widths=[0.46, 0.54], size=11.5, row_h=0.44,
+          colors={(1, 1): GOOD, (2, 1): WARN})
+    callout(s, Inches(0.72), Inches(6.05), Inches(11.9), Inches(0.85),
+            "Read the spread, not the offset. The constant −240 ms is an artifact of measuring each "
+            "timeline from its own first frame; a fixed offset is startup latency and correctable. "
+            "Variance is what a viewer reads as bad lip-sync, and 9 ms of it across 22 seconds is "
+            "the difference a synchroniser buys.", tone=GOOD, label="How to read that table")
 
-    s = content(prs, "Renderer throughput, and where the time goes", "Metrics · T4, batch 16, fp16",
-                notes="Two things to land. First, the 1.59× came from overlapping the CPU half of "
-                      "a frame with the GPU half — they are different hardware and were taking "
-                      "turns. Second, the stage table no longer sums to the frame cost, and that "
-                      "is the point: 78.4 against a GPU-only floor of 70.1 means the CPU work is "
-                      "genuinely hidden, not merely moved.")
-    table(s, Inches(0.72), Inches(1.9), Inches(6.4),
-          ["Stage", "Hardware", "ms/frame"],
-          [["Positional encoding", "GPU", "0.0"],
-           ["U-Net forward", "GPU", MEASURED["unet_ms"]],
-           ["VAE decode", "GPU", MEASURED["vae_ms"]],
-           ["Blend into frame", "CPU", "27.8"],
-           ["JPEG encode", "CPU", "23.7"],
-           ["Sum of stages in isolation", "", "121.6"],
-           ["A real frame, CPU overlapped", "", MEASURED["render_ms"]]],
-          widths=[0.5, 0.2, 0.3], size=11.5,
-          colors={(2, 2): BAD, (6, 2): GOOD})
-    kpi(s, Inches(7.4), Inches(1.9), Inches(2.5), MEASURED["render_speedup"],
-        "From overlapping CPU with GPU", f"{MEASURED['render_ms_seq']} → "
-        f"{MEASURED['render_ms']} ms/frame", GOOD)
-    kpi(s, Inches(10.12), Inches(1.9), Inches(2.5), "74%",
-        "Of a frame is VAE decode", "No CPU work left to hide behind it", WARN)
-    callout(s, Inches(7.4), Inches(3.55), Inches(5.22), Inches(1.6),
-            "Batch size 4 was our own published default, derived on Apple MPS. On CUDA it is "
-            "backwards — 16 wins, and the curve is flat past it. float16 is 9.15× float32 with a "
-            "mean absolute difference of 0.04 of 255. Both figures were wrong in our docs until "
-            "re-measured on the right device.", tone=ACCENT, label="Two figures we retracted")
-    callout(s, Inches(0.72), Inches(5.6), Inches(11.9), Inches(1.2),
-            "The stage table deliberately no longer sums to the frame cost. GPU stages total "
-            f"{MEASURED['gpu_ms']} ms and CPU work totals {MEASURED['cpu_ms']} ms; a real frame "
-            f"costs {MEASURED['render_ms']} ms. The gap is the CPU half hiding behind the GPU "
-            "half — all but ~8 ms of it recovered, which is the difference between hiding work "
-            "and relocating it.", tone=GOOD, label="Reading the table")
-
-    s = content(prs, "What a candidate actually sees", "Metrics · live over WebSocket, 6 turns/run",
-                notes="This is a different question from throughput and it needed its own probe. "
-                      "Timestamps are taken in the probe process, so they include the socket but "
-                      "not a browser's decode or compositor — every figure is a lower bound on "
-                      "what a person perceives, which is the safe direction. Say plainly that the "
-                      "two runs disagreed in sign on the gap and we report both.")
-    table(s, Inches(0.72), Inches(1.9), Inches(11.9),
-          ["Metric", "Before", "After", "Note"],
-          [["Frames delivered per second", MEASURED["fps_before"],
-            MEASURED["fps_delivered_range"], "Against a configured target of 8"],
-           ["Frames delivered vs. needed, per turn", "9 of 75", "38 of 45",
-            "The shortfall is the start lag, not throughput"],
-           ["Trailing audio→video gap, median", "~3 s (recorded, wrong)",
-            MEASURED["gap_median"], "Two runs; medians disagree in sign, both reported"],
-           ["Worst single turn", "not measured", MEASURED["gap_worst"],
-            "Past the ~100 ms a viewer notices"],
-           ["Video starts, after audio", "not measured", MEASURED["start_lag"],
-            "One render window plus the mixer's lead-in; split unmeasured"],
-           ["Frames discarded per turn", MEASURED["discards_before"], MEASURED["discards"],
-            "Discarding was always correct — the backlog was not"],
-           ["First turn vs. fifth turn", "16.7 s vs 1.4 s", "1.5 s vs 1.5 s",
-            "Model cache shared, first forward pass paid at start-up"]],
-          widths=[0.28, 0.16, 0.16, 0.4], size=11,
-          colors={(0, 2): GOOD, (2, 2): GOOD, (5, 2): GOOD, (6, 2): GOOD})
-    callout(s, Inches(0.72), Inches(5.65), Inches(11.9), Inches(1.15),
-            "“Trailing gap” means how long video kept arriving after the last audio of the turn. "
-            "Negative is healthy — video finished first. Broadcast lip-sync tolerance is about "
-            "100 ms, so our median sits at the edge of perceptible and the worst turn is clearly "
-            "past it. Six turns per run is not enough to call a mean.",
-            tone=ACCENT, label="Definition, and its limits")
-
-    s = content(prs, "The latency budget for a whole turn", "Metrics · full pipeline",
-                notes="The conclusion this table exists to support: none of the three dominant "
-                      "terms is the renderer. Subtract the renderer entirely and 2.6–5.7 s "
-                      "remains. 'We need more GPU' is measurably the wrong diagnosis. The LLM "
-                      "figures are a free-tier endpoint — that term is commercial, not "
-                      "architectural.")
-    table(s, Inches(0.72), Inches(1.9), Inches(11.9),
-          ["Stage", "Target", "Measured", "What moves it"],
-          [["End-of-turn detection", "100–300 ms", f"{MEASURED['turn_detect']} ms (configured)",
-            "Nothing in hardware. Speculative execution trades wasted compute for latency"],
-           ["Speech-to-text finalise", "50–150 ms", "~0 observed",
-            "Streaming socket — hidden inside the silence window, not added to it"],
-           ["LLM time-to-first-token", "200–500 ms", f"{MEASURED['llm_ttft']} ms",
-            "Commercial, not architectural: a paid low-latency endpoint"],
-           ["TTS time-to-first-audio", "100–300 ms", f"{MEASURED['tts_rest']} ms (REST)",
-            f"Aura's WebSocket measured {MEASURED['tts_ws']} ms — verified, largest cheap win"],
-           ["Avatar first frame (T4, real face)", "50–150 ms",
-            f"{MEASURED['start_lag']} after audio", "Render window plus mixer lead-in"],
-           ["Encode + network", "50–150 ms", "20–25 ms",
-            "Loopback, so a floor. A real network adds the client's jitter buffer"],
-           ["Perceived total", "< 1,000 ms", MEASURED["turn_total"],
-            "3–6× target, and the renderer is not why"]],
-          widths=[0.25, 0.12, 0.2, 0.43], size=11,
-          colors={(2, 2): BAD, (6, 2): BAD})
-    callout(s, Inches(0.72), Inches(5.65), Inches(11.9), Inches(1.15),
-            "Set the renderer to zero and roughly 2.6–5.7 s of a 2.7–5.8 s turn remains. The part "
-            "a vendor sells is the part that was never the problem; the part that is the problem — "
-            "turn-taking, cancellation, history truncation, pipelining — is code no vendor API "
-            "writes for you. That measurement is the backbone of the build-vs-buy case.",
-            tone=GOOD, label="The finding that matters commercially")
-
-    # ---------------------------------------------------------------- 7. rigour
-    s = content(prs, "Three bugs, and why they are on a slide", "Engineering rigour",
-                notes="Put this in as a credibility slide. All three were the same mistake in "
-                      "different places: an assumption true of the stub renderer and false of the "
-                      "real one. That is the standing cost of a clean boundary — the stub "
-                      "satisfies the Protocol perfectly, so nothing fails until a GPU is behind "
-                      "it. Naming it as a class of bug is more useful than three anecdotes.")
-    table(s, Inches(0.72), Inches(1.9), Inches(11.9),
-          ["Fault", "Symptom", "Root cause"],
-          [["Weights reloaded every session",
-            "Audio at 6.2 s, first frame at 22.9 s",
-            "load() filled an instance attribute while its docstring said “once per process”; "
-            "build() returns a fresh backend per session"],
-           ["First forward pass unwarmed",
-            f"{MEASURED['first_render_ms']} ms for five frames vs {MEASURED['render_ms']} ms "
-            "steady",
-            "cuDNN algorithm selection, first landmark inference, lazy allocator arenas — none "
-            "triggered by loading weights"],
-           ["Render ran on the event loop",
-            "1.4 fps delivered from a card capable of 12.8",
-            "_pump_frames was synchronous on a contract that frames() cannot block — true of the "
-            "stub, false of a GPU renderer"]],
-          widths=[0.2, 0.28, 0.52], size=11, row_h=0.72)
-    callout(s, Inches(0.72), Inches(4.75), Inches(11.9), Inches(1.05),
-            "All three were one mistake in three places: an assumption that held for the stub and "
-            "not for the real renderer. The stub satisfies the Protocol perfectly, so nothing "
-            "about it fails until a GPU is behind it. We now treat that as a class of bug rather "
-            "than three incidents.", tone=ACCENT, label="The pattern")
-    callout(s, Inches(0.72), Inches(6.0), Inches(11.9), Inches(0.8),
-            "The recorded diagnosis for a year was “video lags audio by ~3 s”. Measured properly, "
-            "the trailing gap was already near zero. We had been optimising the wrong quantity.",
-            tone=GOOD, label="And the premise was wrong")
+    # ---------------------------------------------------------------- 7. proof
+    section(prs, "05", "The numbers, and where they came from",
+            "Every figure is from a run on named hardware. Where a number does not exist, the "
+            "slide says so.")
 
     # ---------------------------------------------------------------- 8. stack
     section(prs, "05", "Tech stack and models",
@@ -1004,7 +989,7 @@ def build(out: Path) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--out", default="nod-engineering-review.pptx")
+    parser.add_argument("--out", default="nod-demo.pptx")
     args = parser.parse_args()
     build(Path(args.out))
     return 0
