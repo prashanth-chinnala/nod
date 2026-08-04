@@ -41,6 +41,7 @@ from make_deck import (
     Inches,
     Presentation,
     W,
+    audit,
     bullets,
     callout,
     content,
@@ -61,7 +62,7 @@ TAGS = [
 ]
 
 
-def build(out: Path) -> None:
+def build(out: Path) -> list[str]:
     prs = Presentation()
     prs.slide_width, prs.slide_height = W, H
 
@@ -679,14 +680,21 @@ def build(out: Path) -> None:
 
     prs.save(str(out))
     print(f"wrote {out} — {len(prs.slides.__iter__.__self__._sldIdLst)} slides")
+    # Same post-render check as the demo deck, and it has to be repeated here because this file
+    # has its own `build` rather than calling that one. This deck draws from the same MEASURED
+    # table, so it can acquire the same defect -- a plain string where an f-string was meant,
+    # which no linter can see because the literal is valid and only the intent is wrong.
+    return audit(prs)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", default="nod-assessment.pptx")
     args = parser.parse_args()
-    build(Path(args.out))
-    return 0
+    complaints = build(Path(args.out))
+    for complaint in complaints:
+        print(f"!! {complaint}")
+    return 1 if complaints else 0
 
 
 if __name__ == "__main__":

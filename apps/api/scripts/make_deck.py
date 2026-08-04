@@ -97,7 +97,19 @@ MEASURED = {
     "bargein_dropped": "8 of 38 chunks",
     "seams_forced": "0",
     "resume_chars": "778",
-    "tests_now": "823",
+    "tests_now": "835",
+    # Worker delivery serving a real session: three processes, a real SFU, and the session driven
+    # through the same browser protocol the console uses. Distinct from the drift_* figures above,
+    # which came from the standalone script rather than from a runtime-driven session.
+    "worker_first_frame": "2,528 ms",
+    "worker_cold_race": "16,722 ms",
+    "worker_drift": "median −238 ms, worst −273 ms",
+    "worker_spread": "35 ms",
+    "worker_sub_video": "823",
+    "worker_sub_audio": "5,508",
+    "worker_epochs": "4",
+    "worker_smoke": "16 of 17",
+    "split_smoke": "16 of 17",
 }
 
 
@@ -358,6 +370,12 @@ def build(out: Path) -> None:
          "Two-way conversation with barge-in, a real face from an uploaded video or an animated "
          "photograph, competency-planned questions, async scoring, a report view, egress "
          "recording, and a screen-aware operator assistant."),
+        ("The renderer now runs as its own process, serving real sessions.",
+         f"Worker delivery scores {MEASURED['worker_smoke']} smoke assertions against a real SFU — "
+         f"the same score split mode gets on the same machine, so it is parity rather than a "
+         f"regression — with A/V drift stable to {MEASURED['worker_spread']}. That makes GPU "
+         "capacity a deployment choice. What is still missing is the pool: nothing yet decides "
+         "which worker takes which session."),
         ("The renderer was never the bottleneck — and we measured that twice.",
          f"A full turn is {MEASURED['turn_total']}; set the renderer to zero and ~2.6–5.7 s "
          "remains. Separately, delivered fps was 1.4 while the card could do 12.8: the fault was "
@@ -392,8 +410,8 @@ def build(out: Path) -> None:
             "Barge-in is the moment the architecture shows", "90 s"],
            ["6", "Console → Sessions → the report.",
             "Quotes, not scores, are the artefact — and every quote is checked", "60 s"],
-           ["7", "Terminal: the LiveKit worker, two processes.",
-            "Where this is going: the renderer as its own scalable participant", "60 s"]],
+           ["7", "Terminal: avatar_worker.py --session <id>, against a worker-mode runtime.",
+            "The renderer is its own process serving a real session — the scaling unit", "60 s"]],
           widths=[0.04, 0.33, 0.51, 0.12], size=11, row_h=0.44)
     callout(s, Inches(0.72), Inches(5.6), Inches(11.9), Inches(1.2),
             "One thing to set up before the room is silent: the renderer here is the placeholder, "
@@ -609,7 +627,7 @@ def build(out: Path) -> None:
     s = content(prs, "The four ideas", "Internals",
                 notes="If they remember one thing: contracts.py imports nothing from the package, "
                       "and a test enforces it by inspecting sys.modules in a clean subprocess. That "
-                      "single property is why 823 tests run with no GPU, no weights and no network.")
+                      "single property is why every test runs with no GPU, weights or network.")
     bullets(s, Inches(0.72), Inches(1.95), Inches(11.9), [
         ("Everything is a Protocol in contracts.py, which imports nothing.",
          "Renderer, transport, LLM, TTS, transcriber. Enforced by a test that imports the "
@@ -648,36 +666,47 @@ def build(out: Path) -> None:
          "dominates output quality, and why a photograph is animated before it is enrolled."),
     ], size=13.5)
 
-    s = content(prs, "Where this is going — the renderer as its own participant",
+    s = content(prs, "The renderer as its own participant — serving a real session",
                 "Beat 7 · module: LiveKit worker",
-                notes="Run the two-process demo in a terminal if you have time; the numbers below "
-                      "are from it. The important idea is that the renderer becomes a unit you can "
-                      "run N of, which is what turns a single-session prototype into something "
-                      "that scales — and it makes the GPU split a deployment choice.")
+                notes="This slide changed: the worker used to be future work demonstrated by two "
+                      "scripts, and it now serves an actual session. Say that plainly — it is the "
+                      "difference between a spike and a deployment shape. The renderer is a unit "
+                      "you can run N of, which is what turns a single-session prototype into "
+                      "something that scales, and it makes the GPU split a deployment choice "
+                      "rather than a rewrite. Be equally plain about what is still missing: "
+                      "nothing yet decides which worker takes which session, so a worker is "
+                      "started per session by hand. That is the next piece, and it is small.")
     beat(s, Inches(0.72), Inches(1.95), Inches(11.9),
-         "Two terminals: scripts/avatar_worker.py --audio stream, then "
-         "scripts/avatar_sender.py --interrupt-after 3. Read the worker's report.",
-         "The renderer joins the room as its own participant and publishes both media itself.",
-         "Audio arrives over lk.audio_stream, a barge-in arrives as the lk.clear_buffer RPC, and "
-         "one AVSynchronizer pairs the frames before they are published — instead of two "
-         "publishers on two clocks, which is what the current gap comes from.")
+         "AVATAR_DELIVERY=worker on the runtime, then "
+         "scripts/avatar_worker.py --session <id>. Read the worker's report.",
+         "The runtime stops publishing media entirely; the renderer publishes both tracks itself.",
+         "The worker resolves session → agent → face → reference from the API, prepares the "
+         "identity from a path on shared storage, and joins as avatar-agent — the identity the "
+         "browser already subscribes to. Audio arrives over lk.audio_stream, a barge-in arrives "
+         "as the lk.clear_buffer RPC, and one AVSynchronizer pairs the frames.")
     table(s, Inches(0.72), Inches(4.15), Inches(11.9),
-          ["Measured at a remote subscriber", "Value"],
-          [["Video / audio frames decoded",
-            f"{MEASURED['sub_video']} / {MEASURED['sub_audio']}"],
-           ["A/V drift — the claim being tested",
-            f"median {MEASURED['drift_median']}, and stable to within "
-            f"{MEASURED['drift_spread']}"],
+          ["Measured — three processes, real SFU, real runtime", "Value"],
+          [["Smoke assertions, worker mode",
+            f"{MEASURED['worker_smoke']} — and split mode scores "
+            f"{MEASURED['split_smoke']} on the same machine, so this is parity"],
+           ["First frame, worker already publishing", MEASURED["worker_first_frame"]],
+           ["First frame, worker not yet published",
+            f"{MEASURED['worker_cold_race']} — what a cold pool costs the first candidate"],
+           ["Turn boundaries that crossed the process",
+            f"epoch reached {MEASURED['worker_epochs']} from stream closes alone"],
+           ["A/V drift at a remote subscriber",
+            f"{MEASURED['worker_drift']} — a {MEASURED['worker_spread']} spread"],
            ["The same quantity over WebSocket", MEASURED["ws_drift_range"]],
-           ["Barge-in over RPC", f"dropped {MEASURED['bargein_dropped']}, epoch advanced"],
-           ["Seams forced across two turns", MEASURED["seams_forced"]]],
-          widths=[0.46, 0.54], size=11.5, row_h=0.44,
-          colors={(1, 1): GOOD, (2, 1): WARN})
-    callout(s, Inches(0.72), Inches(6.05), Inches(11.9), Inches(0.85),
-            "Read the spread, not the offset. The constant −240 ms is an artifact of measuring each "
-            "timeline from its own first frame; a fixed offset is startup latency and correctable. "
-            "Variance is what a viewer reads as bad lip-sync, and 9 ms of it across 22 seconds is "
-            "the difference a synchroniser buys.", tone=GOOD, label="How to read that table")
+           ["Video / audio frames decoded",
+            f"{MEASURED['worker_sub_video']} / {MEASURED['worker_sub_audio']}"]],
+          widths=[0.46, 0.54], size=10.5, row_h=0.4,
+          colors={(0, 1): GOOD, (2, 1): WARN, (4, 1): GOOD, (5, 1): WARN})
+    callout(s, Inches(0.72), Inches(6.15), Inches(11.9), Inches(0.78),
+            "Read the spread, not the offset. A constant −238 ms is an artifact of measuring each "
+            "timeline from its own first frame — a fixed offset is startup latency and correctable. "
+            "Variance is what a viewer reads as bad lip-sync, and 35 ms of it is what a "
+            "synchroniser buys over 538 ms of worst-case on the socket.",
+            tone=GOOD, label="How to read that table")
 
     # ---------------------------------------------------------------- 7. proof
     section(prs, "05", "The numbers, and where they came from",
@@ -939,9 +968,12 @@ def build(out: Path) -> None:
             "reads any transcript. The store now holds real faces and voices — biometric data",
             "Deferred by the owner"],
            ["One GPU cannot host face + voice", "Self-hosted cloning and a self-hosted face are "
-            "an either/or ({MEASURED['voice_contention']})", "[HUMAN] decision"],
+            f"an either/or ({MEASURED['voice_contention']})", "[HUMAN] decision"],
            ["Concurrency per GPU untested", "Cost per minute cannot be credibly stated",
             "One experiment away"],
+           ["Nothing leases a worker to a session", "Worker delivery works, but a worker is "
+            "started per session by hand — no pool, no dispatch, no failover",
+            "The next piece, and small"],
            ["2.0× short of 25 fps", f"{MEASURED['render_ms']} ms/frame; VAE decode is 74%",
             "Needs a faster decoder or a bigger card"],
            ["Start lag split unmeasured", f"{MEASURED['start_lag']} before video starts — render "
@@ -985,14 +1017,45 @@ def build(out: Path) -> None:
 
     prs.save(str(out))
     print(f"wrote {out} — {len(prs.slides.__iter__.__self__._sldIdLst)} slides")
+    return audit(prs)
+
+
+def audit(prs: Presentation) -> list[str]:
+    """
+    Report slides whose text still contains an unrendered placeholder. Returns the complaints.
+
+    **Why this is worth a function.** One row of the gaps table was written as a plain string
+    instead of an f-string, so the deck rendered the literal `{MEASURED['voice_contention']}` to
+    everyone who opened it. Nothing caught it: the script succeeded, the slide count was right, and
+    the defect was four words inside a table cell on slide 30.
+
+    A linter cannot find this -- `"{MEASURED['x']}"` is a perfectly good string literal, and the
+    only thing wrong with it is the intent. So the check belongs after rendering, where the
+    evidence is the text itself rather than the code that produced it.
+    """
+    complaints = []
+    for index, slide in enumerate(prs.slides, 1):
+        for shape in slide.shapes:
+            if not shape.has_text_frame:
+                continue
+            body = shape.text_frame.text
+            if "{MEASURED" in body or "{ MEASURED" in body:
+                excerpt = body[max(0, body.find("{") - 40) : body.find("{") + 50]
+                complaints.append(f"slide {index}: unrendered placeholder near ...{excerpt}")
+    return complaints
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", default="nod-demo.pptx")
     args = parser.parse_args()
-    build(Path(args.out))
-    return 0
+    complaints = build(Path(args.out))
+    for complaint in complaints:
+        print(f"!! {complaint}")
+    # Non-zero rather than a warning. The deck is still written, because a mostly-correct deck is
+    # more useful than none when someone is about to present -- but an exit code means a build
+    # script or a pre-flight check can refuse it, which a printed line would not.
+    return 1 if complaints else 0
 
 
 if __name__ == "__main__":
