@@ -118,6 +118,7 @@ target-version = "py311"
 # in both files stays within 96; only the content is exempt.
 "scripts/make_deck.py" = ["E501"]
 "scripts/seed_demo.py" = ["E501"]
+"scripts/make_assessment_deck.py" = ["E501"]
 
 [tool.ruff.lint]
 # En dash, em dash and typographic quotes are intentional in prose. RUF001/RUF002 exist to

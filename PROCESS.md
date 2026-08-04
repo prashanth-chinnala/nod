@@ -243,6 +243,13 @@ than the original glitch. That is implemented and tested in this prototype
 
 ### 1.4 Real-time serving architecture
 
+> **This section is a scaffold — the italics below are prompts, not prose.** So are §1.6 and §1.7.
+> Drafts for all three, with proposed tags and thresholds, are in
+> [docs/DRAFT_FOR_REVIEW.md](docs/DRAFT_FOR_REVIEW.md) awaiting review; they are proposals and are
+> deliberately not merged here, because the tags are the author's to assert. Flagged rather than left
+> to be discovered: the brief lists this document as deliverable #1 and asks for the observability
+> instrumentation by name.
+
 **Session and model pooling.** *Cold-start cost of loading model weights + CUDA context, why that cannot be paid at conversation start, what a warm pool implies for cost (idle GPU time you pay for), how sessions bind to workers, and what happens under a thundering herd of simultaneous interviews.*
 
 **Frame transport.** *WebRTC vs. WebSocket vs. HLS/DASH. Kill HLS on segment granularity. Justify WebRTC on jitter buffering, congestion control, NAT traversal, and browser-native decode. Note whether an SFU sits in the path and what that adds in latency and operational surface.*
