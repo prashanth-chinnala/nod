@@ -291,6 +291,13 @@ async def run(args: argparse.Namespace) -> int:
     print(f"   frames discarded         {presenter.frames_discarded}")
     print(f"   video frames RECEIVED    {watcher.video} by a remote subscriber")
     print(f"   audio frames RECEIVED    {watcher.audio} by a remote subscriber")
+    median, worst, final = watcher.drift()
+    print(f"   audio media decoded      {watcher.audio_media_s:.2f}s")
+    print(f"   video media span         {watcher.video_span_s:.2f}s")
+    print(
+        f"   A/V DRIFT at subscriber  median {median:+.0f} ms, worst {worst:+.0f} ms, "
+        f"final {final:+.0f} ms"
+    )
 
     # Asserted on what arrived, not on what was sent. "We published" is a claim about our own
     # process; "a subscriber decoded 240 frames" is a claim about the system.
@@ -309,36 +316,88 @@ async def run(args: argparse.Namespace) -> int:
 
 class Watcher:
     """
-    A second participant that subscribes and counts what actually arrives.
+    A second participant that subscribes, counts what arrives, and measures the drift.
 
     The verification this script exists for. Counting what we *published* measures our own
     process; counting what a remote subscriber *decoded* measures the system, including the SFU,
     the negotiated codec and the synchroniser's pacing. Only the second is worth reporting.
+
+    **The drift is the point, and it is measurable here without epochs.** A subscriber sees
+    decoded media, not turns, so per-turn attribution is impossible from this side -- but the
+    two media timelines are both visible: video frames carry `timestamp_us` and audio frames
+    carry `duration`.
+    Comparing how much of each has arrived is exactly the quantity `AVSynchronizer` exists to
+    hold together, and it is the claim the whole migration rests on. MEASUREMENTS §8b measured
+    the same thing over WebSocket at −66 ms to +172 ms with turns up to 538 ms late.
     """
 
     def __init__(self, room: object) -> None:
         self.room = room
         self.video = 0
         self.audio = 0
+        self.audio_media_s = 0.0
+        """Playback seconds of audio decoded, accumulated from each frame's own duration."""
+        self.video_span_s = 0.0
+        """Span of video media timestamps, first frame to last."""
+        self._first_video_us: int | None = None
+        self._last_video_us: int | None = None
+        self.samples: list[tuple[float, float, float]] = []
+        """(wall, audio_media_s, video_media_s) per video frame, for the drift curve."""
+        self._t0: float | None = None
         self._tasks: list[asyncio.Task[None]] = []
 
     def attach(self, track: object) -> None:
         from livekit import rtc
 
         if isinstance(track, rtc.RemoteVideoTrack):
-            stream = rtc.VideoStream(track)
-            self._tasks.append(asyncio.create_task(self._drain(stream, "video")))
+            self._tasks.append(asyncio.create_task(self._video(rtc.VideoStream(track))))
         elif isinstance(track, rtc.RemoteAudioTrack):
-            stream = rtc.AudioStream(track)
-            self._tasks.append(asyncio.create_task(self._drain(stream, "audio")))
+            self._tasks.append(asyncio.create_task(self._audio(rtc.AudioStream(track))))
 
-    async def _drain(self, stream: object, kind: str) -> None:
+    def _mark(self) -> float:
+        now = time.monotonic()
+        if self._t0 is None:
+            self._t0 = now
+        return now - self._t0
+
+    async def _video(self, stream: object) -> None:
         with contextlib.suppress(Exception):
-            async for _ in stream:  # type: ignore[attr-defined]
-                if kind == "video":
-                    self.video += 1
-                else:
-                    self.audio += 1
+            async for event in stream:  # type: ignore[attr-defined]
+                self.video += 1
+                stamp = getattr(event, "timestamp_us", None)
+                if stamp is not None:
+                    if self._first_video_us is None:
+                        self._first_video_us = stamp
+                    self._last_video_us = stamp
+                    self.video_span_s = (stamp - self._first_video_us) / 1_000_000
+                self.samples.append((self._mark(), self.audio_media_s, self.video_span_s))
+
+    async def _audio(self, stream: object) -> None:
+        with contextlib.suppress(Exception):
+            async for event in stream:  # type: ignore[attr-defined]
+                self.audio += 1
+                # `duration` is the frame's own playback length, so this accumulates the audio
+                # timeline from the media rather than from wall clock -- the two differ by
+                # exactly the thing being measured.
+                self.audio_media_s += float(getattr(event.frame, "duration", 0.0))
+
+    def drift(self) -> tuple[float, float, float]:
+        """
+        (median, worst, final) drift in milliseconds, video media minus audio media.
+
+        Positive means video is ahead of the audio it should be paired with. Sampled on video
+        frames because those are the sparser stream, and the first second is dropped: both
+        tracks are still being negotiated there and the numbers describe the handshake rather
+        than the steady state.
+        """
+        settled = [s for s in self.samples if s[0] > 1.0 and s[1] > 0.0]
+        if not settled:
+            return (0.0, 0.0, 0.0)
+        deltas = [(video - audio) * 1000 for _, audio, video in settled]
+        ordered = sorted(deltas)
+        median = ordered[len(ordered) // 2]
+        worst = max(deltas, key=abs)
+        return (median, worst, deltas[-1])
 
 
 async def watch(room_name: str) -> Watcher:

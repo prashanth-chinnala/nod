@@ -657,6 +657,37 @@ consumer, one measured off its wrong one.
 
 ---
 
+## 8d. A/V drift at a LiveKit subscriber — the claim, tested
+
+§8c showed paired delivery is wrong over WebSocket. This is the same question asked of the topology it
+was built for: the renderer in its own process, publishing through `rtc.AVSynchronizer`, measured at a
+remote subscriber that decoded the tracks. Two turns, stub renderer, raw RGB24, local SFU.
+
+| | |
+|---|---|
+| Video frames received | 327 |
+| Audio frames received | 2,200 |
+| Audio media decoded | 22.00 s |
+| Video media span | 21.74 s |
+| **A/V drift: median / worst / final** | **−241 ms / −250 ms / −240 ms** |
+
+**Read the spread, not the offset.** The constant ~−240 ms is a baseline artifact of the measurement:
+each timeline is accumulated from its own first frame, so a video track that starts a quarter of a
+second after the audio track shows as a permanent offset. What matters is that it does not move —
+**9 ms of variation across 22 seconds**.
+
+Against §8b on the WebSocket path, where the same quantity ranged −66 ms to +172 ms with individual
+turns up to **538 ms** late, that is the difference the synchroniser buys: not a smaller number, a
+*stable* one. A fixed offset is a startup latency and correctable; variance is what a viewer reads as
+bad lip-sync, and it is what two independent clocks produce.
+
+**What this does not measure.** Per-turn attribution is impossible from a subscriber, which sees
+decoded media and not turns — so this cannot say "turn three was 500 ms late" the way §8b can. It also
+runs the stub renderer, so it measures the transport and the pacing, not a GPU. Both are stated rather
+than papered over: the figure supports "the pairing is stable", and not "the product is in sync".
+
+---
+
 ## 9. Known gaps
 
 Stated rather than filled:
