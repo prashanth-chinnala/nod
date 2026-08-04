@@ -267,13 +267,13 @@ class Transport(Protocol):
         `flush_audio`.
 
         **Why a transport is told at all.** For a transport that writes to a socket this is
-        genuinely nothing: the client infers the end of an utterance from the audio stopping, and
-        no message would be read. For a transport that hands audio to *another process* it is the
-        only signal that exists. A byte stream carries no turn numbers, so the receiver derives
-        the turn boundary from the stream closing -- which means a runtime that never says "this
-        utterance is over" produces a renderer that thinks every turn is one endless sentence: the
-        next turn's audio joins the previous one's stream, the mouth never returns to rest, and
-        cancellation has nothing to count.
+        genuinely nothing: the client infers the end of an utterance from the audio stopping,
+        and no message would be read. For a transport that hands audio to *another process* it
+        is the only signal that exists. A byte stream carries no turn numbers, so the receiver
+        derives the turn boundary from the stream closing -- which means a runtime that never
+        says "this utterance is over" produces a renderer that thinks every turn is one endless
+        sentence: the next turn's audio joins the previous one's stream, the mouth never returns
+        to rest, and cancellation has nothing to count.
 
         Synchronous, and deliberately so. It must be safe to call from the state machine's own
         transition without introducing an await point where a turn could be cancelled halfway

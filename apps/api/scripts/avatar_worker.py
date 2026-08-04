@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import json
 import os
 import sys
 import time
@@ -418,6 +419,72 @@ async def watch(room_name: str) -> Watcher:
     return watcher
 
 
+def resolve_session(api: str, session_id: str) -> tuple[str, str]:
+    """
+    Turn a session id into the room to join and the reference to render. Returns (room,
+    reference).
+
+    **This is the whole of "identity artifacts by handle", and it is much smaller than it
+    looked.** The problem sounded like serialising a prepared identity -- roughly a gigabyte of
+    tensors, with a format, a version, and a rule for when it goes stale -- and shipping it to
+    whichever worker took the job. None of that is needed. A prepared identity is a pure
+    function of the reference video, and the reference is already a file on shared storage
+    because enrolment put it there. So the worker resolves session -> agent -> face ->
+    `reference_path` and prepares from that, caching process-wide.
+
+    What that trades: the first session a worker serves pays the preparation cost (**NOT YET
+    MEASURED** on the RGB24 path; 127 s was the figure on the JPEG path on a T4), and every
+    session after it on the same worker and persona pays nothing. Shipping artifacts would move
+    that cost to a download instead of removing it. The same shape as the epoch problem -- what
+    has to cross the boundary is far smaller than the thing it identifies.
+
+    Resolved over HTTP rather than by importing the store, deliberately. A worker that opened
+    the database would need its credentials, its schema version and its migrations, and the
+    reason to split the process in the first place was to let the GPU tier scale without the
+    session tier's dependencies.
+    """
+    import urllib.error
+    import urllib.request
+
+    def get(path: str) -> dict[str, Any]:
+        try:
+            with urllib.request.urlopen(f"{api}{path}", timeout=10) as response:
+                loaded: dict[str, Any] = json.load(response)
+                return loaded
+        except urllib.error.HTTPError as exc:
+            raise SystemExit(
+                f"{api}{path} -> HTTP {exc.code}. Is this the right session?"
+            ) from exc
+        except OSError as exc:
+            raise SystemExit(f"cannot reach the runtime at {api}: {exc}") from exc
+
+    session = get(f"/sessions/{session_id}")
+    agent_id = session.get("agent_id")
+    if not agent_id:
+        raise SystemExit(f"session {session_id} names no agent, so there is no face to render.")
+    face_id = get(f"/agents/{agent_id}").get("face_id")
+    if not face_id:
+        raise SystemExit(
+            f"agent {agent_id} has no face configured. Worker delivery renders a persona; "
+            "an agent without one has nothing for this process to do."
+        )
+    face = get(f"/faces/{face_id}")
+    reference = face.get("reference_path") or ""
+    if not reference or not Path(reference).exists():
+        # A path that the runtime can see and the worker cannot is the failure this mode has to
+        # be loudest about, because everything else still works: the interview runs, audio
+        # plays, and the only symptom is that the face never appears. Named here rather than
+        # discovered later.
+        raise SystemExit(
+            f"face {face_id} has reference_path {reference!r}, which this process cannot read. "
+            "Worker delivery needs the media directory reachable from the worker -- the same "
+            "volume, not a copy, since enrolment writes there and the worker only reads."
+        )
+    print(f"-- session {session_id}: agent {agent_id}, face {face_id}")
+    print(f"-- reference {reference}")
+    return f"session-{session_id}", reference
+
+
 def idle_frame_shape(idle: object) -> tuple[int, int]:
     """
     The published track's dimensions, taken from an actual idle frame.
@@ -458,7 +525,32 @@ def main() -> int:
     )
     parser.add_argument("--width", type=int, default=320)
     parser.add_argument("--height", type=int, default=180)
+    parser.add_argument(
+        "--session",
+        default="",
+        help="serve a real session: resolve its room, face and reference from the runtime",
+    )
+    parser.add_argument(
+        "--api",
+        default=os.environ.get("AVATAR_API", "http://127.0.0.1:8000"),
+        help="runtime to resolve --session against",
+    )
     args = parser.parse_args()
+
+    if args.session:
+        # Serving a real session means everything else is derived, not chosen. `--room` and
+        # `--reference` are overridden rather than merged: a worker joining the room of one
+        # session while rendering the face configured for another is a failure that would look
+        # like a bug in enrolment, and the flags are still there for the standalone checks the
+        # script began as.
+        args.room, args.reference = resolve_session(args.api, args.session)
+        # Real audio arrives from the runtime over `lk.audio_stream`; there is nothing to
+        # generate. Forced rather than defaulted, because `--audio queue` against a live session
+        # would publish a synthetic tone over the top of the interview.
+        args.audio = "stream"
+        args.seconds = max(args.seconds, 3600.0)
+        print(f"-- serving {args.session} in room {args.room!r} as {args.identity!r}")
+
     return asyncio.run(run(args))
 
 

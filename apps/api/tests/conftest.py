@@ -73,10 +73,10 @@ class RecordingTransport:
         self.closed = True
 
     def end_of_turn(self) -> None:
-        # Counted rather than ignored, so a test can assert the runtime tells its transport when a
-        # turn ended. On the worker path that call is the only turn boundary that crosses the
-        # process, and a regression in it is invisible in-process: everything still works, and the
-        # split renderer silently treats the whole interview as one utterance.
+        # Counted rather than ignored, so a test can assert the runtime tells its transport when
+        # a turn ended. On the worker path that call is the only turn boundary that crosses the
+        # process, and a regression in it is invisible in-process: everything still works, and
+        # the split renderer silently treats the whole interview as one utterance.
         self.turn_ends += 1
 
 

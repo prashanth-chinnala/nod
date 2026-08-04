@@ -136,16 +136,17 @@ DELIVERY = os.environ.get("AVATAR_DELIVERY", "split").strip().lower()
 How audio and video reach the client: `split` (default), `paired`, or `worker`.
 
 `worker` is the different one: the other two decide how *this* process publishes, while `worker`
-means it does not publish media at all. An avatar worker joins the session's room, renders there,
-and publishes both tracks; the runtime streams synthesised speech to it and drops the frames its
-own renderer produces. That is the arrangement that lets the GPU scale separately from the session
-layer, and the one where pairing is correct rather than harmful -- `rtc.AVSynchronizer` consumes in
-real time, which is exactly the consumer `paired` mode wanted and the browser was not.
+means it does not publish media at all. An avatar worker joins the session's room, renders
+there, and publishes both tracks; the runtime streams synthesised speech to it and drops the
+frames its own renderer produces. That is the arrangement that lets the GPU scale separately
+from the session layer, and the one where pairing is correct rather than harmful --
+`rtc.AVSynchronizer` consumes in real time, which is exactly the consumer `paired` mode wanted
+and the browser was not.
 
-It degrades rather than fails. If `livekit-agents` is missing, credentials are absent, or no worker
-ever joins, the socket leg is still carrying audio and frames and the session plays as it always
-has -- the browser silences its local audio only once it actually hears a WebRTC track. The reason
-is reported at `/config.worker_reason` instead of being discovered as silence.
+It degrades rather than fails. If `livekit-agents` is missing, credentials are absent, or no
+worker ever joins, the socket leg is still carrying audio and frames and the session plays as it
+always has -- the browser silences its local audio only once it actually hears a WebRTC track.
+The reason is reported at `/config.worker_reason` instead of being discovered as silence.
 
 `split` is what has shipped -- the orchestrator writes audio as soon as it has it and a separate
 task drains frames at a cadence. Two publishers, and the measured trailing gap of −66 ms to +172
@@ -320,9 +321,9 @@ async def config() -> dict[str, object]:
         # made that visible in one request instead of a psql query that came up empty.
         "store": type(store).__name__,
         "delivery": DELIVERY,
-        # Empty when worker delivery is either off or usable. Non-empty means it was asked for and
-        # will not happen -- the session still works over the socket, so without this the only
-        # symptom is a face that is never quite the one the worker was going to render.
+        # Empty when worker delivery is either off or usable. Non-empty means it was asked for
+        # and will not happen -- the session still works over the socket, so without this the
+        # only symptom is a face that is never quite the one the worker was going to render.
         "worker_reason": _worker_reason(),
         "schema_problems": SCHEMA_PROBLEMS,
         # So "why was the first session slow" has an answer that is not a guess.
@@ -397,9 +398,9 @@ class BrowserSession:
         if DELIVERY == "worker" and session_id:
             # Worker delivery: an avatar worker publishes both media as `avatar-agent` and this
             # process only streams speech to it. So the runtime must **not** also construct a
-            # `LiveKitTransport` -- that publishes under the same identity the worker claims, and
-            # two participants cannot share one. The SFU resolves that by evicting a participant
-            # mid-interview, which presents as the face vanishing for no reason.
+            # `LiveKitTransport` -- that publishes under the same identity the worker claims,
+            # and two participants cannot share one. The SFU resolves that by evicting a
+            # participant mid-interview, which presents as the face vanishing for no reason.
             from avatar.transport.worker_audio import WorkerAudioTransport
 
             self.worker_reason = WorkerAudioTransport.available()
@@ -925,9 +926,9 @@ def _worker_reason() -> str:
     """
     Why worker delivery will not happen, or empty if it will (or was never asked for).
 
-    Computed per request rather than cached at import, because the interesting failure is a missing
-    dependency or credential that someone is in the middle of fixing -- a cached answer would go on
-    reporting the old reason after the fix and send them looking in the wrong place.
+    Computed per request rather than cached at import, because the interesting failure is a
+    missing dependency or credential that someone is in the middle of fixing -- a cached answer
+    would go on reporting the old reason after the fix and send them looking in the wrong place.
     """
     if DELIVERY != "worker":
         return ""
@@ -982,10 +983,10 @@ class _Tee:
         Both legs, primary still suppressed.
 
         The suppression matters more here than elsewhere: on the worker path the primary leg's
-        `end_of_turn` closes a byte stream over the network, which can fail for reasons that have
-        nothing to do with the session. A turn that cannot be *ended* must not take down a session
-        that is otherwise fine -- the cost of a swallowed failure here is one turn's idle handover,
-        and the secondary leg is still carrying the interview.
+        `end_of_turn` closes a byte stream over the network, which can fail for reasons that
+        have nothing to do with the session. A turn that cannot be *ended* must not take down a
+        session that is otherwise fine -- the cost of a swallowed failure here is one turn's
+        idle handover, and the secondary leg is still carrying the interview.
         """
         self._secondary.end_of_turn()
         with contextlib.suppress(Exception):

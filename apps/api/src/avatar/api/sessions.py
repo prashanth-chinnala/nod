@@ -274,7 +274,7 @@ async def rtc_credentials(session_id: str) -> dict[str, Any]:
     """
     _load(session_id)
     try:
-        from avatar.transport.livekit import credentials, room_token
+        from avatar.transport.livekit import AGENT_IDENTITY, credentials, room_token
 
         url, _, _ = credentials()
     except Exception as exc:
@@ -295,7 +295,11 @@ async def rtc_credentials(session_id: str) -> dict[str, Any]:
         "url": url,
         "room": room,
         "token": room_token(room, f"candidate-{session_id}", name="Candidate"),
-        "agent_identity": "avatar-agent",
+        # The constant, not the string. Whoever publishes the avatar must claim exactly this,
+        # and under worker delivery that is a different process from this one -- so a literal
+        # here and a literal there is two chances to disagree about the one value both sides
+        # need to share.
+        "agent_identity": AGENT_IDENTITY,
         # Reported back so the client knows whether it is being recorded from the same response
         # that lets it join, rather than having to ask separately.
         "recording": recording,

@@ -153,7 +153,7 @@ class WebSocketTransport:
         Nothing to send, and adding a message would be worse than this no-op.
 
         The client learns the utterance ended by its audio queue draining, which it already
-        tracks to decide when to re-enable the microphone. A `turn_end` message would be a second
-        source of truth for the same fact, and the two would disagree the moment one arrived
-        before the audio it describes had finished playing.
+        tracks to decide when to re-enable the microphone. A `turn_end` message would be a
+        second source of truth for the same fact, and the two would disagree the moment one
+        arrived before the audio it describes had finished playing.
         """

@@ -102,10 +102,10 @@ class PairedDelivery:
         Forwarded, and *not* also used to close the `AvStream`'s current segment.
 
         The stream ends a segment when the queued audio for that turn has actually been drained
-        past, which is later than this call: `send_audio` returns as soon as a chunk is queued, so
-        by the time the orchestrator considers the turn finished the tail is still in the buffer
-        waiting for its cadence slot. Ending the segment here would mark the boundary before the
-        audio it bounds had been emitted.
+        past, which is later than this call: `send_audio` returns as soon as a chunk is queued,
+        so by the time the orchestrator considers the turn finished the tail is still in the
+        buffer waiting for its cadence slot. Ending the segment here would mark the boundary
+        before the audio it bounds had been emitted.
         """
         self._inner.end_of_turn()  # type: ignore[attr-defined]
 
