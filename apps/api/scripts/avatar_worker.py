@@ -548,8 +548,24 @@ def main() -> int:
         # generate. Forced rather than defaulted, because `--audio queue` against a live session
         # would publish a synthetic tone over the top of the interview.
         args.audio = "stream"
-        args.seconds = max(args.seconds, 3600.0)
+        # Who to expect the audio from. Derived by the same function the runtime names itself
+        # with, because `DataStreamAudioReceiver` given no sender waits for an *agent-kind*
+        # participant -- and the runtime is an ordinary one, so the worker joins, publishes
+        # nothing, and blocks until the room drops. The only symptom was `room disconnected
+        # while waiting for participant`, which says nothing about the two sides having
+        # disagreed on a string.
+        from avatar.transport.worker_audio import runtime_identity
+
+        args.sender = args.sender or runtime_identity(args.room)
+        print(f"-- expecting audio from {args.sender!r}")
+        # An interview outlasts the 12 s default this script was written to check things in, so
+        # serving one extends it -- but only when nobody asked for a duration. Clamping an
+        # explicit `--seconds` up to an hour makes the flag silently inert, which cost a
+        # confusing run: a deliberate 25 s check sat there for 25 minutes looking like a hang.
+        if args.seconds == parser.get_default("seconds"):
+            args.seconds = 3600.0
         print(f"-- serving {args.session} in room {args.room!r} as {args.identity!r}")
+        print(f"-- running for {args.seconds:.0f}s")
 
     return asyncio.run(run(args))
 

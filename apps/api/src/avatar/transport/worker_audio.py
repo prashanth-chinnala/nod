@@ -52,6 +52,24 @@ whose SDK imports are all deferred.
 """
 
 
+def runtime_identity(room_name: str) -> str:
+    """
+    What the runtime joins a session's room as. Derived, so both processes compute the same
+    answer.
+
+    The worker has to name this participant rather than wait for whoever turns up:
+    `DataStreamAudioReceiver` with no `sender_identity` waits for an **agent-kind** participant,
+    and the runtime is an ordinary one. Left unset, the worker connects, publishes nothing, and
+    blocks until the room drops -- which is what it did, with `room disconnected while waiting
+    for participant` as the only clue that the two sides disagreed about a string.
+
+    A function rather than a constant because it depends on the room, and shared rather than
+    formatted twice for the same reason `AGENT_IDENTITY` is: the failure when the two drift is
+    silence with no error.
+    """
+    return f"runtime-{room_name}"
+
+
 class WorkerAudioTransport:
     """
     Sends audio to an avatar worker over a LiveKit data stream. Publishes no media itself.
@@ -70,7 +88,7 @@ class WorkerAudioTransport:
         sample_rate: int = 16_000,
     ) -> None:
         self.room_name = room_name
-        self.identity = identity or f"runtime-{room_name}"
+        self.identity = identity or runtime_identity(room_name)
         self.worker_identity = worker_identity or os.environ.get(
             WORKER_IDENTITY_ENV, DEFAULT_WORKER_IDENTITY
         )

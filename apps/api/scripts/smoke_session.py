@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 import time
 from collections import Counter
@@ -40,7 +41,15 @@ from avatar.audio.vad import FRAME_BYTES, FRAME_SAMPLES, SAMPLE_RATE
 from avatar.mixer import TARGET_FPS
 from avatar.transport.websocket import Kind, decode
 
-URL = "ws://127.0.0.1:8000/session"
+URL = os.environ.get("AVATAR_SMOKE_URL", "ws://127.0.0.1:8000/session")
+"""
+Which runtime to drive. Overridable so the same protocol check can be pointed at a second
+process.
+
+Added to verify worker delivery, which needs a runtime configured differently from the one
+serving the app -- and a second port is a far smaller change than making this script's
+assertions conditional on how the runtime it is talking to was configured.
+"""
 
 SPEAK_SETTLE_SECONDS = 2.0
 """
